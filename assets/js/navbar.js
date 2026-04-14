@@ -28,7 +28,7 @@
       '</a>' +
       '<nav class="site-nav">' +
         '<a href="' + root + 'index.html"   class="nav-link' + (isBlog    ? ' active' : '') + '">Blog</a>'    +
-        '<a href="' + root + 'algos.html'   class="nav-link' + (isAlgos   ? ' active' : '') + '">Algos</a>'   +
+        '<a href="' + root + 'algos.html"   class="nav-link' + (isAlgos   ? ' active' : '') + '">Algos</a>'   +
         '<a href="' + root + 'archive.html" class="nav-link' + (isArchive ? ' active' : '') + '">Archive</a>' +
         '<a href="' + root + 'generic.html" class="nav-link' + (isAbout   ? ' active' : '') + '">About</a>'   +
       '</nav>' +
