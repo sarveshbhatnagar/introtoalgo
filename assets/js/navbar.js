@@ -11,7 +11,8 @@
   var isAlgos   = /algos\.html/.test(path);
   var isAbout   = /generic\.html/.test(path);
   var isCategory = /category\.html/.test(path);
-  var isBlog    = !isAlgos && !isAbout && !isCategory;
+  var isArchive = /archive\.html/.test(path);
+  var isBlog    = !isAlgos && !isAbout && !isCategory && !isArchive;
 
   // Inject cursor dot into <body>
   var cursorEl = document.createElement('div');
@@ -26,9 +27,10 @@
         '<span class="logo-prompt">&gt;_</span>introtoalgo' +
       '</a>' +
       '<nav class="site-nav">' +
-        '<a href="' + root + 'index.html"  class="nav-link' + (isBlog    ? ' active' : '') + '">Blog</a>'  +
-        '<a href="' + root + 'algos.html"  class="nav-link' + (isAlgos   ? ' active' : '') + '">Algos</a>' +
-        '<a href="' + root + 'generic.html" class="nav-link' + (isAbout  ? ' active' : '') + '">About</a>' +
+        '<a href="' + root + 'index.html"   class="nav-link' + (isBlog    ? ' active' : '') + '">Blog</a>'    +
+        '<a href="' + root + 'algos.html'   class="nav-link' + (isAlgos   ? ' active' : '') + '">Algos</a>'   +
+        '<a href="' + root + 'archive.html" class="nav-link' + (isArchive ? ' active' : '') + '">Archive</a>' +
+        '<a href="' + root + 'generic.html" class="nav-link' + (isAbout   ? ' active' : '') + '">About</a>'   +
       '</nav>' +
     '</header>';
 
