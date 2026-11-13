@@ -1,0 +1,277 @@
+<!--
+{
+  "title": "Graph Basics",
+  "description": "Model roads, friendships, dependencies and grids as graphs. Learn the words, store a graph as an adjacency list, and treat a grid as a graph.",
+  "minutes": 15,
+  "tags": ["graphs", "fundamentals"],
+  "legacy": ["networktheory"]
+}
+-->
+<p>A small town has seven bus stops, A to G. A bus runs between some pairs of stops and not others: A to B, A to C, B to D, and so on. You want to answer simple questions. Can you get from A to G at all? What is the trip with the fewest stops? If the road between D and F closes, is anyone cut off?</p>
+
+<p>None of the structures so far fits this map. An <a href="/algorithms/arrays.html">array</a> has a first item and a last item. A <a href="/algorithms/binary-trees.html">tree</a> has one root, and every node has exactly one parent. The bus map has neither. Stop C connects to three others, and you can ride A, B, D, C and come back to A. You need a structure where anything can connect to anything. That structure is a <strong>graph</strong>.</p>
+
+<h2>The idea: dots and lines</h2>
+
+<p>A graph is a set of things and a set of connections between pairs of them. The things are called <strong>nodes</strong> (or vertices). The connections are called <strong>edges</strong>. That is the whole definition. Everything else is vocabulary for describing a particular graph.</p>
+
+<x-figure caption="The bus map as a graph: 7 nodes and 8 edges. C has degree 3, G has degree 1, and A–B–D–C–A is a cycle.">
+<svg viewBox="0 0 480 236" aria-label="Seven circles labelled A to G joined by eight lines: A-B, A-C, B-D, C-D, C-E, D-F, E-F and F-G. The loop A, B, D, C is drawn with a thicker accent line.">
+  <line x1="51" y1="112" x2="148" y2="49" class="s-accent" stroke-width="3"/>
+  <line x1="51" y1="112" x2="148" y2="175" class="s-accent" stroke-width="3"/>
+  <line x1="148" y1="49" x2="248" y2="80" class="s-accent" stroke-width="3"/>
+  <line x1="148" y1="175" x2="248" y2="80" class="s-accent" stroke-width="3"/>
+  <line x1="148" y1="175" x2="248" y2="206" class="s-line" stroke-width="2"/>
+  <line x1="248" y1="80" x2="349" y2="144" class="s-line" stroke-width="2"/>
+  <line x1="248" y1="206" x2="349" y2="144" class="s-line" stroke-width="2"/>
+  <line x1="349" y1="144" x2="433" y2="144" class="s-line" stroke-width="2"/>
+  <circle cx="51" cy="112" r="18" class="f-surface s-line"/><text x="51" y="117" text-anchor="middle" class="t-bold">A</text>
+  <circle cx="148" cy="49" r="18" class="f-surface s-line"/><text x="148" y="54" text-anchor="middle" class="t-bold">B</text>
+  <circle cx="148" cy="175" r="18" class="f-accent-soft s-accent"/><text x="148" y="180" text-anchor="middle" class="t-bold">C</text>
+  <circle cx="248" cy="80" r="18" class="f-surface s-line"/><text x="248" y="85" text-anchor="middle" class="t-bold">D</text>
+  <circle cx="248" cy="206" r="18" class="f-surface s-line"/><text x="248" y="211" text-anchor="middle" class="t-bold">E</text>
+  <circle cx="349" cy="144" r="18" class="f-surface s-line"/><text x="349" y="149" text-anchor="middle" class="t-bold">F</text>
+  <circle cx="433" cy="144" r="18" class="f-surface s-line"/><text x="433" y="149" text-anchor="middle" class="t-bold">G</text>
+  <text x="148" y="222" text-anchor="middle" class="t-sans t-small f-muted">degree 3</text>
+  <text x="433" y="180" text-anchor="middle" class="t-sans t-small f-muted">degree 1</text>
+</svg>
+</x-figure>
+
+<p>The words you will meet in every graph problem:</p>
+
+<ul>
+<li><strong>Neighbours</strong>: the nodes one edge away. C's neighbours are A, D and E.</li>
+<li><strong>Degree</strong>: how many edges touch a node. C has degree 3. G has degree 1.</li>
+<li><strong>Path</strong>: a sequence of nodes where each pair in a row is joined by an edge, like A, C, E, F, G. Its <strong>length</strong> is the number of edges: 4.</li>
+<li><strong>Cycle</strong>: a path that comes back to where it started without reusing an edge. A, B, D, C, A is one.</li>
+<li><strong>Connected</strong>: every node can reach every other. Our map is. If a graph is not, it splits into separate pieces called <strong>components</strong>. Close the D–F road and the map stays connected, because F is still reachable through E. Close F–G and G becomes a component on its own.</li>
+</ul>
+
+<p>Graphs also come in a few flavours. In an <strong>undirected</strong> graph an edge works both ways, like a two-way road or a friendship. In a <strong>directed</strong> graph each edge has an arrow, like a one-way street, a "follows" link, or "task X must happen before task Y". In a <strong>weighted</strong> graph each edge carries a number, like minutes of travel or a price. This module uses unweighted graphs; weights come later with <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a>.</p>
+
+<p>A tree is a special kind of graph: connected, with no cycles. That is why the ideas from <a href="/algorithms/tree-traversals.html">Tree Traversals</a> carry over. The one new problem is cycles. In a tree you can never walk back to a node you have seen. In a graph you can, so every graph walk needs a way to remember where it has been.</p>
+
+<h2>Storing a graph: the adjacency list</h2>
+
+<p>Problems usually hand you a graph as an <strong>edge list</strong>: a plain list of pairs like <code>[["A","B"], ["A","C"], ...]</code>. That is a poor shape to work with. To find C's neighbours you would scan every edge.</p>
+
+<p>Instead, build an <strong>adjacency list</strong>: a map from each node to the list of its neighbours. Then "who is next to C?" is one lookup. For an undirected graph, each edge goes into two lists, once in each direction.</p>
+
+<x-tracer title="Build the adjacency list for the bus map">
+<script type="application/json">
+{
+  "code": [
+    "for each stop: graph[stop] = []",
+    "for each edge (u, v):",
+    "  graph[u].append(v); graph[v].append(u)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Start with every stop and an empty neighbour list for each. No edges yet.", "line": 1, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": []}, "vars": {"A": "-", "B": "-", "C": "-", "D": "-", "E": "-", "F": "-", "G": "-"}},
+    {"caption": "Edge A–B. The road goes both ways, so add B to A's list <em>and</em> A to B's list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"]], "highlight": ["A", "B"], "highlightEdges": [["A", "B"]]}, "vars": {"A": "B", "B": "A", "C": "-", "D": "-", "E": "-", "F": "-", "G": "-"}},
+    {"caption": "Edge A–C. Two more entries: C into A's list, A into C's list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"]], "highlight": ["A", "C"], "highlightEdges": [["A", "C"]]}, "vars": {"A": "B, C", "B": "A", "C": "A", "D": "-", "E": "-", "F": "-", "G": "-"}},
+    {"caption": "Edge B–D. Two more entries: D into B's list, B into D's list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"]], "highlight": ["B", "D"], "highlightEdges": [["B", "D"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A", "D": "B", "E": "-", "F": "-", "G": "-"}},
+    {"caption": "Edge C–D. This closes a loop: A, B, D, C and back to A. A tree could never have this.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"]], "highlight": ["C", "D"], "highlightEdges": [["C", "D"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D", "D": "B, C", "E": "-", "F": "-", "G": "-"}},
+    {"caption": "Edge C–E. C gets its third neighbour and E gets its first. A busy node simply has a longer list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"], ["C", "E"]], "highlight": ["C", "E"], "highlightEdges": [["C", "E"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D, E", "D": "B, C", "E": "C", "F": "-", "G": "-"}},
+    {"caption": "Edge D–F. Two more entries: F into D's list, D into F's list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"], ["C", "E"], ["D", "F"]], "highlight": ["D", "F"], "highlightEdges": [["D", "F"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D, E", "D": "B, C, F", "E": "C", "F": "D", "G": "-"}},
+    {"caption": "Edge E–F. Two more entries: F into E's list, E into F's list.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"], ["C", "E"], ["D", "F"], ["E", "F"]], "highlight": ["E", "F"], "highlightEdges": [["E", "F"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D, E", "D": "B, C, F", "E": "C, F", "F": "D, E", "G": "-"}},
+    {"caption": "Edge F–G, the last one. G has a single neighbour: it is a dead end.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"], ["C", "E"], ["D", "F"], ["E", "F"], ["F", "G"]], "highlight": ["F", "G"], "highlightEdges": [["F", "G"]]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D, E", "D": "B, C, F", "E": "C, F", "F": "D, E, G", "G": "F"}},
+    {"caption": "Done. 8 edges gave 16 list entries, two per edge. Ask for C's neighbours and you read one short list, not the whole map.", "graph": {"nodes": [{"id": "A", "x": 5, "y": 40}, {"id": "B", "x": 28, "y": 10}, {"id": "C", "x": 28, "y": 70}, {"id": "D", "x": 52, "y": 25}, {"id": "E", "x": 52, "y": 85}, {"id": "F", "x": 76, "y": 55}, {"id": "G", "x": 96, "y": 55}], "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"], ["C", "E"], ["D", "F"], ["E", "F"], ["F", "G"]], "mark": ["A", "B", "C", "D", "E", "F", "G"]}, "vars": {"A": "B, C", "B": "A, D", "C": "A, D, E", "D": "B, C, F", "E": "C, F", "F": "D, E, G", "G": "F", "list entries": 16}}
+  ]
+}
+
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+// nodes: list of names. edges: list of [u, v] pairs, two-way.
+function buildGraph(nodes, edges) {
+  const graph = {};
+  for (const node of nodes) graph[node] = [];
+  for (const [u, v] of edges) {
+    graph[u].push(v);
+    graph[v].push(u); // leave this line out for a directed graph
+  }
+  return graph;
+}
+
+const graph = buildGraph(
+  ["A", "B", "C", "D", "E", "F", "G"],
+  [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"],
+   ["C", "E"], ["D", "F"], ["E", "F"], ["F", "G"]]
+);
+graph["C"]; // ["A", "D", "E"]
+</pre>
+<pre lang="py">
+# nodes: list of names. edges: list of (u, v) pairs, two-way.
+def build_graph(nodes, edges):
+    graph = {node: [] for node in nodes}
+    for u, v in edges:
+        graph[u].append(v)
+        graph[v].append(u)  # leave this line out for a directed graph
+    return graph
+
+graph = build_graph(
+    ["A", "B", "C", "D", "E", "F", "G"],
+    [("A", "B"), ("A", "C"), ("B", "D"), ("C", "D"),
+     ("C", "E"), ("D", "F"), ("E", "F"), ("F", "G")],
+)
+graph["C"]  # ['A', 'D', 'E']
+</pre>
+</x-code>
+
+<p>The other classic layout is an <strong>adjacency matrix</strong>: a V × V table of true/false, where V is the number of nodes, with a mark at row <code>u</code>, column <code>v</code> if there is an edge. It answers "is there an edge between u and v?" in one step. But it always takes V² cells, even when most of them are empty, and listing one node's neighbours means reading a whole row. Most real graphs are sparse (a bus stop has a few neighbours, not thousands), so the adjacency list is the default.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Adjacency list", "time": "O(V + E) to build", "space": "O(V + E)", "note": "One empty list per node, then two entries per edge. Listing a node's neighbours costs its degree." },
+    { "name": "Adjacency matrix", "time": "O(V²) to build", "space": "O(V²)", "note": "Edge check in O(1), but every row has V cells, even for a node with one neighbour." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Grids are graphs too</h2>
+
+<p>A maze, a game board, a map of land and water, the pixels of an image: all of these arrive as a 2D grid. Every cell is a node. Its neighbours are the cells directly up, down, left and right of it, as long as they are inside the grid and not a wall.</p>
+
+<x-figure caption="Cell (1, 1) in a 3 × 4 grid has four neighbours. A cell on the edge has fewer, and walls (#) are not neighbours at all.">
+<svg viewBox="0 0 440 210" aria-label="A grid of 3 rows and 4 columns. The cell at row 1, column 1 is highlighted. The four cells above, below, left and right of it are tinted. Two cells hold a wall sign.">
+  <rect x="40" y="20" width="80" height="54" class="f-surface s-line"/>
+  <rect x="120" y="20" width="80" height="54" class="f-accent-soft s-line"/>
+  <rect x="200" y="20" width="80" height="54" class="f-muted s-line"/>
+  <rect x="280" y="20" width="80" height="54" class="f-surface s-line"/>
+  <rect x="40" y="74" width="80" height="54" class="f-accent-soft s-line"/>
+  <rect x="120" y="74" width="80" height="54" class="f-accent s-line"/>
+  <rect x="200" y="74" width="80" height="54" class="f-accent-soft s-line"/>
+  <rect x="280" y="74" width="80" height="54" class="f-surface s-line"/>
+  <rect x="40" y="128" width="80" height="54" class="f-surface s-line"/>
+  <rect x="120" y="128" width="80" height="54" class="f-accent-soft s-line"/>
+  <rect x="200" y="128" width="80" height="54" class="f-surface s-line"/>
+  <rect x="280" y="128" width="80" height="54" class="f-muted s-line"/>
+  <text x="80" y="52" text-anchor="middle" class="t-small">(0, 0)</text>
+  <text x="160" y="52" text-anchor="middle" class="t-small">(0, 1)</text>
+  <text x="240" y="52" text-anchor="middle" class="t-bold f-bg">#</text>
+  <text x="320" y="52" text-anchor="middle" class="t-small">(0, 3)</text>
+  <text x="80" y="106" text-anchor="middle" class="t-small">(1, 0)</text>
+  <text x="160" y="106" text-anchor="middle" class="t-small t-bold f-bg">(1, 1)</text>
+  <text x="240" y="106" text-anchor="middle" class="t-small">(1, 2)</text>
+  <text x="320" y="106" text-anchor="middle" class="t-small">(1, 3)</text>
+  <text x="80" y="160" text-anchor="middle" class="t-small">(2, 0)</text>
+  <text x="160" y="160" text-anchor="middle" class="t-small">(2, 1)</text>
+  <text x="240" y="160" text-anchor="middle" class="t-small">(2, 2)</text>
+  <text x="320" y="160" text-anchor="middle" class="t-bold f-bg">#</text>
+  <text x="380" y="52" class="t-sans t-small f-muted">row 0</text>
+  <text x="380" y="106" class="t-sans t-small f-muted">row 1</text>
+  <text x="380" y="160" class="t-sans t-small f-muted">row 2</text>
+  <text x="80" y="202" text-anchor="middle" class="t-sans t-small f-muted">col 0</text>
+  <text x="160" y="202" text-anchor="middle" class="t-sans t-small f-muted">col 1</text>
+  <text x="240" y="202" text-anchor="middle" class="t-sans t-small f-muted">col 2</text>
+  <text x="320" y="202" text-anchor="middle" class="t-sans t-small f-muted">col 3</text>
+</svg>
+</x-figure>
+
+<p>You do not build an adjacency list for a grid. The neighbours are easy to compute on the spot: add each of four direction offsets to the row and column, and keep the results that land inside the grid on an open cell.</p>
+
+<x-code>
+<pre lang="js">
+const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]]; // up, down, left, right
+
+function gridNeighbours(grid, r, c) {
+  const result = [];
+  for (const [dr, dc] of DIRS) {
+    const nr = r + dr;
+    const nc = c + dc;
+    const inside = nr >= 0 && nr < grid.length && nc >= 0 && nc < grid[0].length;
+    if (inside && grid[nr][nc] !== "#") result.push([nr, nc]);
+  }
+  return result;
+}
+
+const grid = ["..#.", "....", "...#"];
+gridNeighbours(grid, 1, 1); // [[0, 1], [2, 1], [1, 0], [1, 2]]
+gridNeighbours(grid, 0, 3); // [[1, 3]]
+</pre>
+<pre lang="py">
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+
+def grid_neighbours(grid, r, c):
+    result = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        inside = 0 <= nr < len(grid) and 0 <= nc < len(grid[0])
+        if inside and grid[nr][nc] != "#":
+            result.append((nr, nc))
+    return result
+
+grid = ["..#.", "....", "...#"]
+grid_neighbours(grid, 1, 1)  # [(0, 1), (2, 1), (1, 0), (1, 2)]
+grid_neighbours(grid, 0, 3)  # [(1, 3)]
+</pre>
+</x-code>
+
+<p>A grid with R rows and C columns has R × C nodes and at most 4 edges per node, so it is a sparse graph with O(R × C) nodes and edges. Every graph algorithm in this module works on it unchanged: wherever the code says "for each neighbour", call <code>gridNeighbours</code>.</p>
+
+<x-callout type="key">
+<p>A graph problem rarely says "graph". When you see things plus connections between pairs of them (stops and roads, people and friendships, cells and their sides, tasks and "must come before"), draw dots and lines. Then reach for a graph algorithm.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Adding only one direction">
+<p>For an undirected graph, every edge must go into both lists. If you add only <code>graph[u].push(v)</code>, then B can reach D but D cannot reach B, and a search from D silently misses half the map. Read the problem: "roads connect" means two-way, "depends on" or "follows" means one-way.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting lonely nodes">
+<p>If you only create lists while reading edges, a node with no edges never gets a list. Then <code>graph[node]</code> is <code>undefined</code> in JavaScript and a <code>KeyError</code> in Python, and that node is missing when you count components. Create an empty list for every node first, as the code above does.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Mixing up rows and columns">
+<p>Grid cells are <code>grid[row][col]</code>: row first, which is the y direction. Thinking in (x, y) leads to <code>grid[x][y]</code>, which breaks on any grid that is not square. Name your variables <code>r</code> and <code>c</code>, and check bounds against <code>grid.length</code> for rows and <code>grid[0].length</code> for columns.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Maps and routing apps store road networks as weighted directed graphs. Package managers store "needs" links between libraries as a directed graph. Social networks, the links between web pages and the flood-fill bucket in a paint program are all graphs underneath.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An undirected graph has 5 nodes and 6 edges, stored as an adjacency list. How many entries are there across all the neighbour lists?",
+      "options": [
+        { "text": "6", "why": "Each undirected edge is stored twice, once in each endpoint's list." },
+        { "text": "12", "correct": true, "why": "Two entries per edge: 6 × 2 = 12. That is also why the degrees of all nodes always add up to twice the number of edges." },
+        { "text": "25", "why": "That is the number of cells in a 5 × 5 adjacency matrix, not the size of the lists." }
+      ]
+    },
+    {
+      "question": "In a grid with 3 rows and 4 columns and no walls, how many neighbours does the corner cell (0, 0) have?",
+      "options": [
+        { "text": "2", "correct": true, "why": "Down to (1, 0) and right to (0, 1). Up and left fall outside the grid." },
+        { "text": "3", "why": "Only up, down, left and right count, and two of those leave the grid." },
+        { "text": "4", "why": "Four is for a cell in the middle. The bounds check removes the moves that leave the grid." }
+      ]
+    },
+    {
+      "question": "A social app has 10 million users, and each follows about 200 others. Which storage fits?",
+      "options": [
+        { "text": "Adjacency matrix", "why": "That would be 10 million × 10 million = 100 trillion cells, almost all empty." },
+        { "text": "Adjacency list", "correct": true, "why": "About 2 billion entries in total, one per follow. The list only stores edges that exist." },
+        { "text": "A plain edge list, scanned for every question", "why": "Fine for storage, but finding one user's follows would scan all 2 billion edges each time." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Now that you can store a graph, the next step is to walk it. <a href="/algorithms/breadth-first-search.html">Breadth-First Search</a> answers "what is the fewest-stops trip from A to G?" on this same bus map, and on grids.</p>

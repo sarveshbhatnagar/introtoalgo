@@ -1,0 +1,215 @@
+<!--
+{
+  "title": "Queues and Deques",
+  "description": "Serve items in arrival order with a queue, avoid the O(n) shift trap, and use a deque when you need to add or remove at both ends.",
+  "minutes": 14,
+  "tags": ["queues", "deques", "data structures"]
+}
+-->
+<p>A print shop has one printer and a line of jobs. The rule is simple and fair: whoever sent their job first gets printed first. A new job joins at the back of the line. The printer always takes the job at the front.</p>
+
+<p>That line is a queue. It is the mirror image of a <a href="/algorithms/stacks.html">stack</a>: a stack serves the newest item first, a queue serves the oldest.</p>
+
+<h2>The idea: in at the back, out at the front</h2>
+
+<p>A queue has two ends with two different jobs. You <strong>enqueue</strong> at the back and <strong>dequeue</strong> from the front. The first item in is the first item out, so a queue is called <strong>first in, first out</strong> (FIFO). Like a stack, it also lets you peek at the front without removing it.</p>
+
+<p>Queues appear whenever work must be handled in arrival order: requests to a web server, messages between programs, keystrokes waiting to be processed. In algorithms, the big one is <a href="/algorithms/breadth-first-search.html">breadth-first search</a>, which explores a graph level by level by keeping the places to visit in a queue.</p>
+
+<h2>A queue in action: taking turns</h2>
+
+<p>Here is a fair way to share one processor between jobs of different lengths. Each job gets one unit of work, then goes to the back of the line if it still has work left. Short jobs finish early, and no long job can hog the processor. This is called <strong>round robin</strong>.</p>
+
+<p>Three jobs arrive: A needs 3 units, B needs 1, C needs 2. Step through the turns and watch the front of the queue.</p>
+
+<x-tracer title="Round robin with jobs A:3, B:1, C:2">
+<script type="application/json">
+{
+  "code": [
+    "while queue is not empty:",
+    "  job = dequeue()",
+    "  run job for 1 unit, time += 1",
+    "  if job has work left: enqueue(job)",
+    "  else: record (job, time)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The jobs wait in arrival order. The front of the queue is on the left. Each cell shows the job and the units it still needs.", "line": 1, "arrays": [ { "label": "queue (front on the left)", "values": ["A:3", "B:1", "C:2"], "pointers": { "front": 0 } }, { "label": "finished", "values": [] } ], "vars": { "time": 0 } },
+    { "caption": "Take A from the front and run it once. It still needs 2 units, so it goes to the back of the line, behind C.", "line": 4, "arrays": [ { "label": "queue (front on the left)", "values": ["B:1", "C:2", "A:2"], "pointers": { "front": 0 }, "highlight": [2] }, { "label": "finished", "values": [] } ], "vars": { "time": 1, "ran": "A" } },
+    { "caption": "B is at the front now. One unit finishes it at time 2. It leaves for good.", "line": 5, "arrays": [ { "label": "queue (front on the left)", "values": ["C:2", "A:2"], "pointers": { "front": 0 } }, { "label": "finished", "values": ["B@2"], "mark": [0] } ], "vars": { "time": 2, "ran": "B" } },
+    { "caption": "C runs once and has 1 unit left. Back of the line.", "line": 4, "arrays": [ { "label": "queue (front on the left)", "values": ["A:2", "C:1"], "pointers": { "front": 0 }, "highlight": [1] }, { "label": "finished", "values": ["B@2"] } ], "vars": { "time": 3, "ran": "C" } },
+    { "caption": "A gets its second turn and has 1 unit left. Back of the line again.", "line": 4, "arrays": [ { "label": "queue (front on the left)", "values": ["C:1", "A:1"], "pointers": { "front": 0 }, "highlight": [1] }, { "label": "finished", "values": ["B@2"] } ], "vars": { "time": 4, "ran": "A" } },
+    { "caption": "C finishes at time 5.", "line": 5, "arrays": [ { "label": "queue (front on the left)", "values": ["A:1"], "pointers": { "front": 0 } }, { "label": "finished", "values": ["B@2", "C@5"], "mark": [1] } ], "vars": { "time": 5, "ran": "C" } },
+    { "caption": "A finishes at time 6. The queue is empty, so the loop stops. Six turns for six units of work, and each turn was one O(1) dequeue plus at most one O(1) enqueue.", "line": 5, "arrays": [ { "label": "queue (front on the left)", "values": [] }, { "label": "finished", "values": ["B@2", "C@5", "A@6"], "mark": [0, 1, 2] } ], "vars": { "time": 6, "turns": 6 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Making dequeue O(1)</h2>
+
+<p>The obvious way to build a queue is an array: <code>push</code> to enqueue and <code>shift</code> to dequeue (<code>append</code> and <code>pop(0)</code> in Python). It gives the right answers, but as you saw in <a href="/algorithms/arrays.html">Arrays</a>, removing the first item can shift every other item one slot left. Python's <code>pop(0)</code> always does. JavaScript engines sometimes avoid it for <code>shift</code>, but you cannot count on it, and on large arrays they do shift. Then each dequeue is O(n), and a loop that empties a queue of n items is O(n²).</p>
+
+<p>There are three standard fixes:</p>
+
+<ul>
+<li><strong>Keep a head index.</strong> Do not remove anything. Keep an index <code>head</code> that marks the front and add 1 to dequeue. Simple and fast; the cost is that used slots are never freed.</li>
+<li><strong>Use a linked list with a tail pointer.</strong> Dequeue removes the head, enqueue attaches after the tail. Both are O(1), as in <a href="/algorithms/linked-lists.html">Linked Lists</a>.</li>
+<li><strong>Use the library's deque.</strong> Python's <code>collections.deque</code> is built for this. JavaScript has no built-in queue, so the head-index trick is the usual choice there.</li>
+</ul>
+
+<p>Here is the round robin from the tracer. The JavaScript version uses a head index; the Python version uses <code>deque</code>.</p>
+
+<x-code>
+<pre lang="js">
+// jobs: list of [name, units of work]. Each turn gets 1 unit.
+function roundRobin(jobs) {
+  const queue = jobs.map(([name, left]) => ({ name, left }));
+  let head = 0; // index of the front of the queue
+  let time = 0;
+  const finished = [];
+  while (head < queue.length) {
+    const job = queue[head];
+    head++;                 // dequeue: O(1), nothing shifts
+    job.left--;
+    time++;
+    if (job.left > 0) queue.push(job); // not done: back of the line
+    else finished.push([job.name, time]);
+  }
+  return finished;
+}
+
+roundRobin([["A", 3], ["B", 1], ["C", 2]]);
+// [["B", 2], ["C", 5], ["A", 6]]
+</pre>
+<pre lang="py">
+from collections import deque
+
+# jobs: list of (name, units of work). Each turn gets 1 unit.
+def round_robin(jobs):
+    queue = deque([name, left] for name, left in jobs)
+    time = 0
+    finished = []
+    while queue:
+        job = queue.popleft()  # dequeue: O(1)
+        job[1] -= 1
+        time += 1
+        if job[1] > 0:
+            queue.append(job)  # not done: back of the line
+        else:
+            finished.append((job[0], time))
+    return finished
+
+round_robin([("A", 3), ("B", 1), ("C", 2)])
+# [('B', 2), ('C', 5), ('A', 6)]
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Array with shift / pop(0)", "time": "O(n) per dequeue", "space": "O(n)", "note": "Every remaining item moves one slot." },
+    { "name": "Array with a head index", "time": "O(1) per operation", "space": "O(total enqueued)", "note": "Fast, but dequeued slots are never reused." },
+    { "name": "Linked list or deque", "time": "O(1) per operation", "space": "O(n)", "note": "Memory follows what is in the queue right now." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Deques: both ends open</h2>
+
+<p>Sometimes you need more than one door. A <strong>deque</strong> (say "deck", short for double-ended queue) lets you add and remove at <em>both</em> ends, all in O(1). A stack and a queue are each a deque with some doors locked.</p>
+
+<x-figure caption="A deque has four O(1) operations: add or remove at the front, and add or remove at the back.">
+<svg viewBox="0 0 480 150" aria-label="A row of four boxes holding 3, 8, 5, 1. On the left, arrows show push front going in and pop front coming out. On the right, arrows show push back going in and pop back coming out.">
+  <defs><marker id="qd-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <rect x="140" y="50" width="48" height="40" rx="6" class="f-surface s-line"/><text x="164" y="75" text-anchor="middle">3</text>
+  <rect x="192" y="50" width="48" height="40" rx="6" class="f-surface s-line"/><text x="216" y="75" text-anchor="middle">8</text>
+  <rect x="244" y="50" width="48" height="40" rx="6" class="f-surface s-line"/><text x="268" y="75" text-anchor="middle">5</text>
+  <rect x="296" y="50" width="48" height="40" rx="6" class="f-surface s-line"/><text x="320" y="75" text-anchor="middle">1</text>
+  <text x="164" y="112" text-anchor="middle" class="t-sans t-small f-muted">front</text>
+  <text x="320" y="112" text-anchor="middle" class="t-sans t-small f-muted">back</text>
+  <line x1="40" y1="56" x2="132" y2="56" class="s-accent" stroke-width="2.5" marker-end="url(#qd-arrow)"/>
+  <text x="10" y="40" class="t-sans f-accent">push front</text>
+  <line x1="132" y1="84" x2="40" y2="84" class="s-accent" stroke-width="2.5" marker-end="url(#qd-arrow)"/>
+  <text x="10" y="112" class="t-sans f-accent">pop front</text>
+  <line x1="440" y1="56" x2="352" y2="56" class="s-accent" stroke-width="2.5" marker-end="url(#qd-arrow)"/>
+  <text x="470" y="40" text-anchor="end" class="t-sans f-accent">push back</text>
+  <line x1="352" y1="84" x2="440" y2="84" class="s-accent" stroke-width="2.5" marker-end="url(#qd-arrow)"/>
+  <text x="470" y="112" text-anchor="end" class="t-sans f-accent">pop back</text>
+</svg>
+</x-figure>
+
+<table>
+<thead><tr><th>Operation</th><th>Python <code>deque</code></th><th>JavaScript array + head index</th></tr></thead>
+<tbody>
+<tr><td>push back</td><td><code>d.append(x)</code></td><td><code>a.push(x)</code></td></tr>
+<tr><td>pop back</td><td><code>d.pop()</code></td><td><code>a.pop()</code> (only while <code>head &lt; a.length</code>)</td></tr>
+<tr><td>pop front</td><td><code>d.popleft()</code></td><td><code>a[head++]</code></td></tr>
+<tr><td>push front</td><td><code>d.appendleft(x)</code></td><td>not available</td></tr>
+<tr><td>peek front / back</td><td><code>d[0]</code>, <code>d[-1]</code></td><td><code>a[head]</code>, <code>a[a.length - 1]</code></td></tr>
+</tbody>
+</table>
+
+<p>The head-index array covers every operation except push front, and most algorithms never need that one. For a full deque in JavaScript, use a ring buffer (a fixed array whose front and back indexes wrap around) or a doubly linked list.</p>
+
+<p>Picture a list of visited pages capped at 50. A new page is pushed at the back. The back button pops from the back, like a stack. When the list grows past 50, the oldest page is popped from the front, like a queue. Python has this cap built in: <code>deque(maxlen=50)</code> drops from the front automatically.</p>
+
+<x-callout type="key">
+<p>A queue serves the oldest item first; a deque lets you work at both ends. Both should cost O(1) per operation. If your queue code ever removes from the front of a plain array, it is not O(1).</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="shift() or pop(0) in a loop">
+<p><code>while (queue.length) queue.shift()</code> looks like one pass, but on a large queue it is O(n²), because each <code>shift</code> moves everything left. With 100,000 items that is about 5 billion moves. Use a head index in JavaScript and <code>collections.deque</code> in Python.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Checking the wrong length">
+<p>With a head index, the array still holds the dequeued items. <code>queue.length === 0</code> is never true once anything was added, so a loop on it runs forever or reads past the end. The queue is empty when <code>head === queue.length</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A head index in a long-running queue">
+<p>The head-index trick never frees memory. For one algorithm run, like a breadth-first search, that is fine. For a server queue that runs for days, the array grows forever. Use a ring buffer or a linked list, or copy the live part to a fresh array whenever <code>head</code> passes half the length.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Start with an empty queue. Enqueue 4, enqueue 9, dequeue, enqueue 1, enqueue 6, dequeue. What is at the front now?",
+      "options": [
+        { "text": "1", "correct": true, "why": "After enqueue 4, 9 and one dequeue, the queue is [9]. Enqueue 1 and 6 gives [9, 1, 6]. Dequeue removes 9, so 1 is at the front." },
+        { "text": "9", "why": "9 was at the front when the second dequeue ran, so it was removed." },
+        { "text": "6", "why": "6 is at the back. That is where a stack would take from, not a queue." },
+        { "text": "4", "why": "4 arrived first, so the first dequeue removed it." }
+      ]
+    },
+    {
+      "question": "A JavaScript function processes a list of n tasks with <code>while (tasks.length) handle(tasks.shift())</code>. <code>handle</code> is O(1). What is the total cost?",
+      "options": [
+        { "text": "O(n)", "why": "There is one visible loop, but <code>shift</code> hides another: it moves every remaining item." },
+        { "text": "O(n²)", "correct": true, "why": "Each <code>shift</code> costs O(remaining items). Adding those up over n removals gives about n²/2 moves." },
+        { "text": "O(n log n)", "why": "Nothing halves here. The shifting costs n − 1, then n − 2, and so on." }
+      ]
+    },
+    {
+      "question": "Which job needs a deque rather than a plain queue or stack?",
+      "options": [
+        { "text": "Serving customers in arrival order", "why": "Add at the back, remove at the front: a plain queue does it." },
+        { "text": "Undo in a text editor", "why": "Add and remove at the same end: a stack does it." },
+        { "text": "An undo history capped at 100 steps", "correct": true, "why": "Undo pops from the back like a stack, and the cap drops the oldest step from the front. That needs both ends." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Try <a href="/practice/two-spike-order-rail.html">Two-Spike Order Rail</a>, which builds a queue out of two stacks. Queues drive <a href="/algorithms/breadth-first-search.html">Breadth-First Search</a>, so you will use the head-index trick again there. Before that, <a href="/algorithms/monotonic-stack.html">Monotonic Stack</a> shows how a stack, and then a deque, can keep its items in sorted order to answer "next bigger" and "biggest in this window" questions in O(n).</p>

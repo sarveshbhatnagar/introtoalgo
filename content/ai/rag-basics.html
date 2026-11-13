@@ -1,0 +1,260 @@
+<!--
+{
+  "title": "RAG Basics",
+  "description": "Retrieval-augmented generation: find the passages that match a question, put them in the prompt, and get answers grounded in your own documents.",
+  "minutes": 15,
+  "tags": ["context", "retrieval", "embeddings"]
+}
+-->
+<p>Two students sit the same exam. One studied the textbook a year ago and answers from memory. The other is allowed to bring three pages of notes, but only three, and must pick them right before the exam starts. On questions about the topics in those three pages, the second student wins easily, and can point to exactly where each answer came from.</p>
+
+<p>A model answering from training is the first student. A shop's help pages, a company handbook or last week's meeting notes were never in that memory. You could paste them all into every request, but a real document collection is far bigger than any <a href="/ai/the-context-window.html">context window</a>. The fix is to be the second student: look up the few passages that matter, then answer from them.</p>
+
+<h2>Retrieve, augment, generate</h2>
+
+<p>That is all <strong>RAG</strong> (retrieval-augmented generation) means:</p>
+
+<ol>
+<li><strong>Retrieve.</strong> Search your documents for the passages most related to the question.</li>
+<li><strong>Augment.</strong> Put those passages into the prompt, with instructions to answer from them.</li>
+<li><strong>Generate.</strong> The model writes the answer, ideally quoting or citing the passages.</li>
+</ol>
+
+<p>The model is unchanged. RAG is a <a href="/ai/context-engineering.html">context engineering</a> technique: an automatic way to select the right material for each question.</p>
+
+<p>The search usually works on meaning rather than exact words, using <a href="/ai/embeddings.html">embeddings</a>. That matters because people rarely use the same words as your documents. Someone asks "when do I get my money back?" and the answer sits under the heading "Refund processing times".</p>
+
+<x-figure wide caption="Two phases. Indexing runs once (and again when documents change). The query path runs on every question.">
+<svg viewBox="0 0 620 250" aria-label="Top row, labelled indexing, once: documents, then split into chunks, then embed each chunk, then store vectors. Bottom row, labelled every question: question, then embed, then compare with stored vectors and take the top k, then prompt with passages, then answer. An arrow goes from the store down to the compare step.">
+  <defs><marker id="rag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <text x="10" y="22" class="t-sans t-bold">Indexing (once)</text>
+  <rect x="10" y="35" width="110" height="44" rx="8" class="f-surface s-line"/><text x="65" y="62" text-anchor="middle" class="t-sans">documents</text>
+  <rect x="160" y="35" width="120" height="44" rx="8" class="f-surface s-line"/><text x="220" y="62" text-anchor="middle" class="t-sans">split in chunks</text>
+  <rect x="320" y="35" width="120" height="44" rx="8" class="f-surface s-line"/><text x="380" y="62" text-anchor="middle" class="t-sans">embed each</text>
+  <rect x="480" y="35" width="130" height="44" rx="8" class="f-info s-line"/><text x="545" y="62" text-anchor="middle" class="t-sans f-bg">vector store</text>
+  <line x1="122" y1="57" x2="156" y2="57" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <line x1="282" y1="57" x2="316" y2="57" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <line x1="442" y1="57" x2="476" y2="57" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <text x="10" y="142" class="t-sans t-bold">Every question</text>
+  <rect x="10" y="155" width="100" height="44" rx="8" class="f-accent-soft s-accent"/><text x="60" y="182" text-anchor="middle" class="t-sans">question</text>
+  <rect x="135" y="155" width="90" height="44" rx="8" class="f-surface s-line"/><text x="180" y="182" text-anchor="middle" class="t-sans">embed</text>
+  <rect x="250" y="155" width="120" height="44" rx="8" class="f-surface s-line"/><text x="310" y="175" text-anchor="middle" class="t-sans">compare,</text><text x="310" y="192" text-anchor="middle" class="t-sans">take top k</text>
+  <rect x="395" y="155" width="110" height="44" rx="8" class="f-surface s-line"/><text x="450" y="175" text-anchor="middle" class="t-sans">prompt with</text><text x="450" y="192" text-anchor="middle" class="t-sans">passages</text>
+  <rect x="530" y="155" width="80" height="44" rx="8" class="f-good-soft s-good"/><text x="570" y="182" text-anchor="middle" class="t-sans">answer</text>
+  <line x1="112" y1="177" x2="131" y2="177" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <line x1="227" y1="177" x2="246" y2="177" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <line x1="372" y1="177" x2="391" y2="177" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <line x1="507" y1="177" x2="526" y2="177" class="s-accent" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <path d="M545 81 L545 120 L310 120 L310 151" class="s-accent s-dash f-none" stroke-width="2" marker-end="url(#rag-arrow)"/>
+  <text x="430" y="114" text-anchor="middle" class="t-sans t-small f-muted">stored vectors</text>
+</svg>
+</x-figure>
+
+<p>Indexing is the slow part, so it happens ahead of time. Each document is cut into passages called <strong>chunks</strong> (how to cut them well is the whole of <a href="/ai/chunking-and-retrieval.html">the next lesson</a>), each chunk is turned into a vector, and the vectors are saved. At question time you only embed the question and compare.</p>
+
+<h2>Retrieval by hand</h2>
+
+<p>A bookshop's help centre has five chunks. To trace it by hand, pretend embeddings have just three numbers, meaning roughly "about money", "about shipping" and "about accounts". Real embeddings have hundreds or thousands of dimensions, but the arithmetic is the same.</p>
+
+<p>The question "When will I get my money back?" embeds to <code>[5, 1, 0]</code>: mostly money, a little shipping. Its length is √26 ≈ 5.10. Score each chunk with cosine similarity, from the <a href="/ai/embeddings.html">Embeddings</a> lesson, and keep the top 2.</p>
+
+<x-tracer title="Top 2 chunks for &quot;When will I get my money back?&quot;">
+<script type="application/json">
+{
+  "code": [
+    "q = embed(question)",
+    "for each chunk c:",
+    "  score[c] = cosine(q, vector[c])",
+    "sort chunks by score, highest first",
+    "return the first k"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Refund times, <code>[4, 1, 0]</code>: dot = 20 + 1 + 0 = 21, length √17 ≈ 4.12. Cosine = 21 / (5.10 × 4.12) ≈ 1.00. Nearly the same direction, with no shared words.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 0 }, "highlight": [0] }, { "label": "score", "values": [1.0, null, null, null, null], "highlight": [0] } ], "vars": { "q": "[5, 1, 0]", "dot": 21 } },
+    { "caption": "Returns rules, <code>[3, 2, 0]</code>: dot = 15 + 2 = 17, length √13 ≈ 3.61. Cosine ≈ 0.92. About money and about sending things back.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 1 }, "highlight": [1] }, { "label": "score", "values": [1.0, 0.92, null, null, null], "highlight": [1] } ], "vars": { "q": "[5, 1, 0]", "dot": 17 } },
+    { "caption": "Delivery times, <code>[0, 5, 1]</code>: dot = 0 + 5 + 0 = 5, length √26 ≈ 5.10. Cosine ≈ 0.19. It is mostly about shipping, so it points a different way from a money question, even though both ask how long something takes.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 2 }, "highlight": [2] }, { "label": "score", "values": [1.0, 0.92, 0.19, null, null], "highlight": [2] } ], "vars": { "q": "[5, 1, 0]", "dot": 5 } },
+    { "caption": "Password reset, <code>[0, 0, 5]</code>: dot = 0. Cosine = 0. Completely unrelated.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 3 }, "highlight": [3] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, null], "highlight": [3] } ], "vars": { "q": "[5, 1, 0]", "dot": 0 } },
+    { "caption": "Gift cards are non-refundable, <code>[2, 0, 1]</code>: dot = 10, length √5 ≈ 2.24. Cosine ≈ 0.88. Close behind, because it is also about money.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 4 }, "highlight": [4] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, 0.88], "highlight": [4] } ], "vars": { "q": "[5, 1, 0]", "dot": 10 } },
+    { "caption": "Sort and keep k = 2: refund times and returns rules go into the prompt. Five comparisons, one per chunk. The gift-card chunk came a close third, a reminder that k is a judgement call.", "line": 5, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "gift card", "delivery", "password"], "mark": [0, 1], "dim": [3, 4] }, { "label": "score", "values": [1.0, 0.92, 0.88, 0.19, 0.0], "mark": [0, 1], "dim": [3, 4] } ], "vars": { "k": 2, "comparisons": 5 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>Here is the retrieval step and the prompt it builds. The <code>embed</code> function is whatever embedding model you use; the vectors below are the toy ones from the trace.</p>
+
+<x-code>
+<pre lang="js">
+const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
+const cosine = (a, b) => dot(a, b) / Math.sqrt(dot(a, a) * dot(b, b));
+
+function topK(queryVec, chunks, k) {
+  return chunks
+    .map((c) => ({ ...c, score: cosine(queryVec, c.vec) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k);
+}
+
+function buildPrompt(question, passages) {
+  const sources = passages.map((p, i) => `[${i + 1}] ${p.text}`).join("\n");
+  return `Answer using only the sources below. Cite them like [1].
+If they do not contain the answer, say "I don't know."
+
+${sources}
+
+Question: ${question}`;
+}
+
+const chunks = [
+  { text: "Refunds reach your card 5 to 7 days after we receive the return.", vec: [4, 1, 0] },
+  { text: "You can return items within 30 days of delivery.", vec: [3, 2, 0] },
+  { text: "Standard delivery takes 2 to 4 working days.", vec: [0, 5, 1] },
+  { text: "Reset your password from the sign-in page.", vec: [0, 0, 5] },
+  { text: "Gift cards cannot be refunded.", vec: [2, 0, 1] },
+];
+const best = topK([5, 1, 0], chunks, 2);
+console.log(buildPrompt("When will I get my money back?", best));
+</pre>
+<pre lang="py">
+import math
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def cosine(a, b):
+    return dot(a, b) / math.sqrt(dot(a, a) * dot(b, b))
+
+def top_k(query_vec, chunks, k):
+    scored = [{**c, "score": cosine(query_vec, c["vec"])} for c in chunks]
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return scored[:k]
+
+def build_prompt(question, passages):
+    sources = "\n".join(f"[{i + 1}] {p['text']}" for i, p in enumerate(passages))
+    return (
+        "Answer using only the sources below. Cite them like [1].\n"
+        'If they do not contain the answer, say "I don\'t know."\n\n'
+        f"{sources}\n\nQuestion: {question}"
+    )
+
+chunks = [
+    {"text": "Refunds reach your card 5 to 7 days after we receive the return.", "vec": [4, 1, 0]},
+    {"text": "You can return items within 30 days of delivery.", "vec": [3, 2, 0]},
+    {"text": "Standard delivery takes 2 to 4 working days.", "vec": [0, 5, 1]},
+    {"text": "Reset your password from the sign-in page.", "vec": [0, 0, 5]},
+    {"text": "Gift cards cannot be refunded.", "vec": [2, 0, 1]},
+]
+best = top_k([5, 1, 0], chunks, 2)
+print(build_prompt("When will I get my money back?", best))
+</pre>
+</x-code>
+
+<p>The printed prompt, sent to a model, looks like this:</p>
+
+<x-prompt label="Augmented prompt" tone="good">
+<x-user>
+Answer using only the sources below. Cite them like [1].
+If they do not contain the answer, say "I don't know."
+
+[1] Refunds reach your card 5 to 7 days after we receive the return.
+[2] You can return items within 30 days of delivery.
+
+Question: When will I get my money back?
+</x-user>
+<x-model>
+Your refund reaches your card 5 to 7 days after the shop receives your return [1]. You need to send the item back within 30 days of delivery [2].
+</x-model>
+</x-prompt>
+
+<p>The instruction "say I don't know" is not decoration. Without it, when retrieval finds nothing useful, the model falls back on its training and produces a confident, generic answer that looks just as grounded as a real one.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Compare with every chunk", "time": "O(n·d + n log n)", "space": "O(n)", "note": "n chunks with d numbers each, then a sort. Fine for thousands of chunks." },
+    { "name": "Approximate index", "time": "much less than O(n·d)", "space": "O(n·d)", "note": "Vector databases use indexes that check only promising regions, trading a little accuracy for big speed-ups at millions of chunks." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>When RAG is the right tool</h2>
+
+<ul>
+<li><strong>Use it</strong> when the material is too big to send whole, changes often, or is private. Updating the documents updates the answers, with no retraining.</li>
+<li><strong>Skip it</strong> when the material is small. If the whole handbook fits comfortably, sending all of it avoids retrieval mistakes entirely.</li>
+<li><strong>Do not use fine-tuning instead</strong> for facts that change. <a href="/ai/training-and-fine-tuning.html">Fine-tuning</a> is good for teaching a style or format; it is a poor way to store facts you will need to correct next month.</li>
+</ul>
+
+<x-callout type="key">
+<p>A RAG answer can only be as good as what was retrieved. When answers are wrong, check the retrieved passages before you touch the prompt.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Blaming the model for a retrieval miss">
+<p>If the right passage never reached the prompt, no wording will fix the answer. Log what was retrieved for each question, and test retrieval on its own with questions whose correct passage you know.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Mixing embedding models">
+<p>Vectors from two different embedding models are not comparable, like coordinates on two different maps. If you change the model, re-embed every chunk, not only new ones.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Trusting whatever comes back">
+<p>Retrieved text can be outdated, wrong, or written by someone trying to steer the model. Keep stale documents out of the index, and treat retrieved passages as material to answer from, never as instructions to follow.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Retrieval or generation">
+<x-task>
+<p>A staff assistant was asked "How many days of parental leave do we get?" It answered "Most companies offer 12 weeks." The two retrieved passages were: [1] "Annual leave: 25 days per year, plus public holidays." [2] "Sick leave must be reported to your manager before 10am." Where did the system fail, and what would you change? There are two separate problems.</p>
+</x-task>
+<x-answer>
+<p><strong>Problem 1: retrieval.</strong> Neither passage is about parental leave. Either the parental leave policy is not in the index, or it was chunked or embedded badly so a generic "leave" match beat it. Check whether the policy exists in the store, then search for it directly to see where it ranks.</p>
+<p><strong>Problem 2: generation.</strong> Given passages that did not answer the question, the model should have said so. Instead it answered from general knowledge. Add (or strengthen) an instruction such as: "If the sources do not answer the question, reply: I couldn't find this in the staff handbook." Asking for citations also helps, because an answer with no source to cite stands out.</p>
+<p>Fixing only the prompt would make it honest but still unhelpful. Fixing only retrieval would leave it free to invent answers next time something is missing. Fix both.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Why does RAG usually search with embeddings rather than exact keywords?",
+      "options": [
+        { "text": "Embeddings are faster than any keyword search", "why": "Keyword search is often faster. Speed is not the main reason." },
+        { "text": "People phrase questions differently from the documents, and embeddings match meaning", "correct": true, "why": "Right. \"Money back\" and \"refund\" share no words but point in nearly the same direction." },
+        { "text": "Models can only read embeddings", "why": "The retrieved chunks are sent to the model as ordinary text. Embeddings are only used to find them." }
+      ]
+    },
+    {
+      "question": "Your company's policies change every month. Which approach keeps a staff assistant's answers current most easily?",
+      "options": [
+        { "text": "Fine-tune the model on the policies every month", "why": "Possible, but slow and costly, and facts learned in training are hard to correct and cannot be cited." },
+        { "text": "RAG over the policy documents, re-indexing when they change", "correct": true, "why": "Right. Update the documents and the next question retrieves the new text." },
+        { "text": "Write the policies into the model's instructions once", "why": "Fine if they are short, but the instructions would still need updating, and large policy sets will not fit." }
+      ]
+    },
+    {
+      "question": "In the trace, the gift-card chunk scored 0.88 but was left out. What would happen with k = 3?",
+      "options": [
+        { "text": "It would be included as the third passage", "correct": true, "why": "Right. It was third with 0.88. A larger k gives the model more to work with, at the cost of more tokens and more chance of distraction." },
+        { "text": "Nothing changes, because 0.88 is too low", "why": "Top-k has no score cutoff unless you add one. With k = 3, the third-best chunk goes in whatever its score." },
+        { "text": "The delivery chunk would be included", "why": "Delivery scored 0.19, fourth place. It would need k = 4." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Retrieval quality starts with how documents are cut up. <a href="/ai/chunking-and-retrieval.html">Chunking and Retrieval</a> covers chunk size, overlap, and the tricks that fix the most common misses.</p>

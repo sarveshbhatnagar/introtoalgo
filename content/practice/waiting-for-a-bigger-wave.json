@@ -1,0 +1,132 @@
+{
+  "slug": "waiting-for-a-bigger-wave",
+  "title": "Waiting for a Bigger Wave",
+  "topic": "linked-lists-stacks-queues",
+  "difficulty": "medium",
+  "pattern": "monotonic stack",
+  "aka": "Daily Temperatures",
+  "order": 11,
+  "story": [
+    "<p>A surf school gets an hourly forecast of wave heights, in centimetres, for the day ahead. Students who arrive at a given hour always ask the same thing: if I paddle out now, how long until a wave bigger than this one comes in?</p>",
+    "<p>The school wants the answer for every hour of the forecast, printed on the board each morning.</p>"
+  ],
+  "task": [
+    "<p>Write <code>hoursUntilBigger(heights)</code>. <code>heights[i]</code> is the forecast wave height in hour <code>i</code>. Return a list <code>wait</code> of the same length, where <code>wait[i]</code> is the number of hours from hour <code>i</code> until the first later hour with a <strong>strictly</strong> taller wave. If no later hour has a taller wave, <code>wait[i]</code> is 0.</p>",
+    "<p>An empty forecast gives an empty list.</p>"
+  ],
+  "constraints": [
+    "0 ≤ heights.length ≤ 100,000",
+    "1 ≤ heights[i] ≤ 1,000"
+  ],
+  "examples": [
+    {
+      "args": [[5, 3, 4, 8, 6, 7]],
+      "expected": [3, 1, 1, 0, 1, 0],
+      "explanation": "Hour 0 (5 cm) waits until hour 3 (8 cm): 3 hours. Hour 1 (3 cm) only waits 1 hour for the 4 cm wave. Hour 2 (4 cm) waits 1 hour for 8. Nothing after hour 3 beats 8, so it gets 0. Hour 4 (6 cm) waits 1 hour for 7. The last hour has nothing after it: 0."
+    },
+    {
+      "args": [[4, 4, 2, 4]],
+      "expected": [0, 0, 1, 0],
+      "explanation": "A 4 cm wave is not bigger than another 4 cm wave. Only hour 2 (2 cm) sees a taller wave, 1 hour later."
+    }
+  ],
+  "hints": [
+    "In <code>[5, 3, 4, 8]</code>, when you reach the 8, which earlier hours get their answer at that moment?",
+    "When a tall wave arrives, it answers every earlier hour that is still waiting and is smaller than it. So the hours still waiting, from oldest to newest, never get taller: if a newer one were taller than an older one, it would already have answered it.",
+    "Keep the hours that are still waiting on a stack, newest on top. A new wave only has to look at the top: if it is taller than the top, it answers it and checks the next one; if not, it stops, because everything below is at least as tall.",
+    "Walk the hours left to right with a stack of indexes. For each hour <code>i</code>: while the stack is not empty and <code>heights[top] &lt; heights[i]</code>, pop <code>top</code> and set <code>wait[top] = i - top</code>. Then push <code>i</code>. Anything left on the stack at the end keeps 0."
+  ],
+  "bruteForce": [
+    "<p>For each hour, scan forward until you find a taller wave. That is two nested loops.</p>",
+    "<p>When the forecast is mostly falling, each scan runs to the end, so the total is about n² / 2 steps. With 100,000 hours that is around 5 billion steps. The waste: the same small waves are scanned again and again by every hour that comes before them.</p>"
+  ],
+  "signature": {
+    "function": "hoursUntilBigger",
+    "params": [
+      {
+        "name": "heights",
+        "type": "int[]"
+      }
+    ],
+    "returns": "int[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number[]} heights  wave height for each hour",
+      " * @return {number[]} hours to wait for a strictly taller wave (0 if never)",
+      " */",
+      "function hoursUntilBigger(heights) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def hours_until_bigger(heights: list[int]) -> list[int]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[]], "expected": [], "note": "no forecast"},
+    {"args": [[12]], "expected": [0], "note": "one hour"},
+    {"args": [[5, 5, 5, 5]], "expected": [0, 0, 0, 0], "note": "equal is not bigger"},
+    {"args": [[1, 2, 3, 4, 5]], "expected": [1, 1, 1, 1, 0], "note": "every hour beats the one before"},
+    {"args": [[9, 7, 5, 3, 1]], "expected": [0, 0, 0, 0, 0], "note": "only shrinking: all zeros"},
+    {"args": [[3, 3, 4]], "expected": [2, 1, 0], "note": "ties wait together for the same taller wave"},
+    {"args": [[8, 1, 1, 1, 1, 1, 1, 9]], "expected": [7, 6, 5, 4, 3, 2, 1, 0], "note": "the answer for the first hour is far away"},
+    {"args": [[2, 6, 3, 4, 1, 7, 5]], "expected": [1, 4, 1, 2, 1, 0, 0]},
+    {"args": [[10, 4, 5, 3, 6, 2, 12, 1]], "expected": [6, 1, 2, 1, 2, 1, 0, 0]},
+    {"args": [[1, 500, 1, 500, 1, 500]], "expected": [1, 0, 1, 0, 1, 0], "note": "alternating"},
+    {"args": [[300, 299, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 301]], "expected": [12, 11, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], "note": "a long climb finally beats the start"},
+    {"args": [[7, 3, 7, 3, 7, 8]], "expected": [5, 1, 3, 1, 1, 0], "note": "equal heights do not count, a later taller one does"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function hoursUntilBigger(heights) {",
+      "  const wait = new Array(heights.length).fill(0);",
+      "  const waiting = []; // indexes still waiting; their heights never increase upward",
+      "  for (let i = 0; i < heights.length; i++) {",
+      "    // the new wave answers every smaller wave still waiting",
+      "    while (waiting.length > 0 && heights[waiting[waiting.length - 1]] < heights[i]) {",
+      "      const j = waiting.pop();",
+      "      wait[j] = i - j;",
+      "    }",
+      "    waiting.push(i);",
+      "  }",
+      "  return wait; // hours left on the stack keep 0",
+      "}"
+    ],
+    "py": [
+      "def hours_until_bigger(heights):",
+      "    wait = [0] * len(heights)",
+      "    waiting = []  # indexes still waiting; their heights never increase upward",
+      "    for i, h in enumerate(heights):",
+      "        # the new wave answers every smaller wave still waiting",
+      "        while waiting and heights[waiting[-1]] < h:",
+      "            j = waiting.pop()",
+      "            wait[j] = i - j",
+      "        waiting.append(i)",
+      "    return wait  # hours left on the stack keep 0"
+    ],
+    "walkthrough": [
+      "<p>Turn the question around. Instead of each hour looking forward for its answer, let each new wave look back and answer every earlier hour it beats. The hours still waiting sit on a stack, and their heights never increase from bottom to top, so a new wave only needs to check the top.</p>",
+      "<p>Trace <code>[5, 3, 4, 8, 6, 7]</code> (the stack shows indexes, with heights in brackets):</p>",
+      "<ol>",
+      "<li>Hour 0 (5). Nothing waiting. Push. Stack: 0(5).</li>",
+      "<li>Hour 1 (3). 3 is not taller than 5. Push. Stack: 0(5), 1(3).</li>",
+      "<li>Hour 2 (4). 4 &gt; 3: pop 1, wait[1] = 2 - 1 = 1. 4 is not taller than 5, stop. Push. Stack: 0(5), 2(4).</li>",
+      "<li>Hour 3 (8). Pop 2, wait[2] = 1. Pop 0, wait[0] = 3. Push. Stack: 3(8).</li>",
+      "<li>Hour 4 (6). Not taller than 8. Push. Stack: 3(8), 4(6).</li>",
+      "<li>Hour 5 (7). Pop 4, wait[4] = 1. 7 is not taller than 8. Push. Stack: 3(8), 5(7).</li>",
+      "</ol>",
+      "<p>Hours 3 and 5 are never answered and keep 0. Result: <code>[3, 1, 1, 0, 1, 0]</code>. Use <code>&lt;</code>, not <code>&lt;=</code>, in the loop: an equal wave is not bigger, so it must not answer the hour on top.</p>"
+    ],
+    "time": "O(n)",
+    "timeWhy": "Each index is pushed once and popped at most once, so the inner loop runs at most n times in total.",
+    "space": "O(n)",
+    "spaceWhy": "A forecast that only falls leaves every index on the stack.",
+    "takeaway": "\"For each item, find the next item that is bigger\" is the monotonic stack pattern: keep the unanswered items on a stack in sorted order and let each new item pop and answer everything it beats. Flip the comparison for \"next smaller\", or walk right to left for \"previous bigger\"."
+  },
+  "related": ["monotonic-stack", "stacks"]
+}

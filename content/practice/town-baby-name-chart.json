@@ -1,0 +1,157 @@
+{
+  "slug": "town-baby-name-chart",
+  "title": "Town Baby Name Chart",
+  "topic": "heaps-tries-bits",
+  "difficulty": "medium",
+  "pattern": "heap",
+  "aka": "Top K Frequent Words",
+  "order": 9,
+  "story": [
+    "<p>Every January, a small town's newsletter prints a chart of the most popular baby names from last year. The registry office sends one long list with a name for every baby born, stored in lowercase, like <code>[\"mia\", \"leo\", \"mia\", \"ava\"]</code>.</p>",
+    "<p>The chart shows the top <code>k</code> names, most popular first. When two names were given equally often, the editor lists them alphabetically, so nobody can claim the newsletter played favourites.</p>"
+  ],
+  "task": [
+    "<p>Write <code>topNames(names, k)</code>. Return the <code>k</code> most frequent names, ordered by how many times they appear (highest first). Names with the same count go in alphabetical order.</p>",
+    "<p>Each name appears in the result at most once. <code>k</code> is never more than the number of different names.</p>"
+  ],
+  "constraints": [
+    "1 ≤ names.length ≤ 20,000",
+    "1 ≤ k ≤ number of distinct names",
+    "Names use only lowercase letters a to z, 1 to 15 letters long."
+  ],
+  "examples": [
+    {"args": [["mia", "leo", "mia", "ava", "leo", "mia", "zoe"], 2], "expected": ["mia", "leo"], "explanation": "mia appears 3 times, leo 2, ava and zoe once each. The top 2 are mia, then leo."},
+    {"args": [["noah", "eli", "ivy", "eli", "noah", "ivy", "amir"], 3], "expected": ["eli", "ivy", "noah"], "explanation": "noah, eli and ivy all appear twice, so they tie and are listed alphabetically: eli, ivy, noah. Listing them in the order they first appear (noah, eli, ivy) would be wrong."}
+  ],
+  "hints": [
+    "Before ranking anything, what do you need to know about each name? How would you get that in a single pass over the list?",
+    "Count each name in a hash map. Now you have one entry per distinct name, and the job is to pick the best <code>k</code> of them. What exactly does \"better\" mean when two counts are equal?",
+    "Write one comparison rule: name A ranks above name B if A has a higher count, or the same count and A comes first alphabetically. Sorting every distinct name by that rule already works. Can you avoid sorting names that will never make the chart?",
+    "Keep a heap of at most <code>k</code> names with the <em>weakest</em> one on top (lowest count; for equal counts, the alphabetically later name). Push each distinct name, and pop when the heap grows past <code>k</code>. At the end, pop everything out (weakest first) and reverse it."
+  ],
+  "bruteForce": [
+    "<p>For each distinct name, count it by scanning the whole list again, then sort. Counting that way is O(n · m) for n babies and m distinct names, up to 400 million steps for 20,000 babies with all-different names.</p>",
+    "<p>Counting with a hash map fixes that. After counting, sorting all m names by (count, then name) costs O(m log m), which is fine here. A heap of size <code>k</code> cuts it to O(m log k), which helps when the list of distinct names is huge and the chart is short.</p>"
+  ],
+  "signature": {
+    "function": "topNames",
+    "params": [
+      {
+        "name": "names",
+        "type": "string[]"
+      },
+      {
+        "name": "k",
+        "type": "int"
+      }
+    ],
+    "returns": "string[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {string[]} names  one name per baby, lowercase",
+      " * @param {number} k",
+      " * @return {string[]} top k names, most frequent first, ties alphabetical",
+      " */",
+      "function topNames(names, k) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def top_names(names: list[str], k: int) -> list[str]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [["ada"], 1], "expected": ["ada"], "note": "one baby"},
+    {"args": [["zara", "adam"], 2], "expected": ["adam", "zara"], "note": "tie of ones: alphabetical, not first-seen order"},
+    {"args": [["tom", "tom", "tom"], 1], "expected": ["tom"], "note": "all the same name"},
+    {"args": [["bo", "al", "bo", "al", "cy"], 1], "expected": ["al"], "note": "tie at the top, k = 1"},
+    {"args": [["kai", "kai", "jo", "jo", "jo", "li"], 3], "expected": ["jo", "kai", "li"], "note": "k equals the number of distinct names"},
+    {"args": [["ann", "anna", "annabel", "anna", "ann"], 2], "expected": ["ann", "anna"], "note": "one name is a prefix of another: shorter comes first alphabetically"},
+    {"args": [["sam", "max", "sam", "max", "ivy", "ivy", "ivy", "abe"], 2], "expected": ["ivy", "max"], "note": "tie below the leader decides the last place"},
+    {"args": [["x", "y", "z", "y", "x", "w", "z", "z"], 3], "expected": ["z", "x", "y"]},
+    {"args": [["ella", "ella", "finn", "finn", "finn", "gus", "gus", "gus", "gus", "hal"], 4], "expected": ["gus", "finn", "ella", "hal"], "note": "ascending counts in input order"},
+    {"args": [["omar", "luca", "jade", "luca", "omar", "jade", "eve", "eve", "ben"], 3], "expected": ["eve", "jade", "luca"], "note": "four-way tie, only three fit"},
+    {"args": [["abcdefghijklmno", "abcdefghijklmnp", "abcdefghijklmno"], 2], "expected": ["abcdefghijklmno", "abcdefghijklmnp"], "note": "longest names"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function topNames(names, k) {",
+      "  const count = new Map();",
+      "  for (const n of names) count.set(n, (count.get(n) || 0) + 1);",
+      "  // weaker(a, b): a ranks below b on the chart",
+      "  const weaker = (a, b) => count.get(a) < count.get(b) ||",
+      "    (count.get(a) === count.get(b) && a > b);",
+      "  const heap = []; // weakest kept name on top",
+      "  const swap = (i, j) => { [heap[i], heap[j]] = [heap[j], heap[i]]; };",
+      "  const push = (name) => {",
+      "    heap.push(name);",
+      "    let i = heap.length - 1;",
+      "    while (i > 0) {",
+      "      const parent = (i - 1) >> 1;",
+      "      if (!weaker(heap[i], heap[parent])) break;",
+      "      swap(i, parent);",
+      "      i = parent;",
+      "    }",
+      "  };",
+      "  const pop = () => {",
+      "    const top = heap[0];",
+      "    const last = heap.pop();",
+      "    if (heap.length === 0) return top;",
+      "    heap[0] = last;",
+      "    let i = 0;",
+      "    while (true) {",
+      "      const l = 2 * i + 1, r = l + 1;",
+      "      let m = i;",
+      "      if (l < heap.length && weaker(heap[l], heap[m])) m = l;",
+      "      if (r < heap.length && weaker(heap[r], heap[m])) m = r;",
+      "      if (m === i) break;",
+      "      swap(i, m);",
+      "      i = m;",
+      "    }",
+      "    return top;",
+      "  };",
+      "",
+      "  for (const name of count.keys()) {",
+      "    push(name);",
+      "    if (heap.length > k) pop(); // drop the weakest",
+      "  }",
+      "  const result = [];",
+      "  while (heap.length) result.push(pop()); // weakest first",
+      "  return result.reverse();",
+      "}"
+    ],
+    "py": [
+      "import heapq",
+      "from collections import Counter",
+      "",
+      "def top_names(names, k):",
+      "    count = Counter(names)",
+      "    # Rank key: higher count first, then alphabetical.",
+      "    # nsmallest keeps a heap of size k internally: O(m log k).",
+      "    return heapq.nsmallest(k, count, key=lambda n: (-count[n], n))"
+    ],
+    "walkthrough": [
+      "<p>Two steps: count, then rank. The counting is a hash map. The ranking needs one clear rule, \"higher count wins; on a tie, the alphabetically earlier name wins\", and a way to keep only the best <code>k</code> without sorting everyone.</p>",
+      "<p>Trace the second example with <code>k = 3</code>. Counts: noah 2, eli 2, ivy 2, amir 1. The heap keeps the weakest name on top.</p>",
+      "<ol>",
+      "<li>Push noah. Heap top: noah.</li>",
+      "<li>Push eli. Same count, but noah is later alphabetically, so noah is weaker and stays on top.</li>",
+      "<li>Push ivy. noah is still the weakest. Size 3.</li>",
+      "<li>Push amir (count 1). Size 4, so pop the weakest: amir, the only name with count 1.</li>",
+      "<li>Pop everything: noah, ivy, eli (weakest first). Reverse: <code>[\"eli\", \"ivy\", \"noah\"]</code>.</li>",
+      "</ol>",
+      "<p>The tie rule flips inside the heap: to keep the <em>best</em> names you evict the <em>worst</em>, and among equal counts the worst is the alphabetically <em>later</em> one. Getting that direction backwards is the usual bug. Python's <code>heapq.nsmallest</code> with the key <code>(-count, name)</code> runs this same size-k heap for you.</p>"
+    ],
+    "time": "O(n + m log k)",
+    "timeWhy": "Counting is one pass over n names; each of the m distinct names costs O(log k) in the heap.",
+    "space": "O(m)",
+    "spaceWhy": "The count map holds every distinct name; the heap holds k.",
+    "takeaway": "For \"top k by some score\", count with a hash map, then keep a heap of size k ordered by the full ranking rule, tie-break included, with the weakest kept item on top. Write the comparison once and reuse it everywhere."
+  },
+  "related": ["heaps-and-priority-queues", "hash-tables"]
+}

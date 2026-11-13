@@ -1,0 +1,243 @@
+<!--
+{
+  "title": "Monotonic Stack",
+  "description": "Find the next taller, smaller or bigger item for every element in one O(n) pass by keeping a stack in sorted order, plus the deque version for windows.",
+  "minutes": 16,
+  "tags": ["stacks", "deques", "patterns"]
+}
+-->
+<p>A street has six buildings in a row, with heights of 5, 3, 1, 4, 6 and 2 floors from west to east. For each building, you want the first taller building to its east, the one that blocks its view of the sunrise. Building 1 (3 floors) is blocked by building 3 (4 floors). Building 4 (6 floors) is blocked by nothing.</p>
+
+<p>The obvious way is to start at each building and walk east until you hit a taller one. That is O(n²) in the worst case: on a street that gets steadily shorter, every walk goes to the very end. With 100,000 buildings that is about 5 billion steps. A stack does it in one pass.</p>
+
+<x-figure caption="Each arrow goes from a building to the first taller building on its right. Buildings 4 and 5 have no taller building to the east.">
+<svg viewBox="0 0 480 240" aria-label="Bar chart of six buildings with heights 5, 3, 1, 4, 6, 2. Arrows: building 0 to 4, building 1 to 3, building 2 to 3, building 3 to 4. Buildings 4 and 5 are marked none.">
+  <defs><marker id="ms-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <line x1="20" y1="200" x2="460" y2="200" class="s-line" stroke-width="2"/>
+  <rect x="40" y="75" width="50" height="125" rx="4" class="f-surface s-line"/><text x="65" y="192" text-anchor="middle">5</text>
+  <rect x="110" y="125" width="50" height="75" rx="4" class="f-surface s-line"/><text x="135" y="192" text-anchor="middle">3</text>
+  <rect x="180" y="175" width="50" height="25" rx="4" class="f-surface s-line"/><text x="205" y="192" text-anchor="middle">1</text>
+  <rect x="250" y="100" width="50" height="100" rx="4" class="f-surface s-line"/><text x="275" y="192" text-anchor="middle">4</text>
+  <rect x="320" y="50" width="50" height="150" rx="4" class="f-accent-soft s-accent"/><text x="345" y="192" text-anchor="middle">6</text>
+  <rect x="390" y="150" width="50" height="50" rx="4" class="f-surface s-line"/><text x="415" y="192" text-anchor="middle">2</text>
+  <text x="65" y="220" text-anchor="middle" class="t-small f-muted">0</text>
+  <text x="135" y="220" text-anchor="middle" class="t-small f-muted">1</text>
+  <text x="205" y="220" text-anchor="middle" class="t-small f-muted">2</text>
+  <text x="275" y="220" text-anchor="middle" class="t-small f-muted">3</text>
+  <text x="345" y="220" text-anchor="middle" class="t-small f-muted">4</text>
+  <text x="415" y="220" text-anchor="middle" class="t-small f-muted">5</text>
+  <path d="M65 70 Q200 0 336 46" class="s-accent f-none" stroke-width="2" marker-end="url(#ms-arrow)"/>
+  <path d="M135 120 Q195 80 262 96" class="s-accent f-none" stroke-width="2" marker-end="url(#ms-arrow)"/>
+  <path d="M205 170 Q225 130 252 112" class="s-accent f-none" stroke-width="2" marker-end="url(#ms-arrow)"/>
+  <path d="M278 95 Q290 62 318 56" class="s-accent f-none" stroke-width="2" marker-end="url(#ms-arrow)"/>
+  <text x="345" y="72" text-anchor="middle" class="t-sans t-small f-muted">none</text>
+  <text x="415" y="140" text-anchor="middle" class="t-sans t-small f-muted">none</text>
+</svg>
+</x-figure>
+
+<h2>The idea: a line of buildings still waiting</h2>
+
+<p>Walk from west to east. Keep a <a href="/algorithms/stacks.html">stack</a> of the buildings that have not found their answer yet. When a new building arrives, look at the top of the stack. If the new building is taller, it is the answer for that waiting building, so pop it and record the answer. Keep popping while the new building is taller than the top. Then push the new building: it now waits for its own answer.</p>
+
+<p>Anything shorter than the new building is popped before it is pushed. So the heights on the stack always go down from bottom to top. A stack whose items stay in sorted order like this is called a <strong>monotonic stack</strong>, here a decreasing one.</p>
+
+<p>Popping is safe. The popped building has found its answer, and the answer can only be the <em>first</em> taller building, which is this one. It will never need to be looked at again.</p>
+
+<x-tracer title="First taller building to the east of each building">
+<script type="application/json">
+{
+  "code": [
+    "answer = [-1] * n",
+    "for i in 0 .. n - 1:",
+    "  while stack not empty and h[top] < h[i]:",
+    "    answer[pop()] = i",
+    "  push(i)",
+    "return answer"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Every answer starts as -1, meaning \"no taller building\". The stack is empty. It holds indexes; each cell shows index:height.", "line": 1, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2] }, { "label": "stack (top on the right)", "values": [] }, { "label": "answer", "values": [-1, -1, -1, -1, -1, -1] } ] },
+    { "caption": "Building 0 (5 floors). Nobody is waiting, so just push it.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 0 }, "highlight": [0] }, { "label": "stack (top on the right)", "values": ["0:5"], "highlight": [0] }, { "label": "answer", "values": [-1, -1, -1, -1, -1, -1] } ] },
+    { "caption": "Building 1 (3 floors). The top is 5 floors, not shorter, so nothing is answered. Push 1.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 1 }, "highlight": [1] }, { "label": "stack (top on the right)", "values": ["0:5", "1:3"], "highlight": [1] }, { "label": "answer", "values": [-1, -1, -1, -1, -1, -1] } ] },
+    { "caption": "Building 2 (1 floor). Shorter than the top again. Push it. The stack reads 5, 3, 1: decreasing.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 2 }, "highlight": [2] }, { "label": "stack (top on the right)", "values": ["0:5", "1:3", "2:1"], "highlight": [2] }, { "label": "answer", "values": [-1, -1, -1, -1, -1, -1] } ] },
+    { "caption": "Building 3 (4 floors). The top, building 2, has 1 floor: shorter. Building 3 is its first taller neighbour. Pop it and record answer[2] = 3.", "line": 4, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 3 }, "highlight": [3] }, { "label": "stack (top on the right)", "values": ["0:5", "1:3"] }, { "label": "answer", "values": [-1, -1, 3, -1, -1, -1], "mark": [2] } ] },
+    { "caption": "The new top, building 1, has 3 floors: still shorter than 4. Pop it, answer[1] = 3.", "line": 4, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 3 }, "highlight": [3] }, { "label": "stack (top on the right)", "values": ["0:5"] }, { "label": "answer", "values": [-1, 3, 3, -1, -1, -1], "mark": [1] } ] },
+    { "caption": "The top now has 5 floors, taller than 4, so the popping stops. Push building 3. The stack reads 5, 4: still decreasing.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 3 }, "highlight": [3] }, { "label": "stack (top on the right)", "values": ["0:5", "3:4"], "highlight": [1] }, { "label": "answer", "values": [-1, 3, 3, -1, -1, -1] } ] },
+    { "caption": "Building 4 (6 floors). The top has 4 floors. Pop it, answer[3] = 4.", "line": 4, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 4 }, "highlight": [4] }, { "label": "stack (top on the right)", "values": ["0:5"] }, { "label": "answer", "values": [-1, 3, 3, 4, -1, -1], "mark": [3] } ] },
+    { "caption": "The top has 5 floors, also shorter than 6. Pop it, answer[0] = 4.", "line": 4, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 4 }, "highlight": [4] }, { "label": "stack (top on the right)", "values": [] }, { "label": "answer", "values": [4, 3, 3, 4, -1, -1], "mark": [0] } ] },
+    { "caption": "The stack is empty. Push building 4.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 4 }, "highlight": [4] }, { "label": "stack (top on the right)", "values": ["4:6"], "highlight": [0] }, { "label": "answer", "values": [4, 3, 3, 4, -1, -1] } ] },
+    { "caption": "Building 5 (2 floors). Shorter than the top. Push it.", "line": 5, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2], "pointers": { "i": 5 }, "highlight": [5] }, { "label": "stack (top on the right)", "values": ["4:6", "5:2"], "highlight": [1] }, { "label": "answer", "values": [4, 3, 3, 4, -1, -1] } ] },
+    { "caption": "Done. Buildings 4 and 5 are still waiting, so they keep -1. Six pushes and four pops: each building went on the stack once and came off at most once.", "line": 6, "arrays": [ { "label": "heights", "values": [5, 3, 1, 4, 6, 2] }, { "label": "stack (top on the right)", "values": ["4:6", "5:2"], "dim": [0, 1] }, { "label": "answer", "values": [4, 3, 3, 4, -1, -1], "mark": [0, 1, 2, 3, 4, 5] } ], "vars": { "pushes": 6, "pops": 4 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<x-code>
+<pre lang="js">
+// For each building, the index of the first taller one to its right, or -1.
+function nextTaller(heights) {
+  const answer = new Array(heights.length).fill(-1);
+  const stack = []; // indexes still waiting; heights decrease bottom to top
+  for (let i = 0; i < heights.length; i++) {
+    while (stack.length > 0 && heights[stack[stack.length - 1]] < heights[i]) {
+      answer[stack.pop()] = i; // i is the first taller one for the top
+    }
+    stack.push(i); // i waits for its own answer
+  }
+  return answer; // anything still waiting keeps -1
+}
+
+nextTaller([5, 3, 1, 4, 6, 2]); // [4, 3, 3, 4, -1, -1]
+</pre>
+<pre lang="py">
+# For each building, the index of the first taller one to its right, or -1.
+def next_taller(heights):
+    answer = [-1] * len(heights)
+    stack = []  # indexes still waiting; heights decrease bottom to top
+    for i, h in enumerate(heights):
+        while stack and heights[stack[-1]] < h:
+            answer[stack.pop()] = i  # i is the first taller one for the top
+        stack.append(i)  # i waits for its own answer
+    return answer  # anything still waiting keeps -1
+
+next_taller([5, 3, 1, 4, 6, 2])  # [4, 3, 3, 4, -1, -1]
+</pre>
+</x-code>
+
+<p>The stack stores <em>indexes</em>, not heights: you need the index to write into <code>answer</code>, and you can look up the height from it. The index also tells you how far away the answer is: <code>i - index</code>.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Walk right from every item", "time": "O(n²)", "space": "O(1)", "note": "A steadily falling street makes every walk go to the end." },
+    { "name": "Monotonic stack", "time": "O(n)", "space": "O(n)", "note": "Each index is pushed once and popped at most once: at most 2n stack operations in total." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>The <code>while</code> inside the <code>for</code> looks like O(n²). Count pops instead of loop runs: a pop removes an index for good, and only n indexes are ever pushed, so all the <code>while</code> loops together pop at most n times. This is the same "count the total moves" argument as in <a href="/algorithms/two-pointers.html">Two Pointers</a>.</p>
+
+<h2>Four questions, one pattern</h2>
+
+<p>Flip the comparison and you get the other variants. For "next smaller", pop while the top is <em>bigger</em> than the new item; the stack is then increasing. For "previous taller" or "previous smaller", read the answer from the other side: after the popping stops, whatever is left on top is the nearest earlier item that survived, so it is the answer for the <em>new</em> item. Here you also pop equal items, so that what is left on top is strictly taller or strictly smaller.</p>
+
+<table>
+<thead><tr><th>Question</th><th>Pop while the top is…</th><th>Who gets the answer</th></tr></thead>
+<tbody>
+<tr><td>Next greater</td><td>smaller than the new item</td><td>each popped item gets the new one</td></tr>
+<tr><td>Next smaller</td><td>bigger than the new item</td><td>each popped item gets the new one</td></tr>
+<tr><td>Previous greater</td><td>smaller than or equal to the new item</td><td>the new item gets whatever is left on top</td></tr>
+<tr><td>Previous smaller</td><td>bigger than or equal to the new item</td><td>the new item gets whatever is left on top</td></tr>
+</tbody>
+</table>
+
+<x-callout type="key">
+<p>A monotonic stack holds the items that are still waiting for an answer. A new item answers every waiting item it beats, and those leave for good. That is why the whole pass is O(n).</p>
+</x-callout>
+
+<h2>The deque version: the biggest in every window</h2>
+
+<p>A close cousin asks for the largest value in every stretch of <code>k</code> items next to each other. For <code>[4, 2, 12, 3, 8, 7, 1]</code> and <code>k = 3</code>, the windows are <code>[4, 2, 12]</code>, <code>[2, 12, 3]</code> and so on, and the answers are 12, 12, 12, 8, 8.</p>
+
+<p>Keep a decreasing stack of indexes exactly as before: a new item pops every item that is not bigger than it off the back, because such an older item can never again be the biggest in any window that contains the new one. The biggest item in the window is then at the <em>front</em>. When the front's index slides out of the window, remove it from the front. Removing from both ends means a <a href="/algorithms/queues-and-deques.html">deque</a>; the JavaScript version uses the head-index trick from that lesson.</p>
+
+<x-code>
+<pre lang="js">
+function windowMax(nums, k) {
+  const dq = []; // indexes; values decrease from front to back
+  let head = 0;  // front of the deque
+  const result = [];
+  for (let i = 0; i < nums.length; i++) {
+    if (head < dq.length && dq[head] <= i - k) head++; // front left the window
+    while (head < dq.length && nums[dq[dq.length - 1]] <= nums[i]) dq.pop();
+    dq.push(i);
+    if (i >= k - 1) result.push(nums[dq[head]]); // front is the biggest
+  }
+  return result;
+}
+
+windowMax([4, 2, 12, 3, 8, 7, 1], 3); // [12, 12, 12, 8, 8]
+</pre>
+<pre lang="py">
+from collections import deque
+
+def window_max(nums, k):
+    dq = deque()  # indexes; values decrease from front to back
+    result = []
+    for i, x in enumerate(nums):
+        if dq and dq[0] <= i - k:
+            dq.popleft()  # front left the window
+        while dq and nums[dq[-1]] <= x:
+            dq.pop()
+        dq.append(i)
+        if i >= k - 1:
+            result.append(nums[dq[0]])  # front is the biggest
+    return result
+
+window_max([4, 2, 12, 3, 8, 7, 1], 3)  # [12, 12, 12, 8, 8]
+</pre>
+</x-code>
+
+<p>Each index enters the deque once and leaves at most once, from one end or the other, so this is O(n) too, against O(n·k) for scanning every window. The window itself slides as in <a href="/algorithms/sliding-window.html">Sliding Window</a>.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="&lt; versus &lt;= with equal values">
+<p>With heights <code>[3, 3, 4]</code>, is the second 3 "taller" than the first? With <code>&lt;</code> it is not, so the first 3 keeps waiting and gets index 2. With <code>&lt;=</code> it would get index 1, which is wrong for "strictly taller". Decide what a tie means in your problem, then test a case with equal values.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Storing values instead of indexes">
+<p>If the stack holds heights, you know a building was answered but not <em>which</em> building, so you cannot write to <code>answer</code>. Push indexes and look up values when you compare.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting the leftovers">
+<p>Items still on the stack at the end never found an answer. Fill the answer array with the "no answer" value (-1, 0, or whatever the problem asks for) before the loop, so the leftovers are already correct.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>"How many days in a row has the price been at or below today's price" is the previous-greater variant: the answer is today's index minus the index of the previous higher day. The same stack also finds the largest rectangle that fits under a bar chart in O(n).</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Run the next-taller pass on <code>[2, 7, 3, 5, 1]</code>. What is the answer array?",
+      "options": [
+        { "text": "<code>[1, -1, 3, -1, -1]</code>", "correct": true, "why": "7 pops 2 (answer 1). 3 waits. 5 pops 3 (answer 3). 1 waits. 7, 5 and 1 are never popped, so they keep -1." },
+        { "text": "<code>[1, -1, 3, 4, -1]</code>", "why": "1 is shorter than 5, so it cannot be the first taller building for index 3." },
+        { "text": "<code>[1, 3, 3, -1, -1]</code>", "why": "5 is shorter than 7, so it cannot answer index 1. Nothing to the right of 7 is taller." }
+      ]
+    },
+    {
+      "question": "The loop has a <code>while</code> inside a <code>for</code>. Why is it O(n) and not O(n²)?",
+      "options": [
+        { "text": "Because the <code>while</code> loop runs at most once per item", "why": "It can run many times for one item: building 4 popped two buildings in the trace." },
+        { "text": "Because each index is popped at most once over the whole run", "correct": true, "why": "Every pop removes an index for good, and only n indexes are pushed. So all the <code>while</code> loops together do at most n pops." },
+        { "text": "Because the stack never holds more than a few items", "why": "On a falling street the stack holds every item. The bound comes from counting pops, not from the stack size." }
+      ]
+    },
+    {
+      "question": "You want the first <em>shorter</em> building to the right of each one. What changes?",
+      "options": [
+        { "text": "Scan from right to left", "why": "That can work, but it is a bigger change than needed." },
+        { "text": "Pop while the top is taller than the new building", "correct": true, "why": "Now the new building answers every taller one waiting on the stack, and the stack stays increasing from bottom to top." },
+        { "text": "Use a queue instead of a stack", "why": "You must compare against the most recent waiting item, which is the top of a stack, not the oldest one." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Run <code>nextTaller</code> by hand on a falling street, <code>[9, 7, 4, 2]</code>, and a rising one, <code>[1, 3, 6, 8]</code>, to see the two extremes: a stack that only grows, and one that never holds more than one building. Then solve <a href="/practice/waiting-for-a-bigger-wave.html">Waiting for a Bigger Wave</a> with the stack and <a href="/practice/freezer-warmest-stretch.html">Freezer Warmest Stretch</a> with the deque. The next module begins with <a href="/algorithms/simple-sorts.html">Simple Sorts</a>, where you put whole lists in order.</p>

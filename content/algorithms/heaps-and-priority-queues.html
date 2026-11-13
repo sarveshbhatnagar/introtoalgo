@@ -1,0 +1,286 @@
+<!--
+{
+  "title": "Heaps and Priority Queues",
+  "description": "Always get the most urgent item next. Build a min-heap with sift up and sift down, use your language's heap, and find the top k items in O(n log k).",
+  "minutes": 15,
+  "tags": ["trees", "heaps", "priority queue"]
+}
+-->
+<p>A busy kitchen gets delivery orders all evening. Each one has a pickup time. Whenever a cook is free, they should start the order due soonest. New orders keep arriving while others are cooked, so the list is never finished and never stays in order for long.</p>
+
+<p>You need a container with three operations: add an order, look at the most urgent one, and remove it. That container is called a <strong>priority queue</strong>. A plain queue hands items out in arrival order. A priority queue hands them out by urgency.</p>
+
+<h2>Three ways to build it</h2>
+
+<p>The obvious attempts each make one operation slow.</p>
+
+<ul>
+<li><strong>Unsorted array</strong>: adding is instant, but finding the most urgent order means scanning all of them. O(n) per removal.</li>
+<li><strong>Sorted array</strong>: the most urgent is at one end, but every new order must be slotted into place, shifting the others. O(n) per insert.</li>
+<li><strong>Heap</strong>: both adding and removing cost O(log n), and looking at the most urgent costs O(1).</li>
+</ul>
+
+<p>With 100,000 waiting items, O(n) is 100,000 steps per operation. O(log n) is about 17.</p>
+
+<h2>A min-heap, briefly</h2>
+
+<p><a href="/algorithms/heap-sort.html">Heap Sort</a> already introduced the max-heap: a binary tree stored in a plain array, where the children of index <code>i</code> sit at <code>2i + 1</code> and <code>2i + 2</code>, and every parent is at least as big as its children. A priority queue for "soonest first" wants the opposite, a <strong>min-heap</strong>: every parent is <em>at most</em> as big as its children. Then the smallest item is always at the root, <code>heap[0]</code>.</p>
+
+<p>Two facts make a heap fast:</p>
+
+<ul>
+<li>The tree is always filled level by level, left to right. So with <code>n</code> items it is only about log₂ n levels tall.</li>
+<li>The rule only compares parents with children. Siblings and cousins can be in any order. That loose rule is cheap to repair after a change, which is why a heap beats a fully sorted array.</li>
+</ul>
+
+<x-callout type="key">
+<p>A heap is not sorted. It only promises that the smallest item is at the top, and it restores that promise after each change by moving one item along a single path.</p>
+</x-callout>
+
+<h2>Push: add at the bottom, sift up</h2>
+
+<p>To add an item, put it in the next free slot, at the end of the array. That keeps the tree's shape. The new item might be smaller than its parent, though, so <strong>sift it up</strong>: while it is smaller than its parent, swap the two. The parent of index <code>i</code> is at <code>(i − 1) / 2</code>, rounded down.</p>
+
+<h2>Pop: move the last item to the top, sift down</h2>
+
+<p>The item to remove is the root. You cannot leave a hole at the top, so take the <em>last</em> item in the array, put it at the root, and shorten the array by one. That item is probably too big for the top, so <strong>sift it down</strong>: swap it with its smaller child until it is no bigger than both children. This is the same sift-down as in heap sort, with "bigger" turned into "smaller".</p>
+
+<p>Here are both, on orders that are due in 2, 4, 5, 7, 8 and 9 minutes. A new order due in 3 minutes arrives, and then a cook takes the most urgent order.</p>
+
+<x-tracer title="Push 3, then pop the smallest">
+<script type="application/json">
+{
+  "code": [
+    "push(x):",
+    "  add x at the end",
+    "  while x < its parent: swap them",
+    "pop():",
+    "  top = heap[0]",
+    "  move the last item to index 0",
+    "  while it > its smaller child: swap them",
+    "  return top"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "A valid min-heap. Every parent is smaller than its children, so the smallest, 2, is at the root.", "tree": { "values": [2, 5, 4, 9, 7, 8], "mark": [0] }, "array": { "label": "heap", "values": [2, 5, 4, 9, 7, 8], "mark": [0] } },
+    { "caption": "Push 3: it goes in the next free slot, index 6. Its parent is index (6 − 1) / 2 = 2.5, rounded down to 2, which holds 4.", "line": 2, "tree": { "values": [2, 5, 4, 9, 7, 8, 3], "highlight": [6] }, "array": { "label": "heap", "values": [2, 5, 4, 9, 7, 8, 3], "highlight": [6], "pointers": { "i": 6 } } },
+    { "caption": "3 is smaller than 4, so it cannot sit below 4. Swap them. 3 climbs to index 2.", "line": 3, "tree": { "values": [2, 5, 3, 9, 7, 8, 4], "highlight": [2, 6] }, "array": { "label": "heap", "values": [2, 5, 3, 9, 7, 8, 4], "highlight": [2, 6], "pointers": { "i": 2 } } },
+    { "caption": "Its new parent is the root, 2. 3 is not smaller than 2, so it stops. 1 swap.", "line": 3, "tree": { "values": [2, 5, 3, 9, 7, 8, 4], "highlight": [0, 2] }, "array": { "label": "heap", "values": [2, 5, 3, 9, 7, 8, 4], "highlight": [0, 2], "pointers": { "i": 2 } }, "vars": { "swaps": 1 } },
+    { "caption": "Pop: the answer is the root, 2. Move the last item, 4, to the root and shorten the array. 4 is now above 5 and 3, which breaks the rule.", "line": 6, "tree": { "values": [4, 5, 3, 9, 7, 8], "highlight": [0] }, "array": { "label": "heap", "values": [4, 5, 3, 9, 7, 8], "highlight": [0], "pointers": { "i": 0 } }, "vars": { "popped": 2 } },
+    { "caption": "The smaller child is 3, and 3 is smaller than 4. Swap. Swapping with the smaller child matters: 3 can sit above 5, but 5 could not sit above 3.", "line": 7, "tree": { "values": [3, 5, 4, 9, 7, 8], "highlight": [0, 2] }, "array": { "label": "heap", "values": [3, 5, 4, 9, 7, 8], "highlight": [0, 2], "pointers": { "i": 2 } }, "vars": { "popped": 2 } },
+    { "caption": "At index 2, 4's only child is 8. 4 is smaller, so it stops. The heap is valid again, with 3 ready at the top. Each operation moved one item along one path.", "line": 8, "tree": { "values": [3, 5, 4, 9, 7, 8], "mark": [0] }, "array": { "label": "heap", "values": [3, 5, 4, 9, 7, 8], "mark": [0] }, "vars": { "popped": 2, "swaps": 1 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>The heap is a plain array. These two functions keep it in min-heap order.</p>
+
+<x-code title="Push">
+<pre lang="js">
+// heap is a plain array kept in min-heap order.
+function heapPush(heap, x) {
+  heap.push(x); // add at the end of the bottom level
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = Math.floor((i - 1) / 2);
+    if (heap[parent] <= heap[i]) break; // parent is smaller: done
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    i = parent; // keep climbing
+  }
+}
+</pre>
+<pre lang="py">
+# heap is a plain list kept in min-heap order.
+def heap_push(heap, x):
+    heap.append(x)  # add at the end of the bottom level
+    i = len(heap) - 1
+    while i > 0:
+        parent = (i - 1) // 2
+        if heap[parent] <= heap[i]:  # parent is smaller: done
+            break
+        heap[parent], heap[i] = heap[i], heap[parent]
+        i = parent  # keep climbing
+</pre>
+</x-code>
+
+<x-code title="Pop">
+<pre lang="js">
+function heapPop(heap) {
+  const top = heap[0];
+  const last = heap.pop(); // remove the last item
+  if (heap.length === 0) return top; // it was the only one
+  heap[0] = last; // move it to the root and sift down
+  let i = 0;
+  while (true) {
+    const left = 2 * i + 1, right = 2 * i + 2;
+    let small = i;
+    if (left < heap.length && heap[left] < heap[small]) small = left;
+    if (right < heap.length && heap[right] < heap[small]) small = right;
+    if (small === i) break; // smaller than both children: done
+    [heap[i], heap[small]] = [heap[small], heap[i]];
+    i = small;
+  }
+  return top;
+}
+
+const heap = [2, 5, 4, 9, 7, 8];
+heapPush(heap, 3); // [2, 5, 3, 9, 7, 8, 4]
+heapPop(heap);     // 2, heap is now [3, 5, 4, 9, 7, 8]
+</pre>
+<pre lang="py">
+def heap_pop(heap):
+    top = heap[0]
+    last = heap.pop()  # remove the last item
+    if not heap:  # it was the only one
+        return top
+    heap[0] = last  # move it to the root and sift down
+    i = 0
+    while True:
+        left, right = 2 * i + 1, 2 * i + 2
+        small = i
+        if left < len(heap) and heap[left] < heap[small]:
+            small = left
+        if right < len(heap) and heap[right] < heap[small]:
+            small = right
+        if small == i:  # smaller than both children: done
+            break
+        heap[i], heap[small] = heap[small], heap[i]
+        i = small
+    return top
+
+heap = [2, 5, 4, 9, 7, 8]
+heap_push(heap, 3)  # [2, 5, 3, 9, 7, 8, 4]
+heap_pop(heap)      # 2, heap is now [3, 5, 4, 9, 7, 8]
+</pre>
+</x-code>
+
+<p>Python ships these in its <code>heapq</code> module: <code>heapq.heappush(heap, x)</code> and <code>heapq.heappop(heap)</code> work on a plain list exactly like the functions above, and <code>heapq.heapify(list)</code> turns a list into a heap in O(n). JavaScript has no built-in heap, so you copy these two functions or use a library.</p>
+
+<p>To attach data to a priority, push pairs. In Python, <code>(pickup_time, order_id)</code> tuples compare by the first item, then the second. In JavaScript, <code>&lt;</code> does not compare arrays the way you want, so store <code>[time, order]</code> and compare <code>heap[i][0]</code>.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Unsorted array", "time": "push O(1), pop O(n)", "space": "O(n)", "note": "Every pop scans for the smallest." },
+    { "name": "Sorted array", "time": "push O(n), pop O(1)", "space": "O(n)", "note": "Every push shifts items to make room." },
+    { "name": "Binary heap", "time": "push O(log n), pop O(log n)", "space": "O(n)", "note": "Sift up or down follows one path, and the tree is about log₂ n levels tall. Peek is O(1)." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>The top k trick</h2>
+
+<p>A game has a million scores and you want the 3 highest. Sorting everything costs O(n log n) and keeps all n in memory. A heap does better, and the surprising part is that you want a <em>min</em>-heap.</p>
+
+<p>Keep a min-heap of the best 3 seen so far. Its root is the weakest of those 3, the score a newcomer has to beat. Push each new score; if the heap grows to 4, pop the smallest. At the end, the heap holds the top 3.</p>
+
+<x-figure caption="The min-heap holds the best 3 scores so far. Its root is the bar a new score has to clear.">
+<svg viewBox="0 0 500 200" aria-label="A min-heap with 77 at the root and 88 and 95 below it. The root is labelled as the bar to beat. On the left, a new score 63 arrives and is turned away because it is below 77. On the right, a new score 90 arrives and would replace 77.">
+  <line x1="250" y1="50" x2="200" y2="120" class="s-line" stroke-width="2"/>
+  <line x1="250" y1="50" x2="300" y2="120" class="s-line" stroke-width="2"/>
+  <circle cx="250" cy="50" r="22" class="f-accent-soft s-accent"/><text x="250" y="55" text-anchor="middle" class="t-bold">77</text>
+  <circle cx="200" cy="120" r="22" class="f-surface s-line"/><text x="200" y="125" text-anchor="middle">88</text>
+  <circle cx="300" cy="120" r="22" class="f-surface s-line"/><text x="300" y="125" text-anchor="middle">95</text>
+  <text x="250" y="18" text-anchor="middle" class="t-sans t-small f-accent t-bold">root: the bar to beat</text>
+  <rect x="20" y="36" width="44" height="30" rx="6" class="f-bad-soft s-bad"/><text x="42" y="56" text-anchor="middle">63</text>
+  <text x="20" y="90" class="t-sans t-small f-bad">63 &lt; 77:</text>
+  <text x="20" y="106" class="t-sans t-small f-bad">popped right away</text>
+  <rect x="436" y="36" width="44" height="30" rx="6" class="f-good-soft s-good"/><text x="458" y="56" text-anchor="middle">90</text>
+  <text x="480" y="90" text-anchor="end" class="t-sans t-small f-good">90 &gt; 77:</text>
+  <text x="480" y="106" text-anchor="end" class="t-sans t-small f-good">stays, 77 is popped</text>
+  <text x="250" y="180" text-anchor="middle" class="t-sans t-small f-muted">heap size never goes above k + 1 = 4</text>
+</svg>
+</x-figure>
+
+<x-code>
+<pre lang="js">
+// Uses heapPush and heapPop from above.
+function topK(nums, k) {
+  const heap = [];
+  for (const x of nums) {
+    heapPush(heap, x);
+    if (heap.length > k) heapPop(heap); // drop the smallest
+  }
+  return heap.sort((a, b) => a - b);
+}
+
+topK([40, 95, 12, 77, 63, 88], 3); // [77, 88, 95]
+</pre>
+<pre lang="py">
+import heapq
+
+def top_k(nums, k):
+    heap = []
+    for x in nums:
+        heapq.heappush(heap, x)
+        if len(heap) > k:
+            heapq.heappop(heap)  # drop the smallest
+    return sorted(heap)
+
+top_k([40, 95, 12, 77, 63, 88], 3)  # [77, 88, 95]
+</pre>
+</x-code>
+
+<p>The heap never holds more than k + 1 items, so each push and pop costs O(log k). The whole run is O(n log k) time and O(k) space. For the top 10 of a million, log k is about 3, against about 20 for a full sort.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Needing a max-heap in Python">
+<p>The plain <code>heapq</code> functions build min-heaps. Python 3.14 added max-heap versions such as <code>heapq.heappush_max</code>, but on older versions the usual trick is to push <code>-x</code> and negate again when you pop. Forgetting the second negation is the classic bug.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Treating the heap as sorted">
+<p>The array <code>[2, 5, 4, 9, 7, 8]</code> is a valid heap, and it is not sorted. Only <code>heap[0]</code> is guaranteed. Reading <code>heap[1]</code> as "second smallest" is wrong, and searching a heap for an arbitrary value takes O(n). To get items in order, pop them one at a time.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Sorting after every insert">
+<p>In JavaScript, pushing into an array and calling <code>sort()</code> each time looks like a priority queue and passes small tests. Each sort costs at least O(n), because it has to look at every item, so n inserts cost at least O(n²) in total. A heap push is O(log n).</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Operating systems pick the next task to run with priority queues. Event-driven simulations keep upcoming events in a heap keyed by time. <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> uses one to always expand the closest unvisited place next.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "You push 1 into the min-heap <code>[2, 5, 4, 9, 7, 8]</code>. How many swaps does sift up make?",
+      "options": [
+        { "text": "0", "why": "1 starts at index 6 below 4, which is bigger. It has to move." },
+        { "text": "1", "why": "After swapping with 4 it sits at index 2 below the root, 2. It is still smaller, so it keeps going." },
+        { "text": "2", "correct": true, "why": "Swap with 4 (index 2), then with 2 (index 0). The result is <code>[1, 5, 2, 9, 7, 8, 4]</code>." }
+      ]
+    },
+    {
+      "question": "To find the 10 largest values in a stream of a million numbers using little memory, what do you keep?",
+      "options": [
+        { "text": "A max-heap of all the numbers", "why": "It gives the right answer, but it stores all million numbers, which is exactly what you wanted to avoid." },
+        { "text": "A min-heap of at most 10 numbers", "correct": true, "why": "Its root is the smallest of the current top 10, the one to evict when a bigger number arrives. O(n log 10) time, O(10) memory." },
+        { "text": "A sorted array of 10 numbers", "why": "It works too, but each insert shifts up to 10 items. A heap does it in about log₂ 10 swaps. For a larger k, the gap grows." }
+      ]
+    },
+    {
+      "question": "When you pop, why move the <em>last</em> item to the root instead of promoting the root's smaller child?",
+      "options": [
+        { "text": "It keeps the tree filled level by level", "correct": true, "why": "Removing the last slot keeps the shape complete, so the array has no gaps and the height stays about log₂ n. Promoting children would leave the hole at the bottom of some branch, usually not in the last slot, so the array would get a gap." },
+        { "text": "The last item is always the largest", "why": "It is not. In <code>[2, 5, 4, 9, 7, 8]</code> the last item is 8, but 9 is larger." },
+        { "text": "It avoids having to sift down", "why": "The moved item usually does need to sift down. That is the O(log n) part." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Heaps order items by a number. When your keys are words and you need prefix questions, such as "every saved contact starting with <code>sam</code>", the tool is a different tree: <a href="/algorithms/tries.html">Tries</a>.</p>

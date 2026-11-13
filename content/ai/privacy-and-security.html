@@ -1,0 +1,238 @@
+<!--
+{
+  "title": "Privacy and Security",
+  "description": "Know where pasted text goes, keep secrets and other people's data out of prompts, redact before you paste, and check AI-written code for security holes.",
+  "minutes": 15,
+  "tags": ["privacy", "security", "workflow"]
+}
+-->
+<p>A login bug has you stuck, so you paste the config file and the last fifty lines of the server log into an AI assistant. It spots the problem in seconds. What you did not notice is that the log also held a customer's email address and the config held the production database password.</p>
+
+<p>Maybe nothing bad ever comes of it. But that password now sits in a chat history on a server you do not run, kept for as long as that service keeps things, and visible to whoever can open your account. You gave away control of it to fix one bug.</p>
+
+<h2>Pasted text leaves your hands</h2>
+
+<p>When you send a prompt to a hosted assistant, the text travels to the provider's servers to be processed. What happens next depends on the provider, your plan and your settings. It can be kept in your chat history, kept in logs for a while for abuse monitoring or debugging, and in some setups used to improve future models.</p>
+
+<x-figure caption="Where a pasted prompt can end up. Which of these apply depends on the provider, the plan and your settings.">
+<svg viewBox="0 0 520 220" aria-label="An arrow goes from You to the Assistant app, then to the Provider's servers. From the servers, three arrows lead to chat history, logs, and possibly training data, which is drawn dashed.">
+  <defs><marker id="privacy-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-muted"/></marker></defs>
+  <rect x="0" y="85" width="80" height="44" rx="8" class="f-surface s-line"/>
+  <text x="40" y="112" text-anchor="middle" class="t-sans">You</text>
+  <line x1="84" y1="107" x2="126" y2="107" class="s-muted" stroke-width="2" marker-end="url(#privacy-arrow)"/>
+  <rect x="130" y="85" width="110" height="44" rx="8" class="f-surface s-line"/>
+  <text x="185" y="112" text-anchor="middle" class="t-sans">Assistant app</text>
+  <line x1="244" y1="107" x2="276" y2="107" class="s-muted" stroke-width="2" marker-end="url(#privacy-arrow)"/>
+  <rect x="280" y="85" width="100" height="44" rx="8" class="f-accent-soft s-accent"/>
+  <text x="330" y="105" text-anchor="middle" class="t-sans">Provider</text>
+  <text x="330" y="121" text-anchor="middle" class="t-sans t-small">servers</text>
+  <line x1="384" y1="98" x2="416" y2="40" class="s-muted" stroke-width="2" marker-end="url(#privacy-arrow)"/>
+  <line x1="384" y1="107" x2="416" y2="107" class="s-muted" stroke-width="2" marker-end="url(#privacy-arrow)"/>
+  <line x1="384" y1="116" x2="416" y2="174" class="s-muted s-dash" stroke-width="2" marker-end="url(#privacy-arrow)"/>
+  <rect x="420" y="18" width="100" height="40" rx="8" class="f-surface s-line"/>
+  <text x="470" y="43" text-anchor="middle" class="t-sans">Chat history</text>
+  <rect x="420" y="87" width="100" height="40" rx="8" class="f-surface s-line"/>
+  <text x="470" y="112" text-anchor="middle" class="t-sans">Logs</text>
+  <rect x="420" y="156" width="100" height="40" rx="8" class="f-surface s-line s-dash"/>
+  <text x="470" y="181" text-anchor="middle" class="t-sans">Training?</text>
+</svg>
+</x-figure>
+
+<p>You do not need to fear this. You need to know the answers for the tools you use, once:</p>
+
+<ul>
+<li><strong>Is this tool approved for this kind of data?</strong> At work, your employer may allow some tools for code and forbid them for customer data. Ask before you find out the hard way.</li>
+<li><strong>Is my data used for training, and can I turn it off?</strong> This often differs between personal and business plans.</li>
+<li><strong>How long are conversations kept, and does deleting a chat delete it everywhere?</strong></li>
+<li><strong>Who else can see my history?</strong> Shared workspaces, admins and shared devices all count.</li>
+</ul>
+
+<x-callout type="key">
+<p>Treat every prompt as something you are sending to someone else. If you would not email it to an outside contractor, do not paste it in as it is.</p>
+</x-callout>
+
+<h2>What to keep out</h2>
+
+<ul>
+<li><strong>Secrets:</strong> passwords, API keys, access tokens, private keys, connection strings.</li>
+<li><strong>Other people's personal data:</strong> names with contact details, health, financial or student records. They did not agree to share it with a third party, and laws in many places say you need a reason to.</li>
+<li><strong>Confidential work:</strong> unreleased plans, contract terms, code your employer has not cleared for the tool.</li>
+</ul>
+
+<p>The model rarely needs the real value. To debug a login, it needs to know that a password is set, not what it is. Replace sensitive values with placeholders like <code>[EMAIL]</code> or <code>[SECRET]</code>, and the help you get is the same.</p>
+
+<h2>Redact before you paste</h2>
+
+<p>For logs and config files, a small script does this faster and more reliably than your eyes. Each rule replaces one known shape of sensitive text, in order.</p>
+
+<x-code title="A simple redactor">
+<pre lang="js">
+// Rules run in order. Each replaces one known shape of sensitive text.
+const RULES = [
+  [/[\w.+-]+@[\w-]+\.[\w.]+/g, "[EMAIL]"],
+  [/\b(\w*(?:password|secret|token|key))\s*[=:]\s*\S+/gi, "$1=[SECRET]"],
+  [/\b[A-Za-z0-9_-]{32,}\b/g, "[TOKEN]"],
+];
+
+function redact(text) {
+  for (const [pattern, replacement] of RULES) {
+    text = text.replace(pattern, replacement);
+  }
+  return text;
+}
+</pre>
+<pre lang="py">
+import re
+
+# Rules run in order. Each replaces one known shape of sensitive text.
+RULES = [
+    (r"[\w.+-]+@[\w-]+\.[\w.]+", "[EMAIL]"),
+    (r"(?i)\b(\w*(?:password|secret|token|key))\s*[=:]\s*\S+", r"\1=[SECRET]"),
+    (r"\b[A-Za-z0-9_-]{32,}\b", "[TOKEN]"),
+]
+
+def redact(text):
+    for pattern, replacement in RULES:
+        text = re.sub(pattern, replacement, text)
+    return text
+</pre>
+</x-code>
+
+<p>Step through the three rules on a five-line log.</p>
+
+<x-tracer title="Redacting a log, one rule at a time">
+<script type="application/json">
+{
+  "code": [
+    "for each (pattern, replacement) in RULES:",
+    "  text = replace every match of pattern",
+    "return text"
+  ],
+  "steps": [
+    {
+      "caption": "The raw log. Three lines hold something sensitive: an email, a password and an access token.",
+      "line": 1,
+      "grid": { "label": "log", "rowLabels": ["1", "2", "3", "4", "5"], "rows": [["ERROR login failed for maria.lopez@example.com"], ["db_password=hunter2-Prod!"], ["Authorization: Bearer 9f8a7c6e5d4b3a2f1e0d9c8b7a6f5e4d"], ["retrying in 30s (attempt 2 of 5)"], ["the support login is Tulip88 for now"]] },
+      "vars": { "rule": "none yet" }
+    },
+    {
+      "caption": "Rule 1 matches anything shaped like <code>name@domain.tld</code>. The customer's address becomes <code>[EMAIL]</code>. The model still knows a login failed for some user, which is all it needs.",
+      "line": 2,
+      "grid": { "label": "log", "rowLabels": ["1", "2", "3", "4", "5"], "rows": [["ERROR login failed for [EMAIL]"], ["db_password=hunter2-Prod!"], ["Authorization: Bearer 9f8a7c6e5d4b3a2f1e0d9c8b7a6f5e4d"], ["retrying in 30s (attempt 2 of 5)"], ["the support login is Tulip88 for now"]], "highlight": [[0, 0]] },
+      "vars": { "rule": "emails" }
+    },
+    {
+      "caption": "Rule 2 matches a name ending in password, secret, token or key, then <code>=</code> or <code>:</code>, then a value. It keeps the name and hides the value, so you can still see which setting it was.",
+      "line": 2,
+      "grid": { "label": "log", "rowLabels": ["1", "2", "3", "4", "5"], "rows": [["ERROR login failed for [EMAIL]"], ["db_password=[SECRET]"], ["Authorization: Bearer 9f8a7c6e5d4b3a2f1e0d9c8b7a6f5e4d"], ["retrying in 30s (attempt 2 of 5)"], ["the support login is Tulip88 for now"]], "highlight": [[1, 0]] },
+      "vars": { "rule": "name = value" }
+    },
+    {
+      "caption": "Rule 3 catches any unbroken run of 32 or more letters, digits, <code>_</code> or <code>-</code>, which is what most tokens look like. \"Authorization\" is not in rule 2's list, so this is the rule that saves line 3.",
+      "line": 2,
+      "grid": { "label": "log", "rowLabels": ["1", "2", "3", "4", "5"], "rows": [["ERROR login failed for [EMAIL]"], ["db_password=[SECRET]"], ["Authorization: Bearer [TOKEN]"], ["retrying in 30s (attempt 2 of 5)"], ["the support login is Tulip88 for now"]], "highlight": [[2, 0]] },
+      "vars": { "rule": "long tokens" }
+    },
+    {
+      "caption": "Done: three lines cleaned, line 4 untouched. But line 5 holds a password in plain words, and no rule has its shape. A script catches known patterns. It does not replace reading what you paste.",
+      "line": 3,
+      "grid": { "label": "log", "rowLabels": ["1", "2", "3", "4", "5"], "rows": [["ERROR login failed for [EMAIL]"], ["db_password=[SECRET]"], ["Authorization: Bearer [TOKEN]"], ["retrying in 30s (attempt 2 of 5)"], ["the support login is Tulip88 for now"]], "mark": [[0, 0], [1, 0], [2, 0], [3, 0]], "highlight": [[4, 0]] },
+      "vars": { "redacted": 3, "missed": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-callout type="tip" title="Paste less">
+<p>The safest data is data you never sent. The error message and the ten lines around it usually beat the whole file, and they also give the model less to get distracted by.</p>
+</x-callout>
+
+<h2>Security risks that come back out</h2>
+
+<p>Privacy is about what goes in. Security is also about what comes out, because AI output often ends up running on your machine.</p>
+
+<ul>
+<li><strong>Insecure fixes.</strong> Asked to "make the error go away", a model may suggest turning off certificate checks, opening permissions wide, or building a database query by gluing strings together. Each one works, and each one opens a hole. When a fix disables a safety check, find out why the check failed instead.</li>
+<li><strong>Packages that do not exist.</strong> Models sometimes suggest plausible package names that were never published. An attacker can register such a name and publish a harmful package under it. Before you install anything new, check that it is the real, maintained project.</li>
+<li><strong>Commands you have not read.</strong> Read a command before you run it, especially anything that deletes, changes permissions, or downloads and runs a script in one line.</li>
+<li><strong>Assistants with access.</strong> An assistant that can read your files or act on your accounts can be steered by text hidden in what it reads. <a href="/ai/prompt-injection.html">Prompt Injection</a> covers how, and why you should give such tools only the access the task needs.</li>
+</ul>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Clean up a support request">
+<x-task>
+<p>You want help writing a reply to this customer email. Rewrite what you would paste so the assistant can still help, but nothing personal or secret leaves your hands.</p>
+</x-task>
+<x-start>
+Help me reply to this. From: Daniel Okafor <d.okafor@mailbox.example>, account 448-2291-07. "Hi, I was charged twice on 3 March for my yearly plan, card ending 4417. My temporary password you sent me (Rx7!pq2) also doesn't work. Please fix both."
+</x-start>
+<x-answer>
+<x-prompt label="Safer version" tone="good">
+<x-user>
+Help me write a reply to a customer. Friendly, under 120 words.
+
+Their email says: they were charged twice on 3 March for a yearly plan, and the temporary password we sent them does not work. They want both fixed.
+
+What I can tell them: the duplicate charge will be refunded within 5 working days, and I'm sending a new password reset link separately.
+
+Address them as [NAME].
+</x-user>
+</x-prompt>
+<p>Why it works: the assistant needs the situation, not the identity. The name, email, account number and card digits added nothing to the reply and are all personal data. The temporary password was a live secret; it should not go anywhere, and it should be reset rather than reused. Adding what you are allowed to promise is extra context that makes the reply accurate.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Deleting the chat instead of rotating the secret">
+<p>If you pasted a real password or key, deleting the conversation does not undo it: it may already be in logs or backups. Change the password or revoke the key. That is the only fix that works.</p>
+</x-callout>
+
+<x-callout type="mistake" title="\"It's only a test key\"">
+<p>Test keys often have more access than people think, and test databases often hold copies of real data. Apply the same rule to every secret: placeholders only.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting screenshots and attachments">
+<p>A screenshot of a dashboard can show customer names in the sidebar. A shared document can carry comments and earlier versions. Look at the whole thing before you upload it.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "You realise you pasted a live API key into a chat an hour ago. What should you do first?",
+      "options": [
+        { "text": "Delete the conversation", "why": "Good to do, but the key may already be in logs. The key itself is still valid." },
+        { "text": "Revoke the key and issue a new one", "correct": true, "why": "Once a secret has left your control, the only reliable fix is to make it useless." },
+        { "text": "Ask the assistant to forget it", "why": "The model cannot remove your text from the provider's storage." }
+      ]
+    },
+    {
+      "question": "In the tracer, why did line 5 survive redaction?",
+      "options": [
+        { "text": "Rule 2 has a bug", "why": "Rule 2 works as written. Line 5 has no <code>name=value</code> shape for it to match." },
+        { "text": "The password was written as ordinary words, which no rule matches", "correct": true, "why": "Pattern rules only catch shapes you predicted. Always read what you paste, too." },
+        { "text": "Rules run in the wrong order", "why": "No order would help: none of the three rules matches that line." }
+      ]
+    },
+    {
+      "question": "An assistant fixes your HTTPS error by adding an option that skips certificate checks. What is the right response?",
+      "options": [
+        { "text": "Accept it, since the error is gone", "why": "The error is gone because the safety check is gone. Anyone in the middle of the connection could now read or change your traffic." },
+        { "text": "Find out why the certificate check fails and fix that", "correct": true, "why": "Right. A fix that disables a safety check hides the problem instead of solving it." },
+        { "text": "Accept it only on your own laptop", "why": "Code written on laptops tends to end up in production. Fix the cause." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Look up the data settings of the assistant you use most, and write down the four answers from this lesson. Then continue with <a href="/ai/choosing-a-model.html">Choosing a Model</a>, where privacy is one of the trade-offs alongside quality, speed and cost.</p>

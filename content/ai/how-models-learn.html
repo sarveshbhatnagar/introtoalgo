@@ -1,0 +1,245 @@
+<!--
+{
+  "title": "How Models Learn",
+  "description": "Measure how wrong a model is with a loss, then nudge its parameters downhill with gradient descent. Traced by hand on a one-parameter model.",
+  "minutes": 15,
+  "tags": ["machine learning", "gradient descent", "loss"]
+}
+-->
+<p>You are standing on a hillside in thick fog, and you want to reach the bottom of the valley. You cannot see the valley. You can only feel the ground under your feet. So you do the sensible thing: feel which way the ground slopes down, take a step that way, and repeat. When the ground feels flat, you are at the bottom.</p>
+
+<p>That is how most modern models learn, neural networks included. The "height" is how wrong the model is. The "position" is the values of its parameters. The step-downhill rule is called gradient descent.</p>
+
+<h2>A model with one dial</h2>
+
+<p>In <a href="/ai/what-is-machine-learning.html">What Is Machine Learning</a> the model had one parameter, and we found the best value by trying every candidate. That stops working as soon as a parameter can be any number, or there are thousands of them. You need a method that improves the parameters a little at a time.</p>
+
+<p>Here is the running example. A courier app wants to estimate trip time from distance with the model:</p>
+
+<p><code>minutes = w × km</code></p>
+
+<p>The parameter <code>w</code> is "minutes per km". The app has two past trips: 1 km took 3 minutes, and 3 km took 9 minutes. You can see the answer is <code>w = 3</code>. The point is to watch a method find it without being told, because the same method works when nobody can see the answer.</p>
+
+<h2>Step 1: measure how wrong the model is</h2>
+
+<p>For each example, the <strong>error</strong> is the prediction minus the real answer. With <code>w = 0</code>, the model predicts 0 minutes for both trips, so the errors are 0 − 3 = −3 and 0 − 9 = −9.</p>
+
+<p>To boil all the errors down to one number, square each one and take the average. That number is the <strong>loss</strong>, and this version is called the <strong>mean squared error</strong>:</p>
+
+<p><code>loss = ((−3)² + (−9)²) / 2 = (9 + 81) / 2 = 45</code></p>
+
+<p>Squaring does two jobs. It makes every error positive, so a too-high guess and a too-low guess cannot cancel out. And it punishes big errors much more than small ones: an error of 9 costs 81, nine times as much as an error of 3. Lower loss means a better model. Training means finding the <code>w</code> with the lowest loss.</p>
+
+<h2>Step 2: find which way is downhill</h2>
+
+<p>If you plot the loss for every possible <code>w</code>, you get a valley. The bottom is at <code>w = 3</code>, where the loss is 0.</p>
+
+<x-figure caption="Loss for every value of w. Gradient descent starts at w = 0 and takes smaller and smaller steps as the slope flattens near the bottom.">
+<svg viewBox="0 0 480 270" aria-label="A U-shaped curve of loss against w, lowest at w equals 3. Four dots on the left side of the curve at w equals 0, 1.5, 2.25 and 2.625, joined by arrows heading toward the bottom.">
+  <defs><marker id="hml-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <line x1="50" y1="220" x2="440" y2="220" class="s-line"/>
+  <line x1="50" y1="20" x2="50" y2="220" class="s-line"/>
+  <text x="42" y="34" text-anchor="end" class="t-small">45</text>
+  <text x="42" y="224" text-anchor="end" class="t-small">0</text>
+  <text x="18" y="130" class="t-sans t-small f-muted">loss</text>
+  <text x="60" y="240" text-anchor="middle" class="t-small">0</text>
+  <text x="150" y="240" text-anchor="middle" class="t-small">1.5</text>
+  <text x="240" y="240" text-anchor="middle" class="t-small">3</text>
+  <text x="420" y="240" text-anchor="middle" class="t-small">6</text>
+  <text x="250" y="262" text-anchor="middle" class="t-sans t-small f-muted">w (minutes per km)</text>
+  <path d="M60 30 Q240 410 420 30" class="f-none s-muted" stroke-width="2"/>
+  <line x1="66" y1="40" x2="144" y2="164" class="s-accent" stroke-width="2" marker-end="url(#hml-arrow)"/>
+  <line x1="156" y1="176" x2="188" y2="204" class="s-accent" stroke-width="2" marker-end="url(#hml-arrow)"/>
+  <circle cx="60" cy="30" r="6" class="f-accent"/>
+  <circle cx="150" cy="172.5" r="6" class="f-accent"/>
+  <circle cx="195" cy="208.1" r="5" class="f-accent"/>
+  <circle cx="217.5" cy="217" r="4" class="f-accent"/>
+  <circle cx="240" cy="220" r="6" class="f-good"/>
+  <text x="74" y="30" class="t-sans t-small">start: w = 0, loss 45</text>
+  <text x="162" y="160" class="t-sans t-small">w = 1.5, loss 11.25</text>
+  <text x="300" y="130" text-anchor="middle" class="t-sans t-small f-good">bottom: w = 3</text>
+</svg>
+</x-figure>
+
+<p>The <strong>gradient</strong> is the slope of that curve at your current <code>w</code>: how much the loss changes when you nudge <code>w</code> up a tiny bit. If the slope is negative, increasing <code>w</code> lowers the loss. If it is positive, decreasing <code>w</code> does.</p>
+
+<p>You can work the slope out with school algebra. Take one example with input <code>x</code>, answer <code>y</code> and error <code>e = w·x − y</code>. Nudge <code>w</code> up by a tiny amount <code>h</code>. The prediction grows by <code>h·x</code>, so the new error is <code>e + h·x</code>, and its square is:</p>
+
+<p><code>(e + h·x)² = e² + 2·e·x·h + (h·x)²</code></p>
+
+<p>When <code>h</code> is tiny, the last term is so small it does not matter. So the squared error grew by about <code>2·e·x</code> for every unit of <code>h</code>. That is the slope for one example. For the whole loss, average it over all examples:</p>
+
+<p><code>gradient = average of 2 × error × input</code></p>
+
+<h2>Step 3: take a step, and repeat</h2>
+
+<p>Move <code>w</code> a little in the downhill direction, which is the opposite sign of the gradient:</p>
+
+<p><code>w = w − learning rate × gradient</code></p>
+
+<p>The <strong>learning rate</strong> sets the step size. Here it is 0.05. Step through the first few rounds.</p>
+
+<x-tracer title="Gradient descent on minutes = w × km">
+<script type="application/json">
+{
+  "code": [
+    "w = 0, rate = 0.05",
+    "repeat:",
+    "  errors = w * km - minutes",
+    "  loss = average of errors squared",
+    "  gradient = average of 2 * error * km",
+    "  w = w - rate * gradient"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Start with a blind guess, <code>w = 0</code>. The model predicts 0 minutes for both trips. Errors are −3 and −9, so the loss is (9 + 81) / 2 = 45.", "line": 4, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0], "highlight": [0, 1] }, { "label": "error", "values": [-3, -9] } ], "vars": { "w": 0, "loss": 45 } },
+    { "caption": "Gradient: 2 × (−3) × 1 = −6 and 2 × (−9) × 3 = −54. Their average is −30. Negative means raising <code>w</code> lowers the loss.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0] }, { "label": "error", "values": [-3, -9], "highlight": [0, 1] } ], "vars": { "w": 0, "loss": 45, "gradient": -30 } },
+    { "caption": "Step: <code>w = 0 − 0.05 × (−30) = 1.5</code>. Predictions are now 1.5 and 4.5. The loss drops from 45 to 11.25.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5], "highlight": [0, 1] }, { "label": "error", "values": [-1.5, -4.5] } ], "vars": { "w": 1.5, "loss": 11.25 } },
+    { "caption": "Errors −1.5 and −4.5 give a gradient of (−3 + −27) / 2 = −15. Still downhill to the right, but less steep than before.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5] }, { "label": "error", "values": [-1.5, -4.5], "highlight": [0, 1] } ], "vars": { "w": 1.5, "loss": 11.25, "gradient": -15 } },
+    { "caption": "Step: <code>w = 1.5 − 0.05 × (−15) = 2.25</code>. The loss is now 2.8125.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.25, 6.75], "highlight": [0, 1] }, { "label": "error", "values": [-0.75, -2.25] } ], "vars": { "w": 2.25, "loss": 2.8125, "gradient used": -15 } },
+    { "caption": "Gradient −7.5, so <code>w = 2.25 + 0.375 = 2.625</code>. The gradient halves every round, so each step is half as long as the last.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.625, 7.875], "highlight": [0, 1] }, { "label": "error", "values": [-0.375, -1.125] } ], "vars": { "w": 2.625, "loss": 0.703125, "gradient used": -7.5 } },
+    { "caption": "Gradient −3.75, so <code>w = 2.8125</code>. The loss is about 0.18.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.8125, 8.4375], "highlight": [0, 1] }, { "label": "error", "values": [-0.1875, -0.5625] } ], "vars": { "w": 2.8125, "loss": 0.1758, "gradient used": -3.75 } },
+    { "caption": "One more step (gradient −1.875) gives <code>w = 2.90625</code>. After 5 steps the loss has fallen from 45 to about 0.04. Nobody told the model the answer was 3; following the slope got it there.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9], "mark": [0, 1] }, { "label": "predicted", "values": [2.90625, 8.71875], "mark": [0, 1] }, { "label": "error", "values": [-0.09375, -0.28125] } ], "vars": { "w": 2.90625, "loss": 0.0439, "steps": 5 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Notice that the steps shrink by themselves. Near the bottom the valley is flatter, the gradient is smaller, and so is the step. You never have to tell the method to slow down.</p>
+
+<h2>The code</h2>
+
+<x-code>
+<pre lang="js">
+// Average squared error of the model minutes = w * km.
+function loss(w, km, minutes) {
+  let total = 0;
+  for (let i = 0; i < km.length; i++) {
+    const error = w * km[i] - minutes[i];
+    total += error * error;
+  }
+  return total / km.length;
+}
+
+// Slope of the loss at w: average of 2 * error * input.
+function gradient(w, km, minutes) {
+  let total = 0;
+  for (let i = 0; i < km.length; i++) {
+    const error = w * km[i] - minutes[i];
+    total += 2 * error * km[i];
+  }
+  return total / km.length;
+}
+
+let w = 0;
+for (let step = 1; step <= 5; step++) {
+  w = w - 0.05 * gradient(w, [1, 3], [3, 9]);
+}
+// w is 2.90625, loss(w, [1, 3], [3, 9]) is about 0.044
+</pre>
+<pre lang="py">
+def loss(w, km, minutes):
+    """Average squared error of the model minutes = w * km."""
+    errors = [w * x - y for x, y in zip(km, minutes)]
+    return sum(e * e for e in errors) / len(km)
+
+def gradient(w, km, minutes):
+    """Slope of the loss at w: average of 2 * error * input."""
+    total = 0
+    for x, y in zip(km, minutes):
+        error = w * x - y
+        total += 2 * error * x
+    return total / len(km)
+
+w = 0
+for step in range(5):
+    w = w - 0.05 * gradient(w, [1, 3], [3, 9])
+# w is 2.90625, loss(w, [1, 3], [3, 9]) is about 0.044
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(n × p) per step", "space": "O(p)", "note": "Each step looks at all n examples for each of the p parameters. Real training repeats this many thousands of times." } ] }
+</script>
+</x-complexity>
+
+<h2>From one dial to millions</h2>
+
+<p>A real model has many parameters, not one. The idea does not change. For each parameter, you ask "if I nudge just this one, how does the loss change?" That list of slopes, one per parameter, is the gradient. Then every parameter takes a small step downhill at once.</p>
+
+<p>Two practical changes appear at scale. First, computing the loss over millions of examples for every step is too slow, so each step uses a small random batch of examples instead. The steps are noisier but far cheaper. Second, the loss surface has many dimensions and many dips, so gradient descent finds a good low point, not a guaranteed best one. That is usually good enough.</p>
+
+<x-callout type="key">
+<p>Learning is a loop: predict, measure the loss, work out which way each parameter should move to lower it, and take a small step.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="A learning rate that is too big">
+<p>With a rate of 0.25 instead of 0.05, the first step jumps from <code>w = 0</code> to 7.5, right over the valley. The next jumps to −3.75, then 13.125. The loss grows from 45 to 101.25 to about 228. If the loss goes up during training, lower the learning rate first.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A learning rate that is too small">
+<p>With a rate of 0.005, five steps only get <code>w</code> from 0 to about 0.68. It is heading the right way, just painfully slowly. A loss that barely moves is the sign.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Adding the gradient instead of subtracting it">
+<p>The gradient points uphill. <code>w + rate × gradient</code> climbs away from the answer, and the loss grows every step. Always step against the slope.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="One step by hand">
+<x-task>
+<p>Same two trips (1 km took 3 minutes, 3 km took 9 minutes), same learning rate 0.05. This time the model starts too high, at <code>w = 4</code>. Work out the errors, the loss, the gradient and the new <code>w</code>. Which direction did it move, and why?</p>
+</x-task>
+<x-answer>
+<ul>
+<li>Predictions: 4 × 1 = 4 and 4 × 3 = 12. Errors: 4 − 3 = 1 and 12 − 9 = 3.</li>
+<li>Loss: (1² + 3²) / 2 = (1 + 9) / 2 = 5.</li>
+<li>Gradient: (2 × 1 × 1 + 2 × 3 × 3) / 2 = (2 + 18) / 2 = 10.</li>
+<li>New <code>w</code>: 4 − 0.05 × 10 = 3.5. The loss there is (0.5² + 1.5²) / 2 = 1.25.</li>
+</ul>
+<p><code>w</code> went down. The errors were positive (the model guessed too long), so the gradient was positive, meaning "the loss rises if <code>w</code> rises". Stepping against it lowers <code>w</code>. The same formula handles both sides of the valley; you never write a separate rule for "too high" and "too low".</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "At the current <code>w</code>, the gradient is +12. What does the next step do?",
+      "options": [
+        { "text": "Increases <code>w</code>", "why": "A positive gradient means the loss rises as <code>w</code> rises. Increasing <code>w</code> would go uphill." },
+        { "text": "Decreases <code>w</code>", "correct": true, "why": "Right. The update subtracts rate × gradient, so a positive gradient pulls <code>w</code> down." },
+        { "text": "Leaves <code>w</code> unchanged", "why": "Only a gradient of 0 (flat ground) leaves <code>w</code> where it is." }
+      ]
+    },
+    {
+      "question": "During training, the loss goes 40, 90, 210, 480. What is the most likely cause?",
+      "options": [
+        { "text": "The learning rate is too big", "correct": true, "why": "Each step overshoots the bottom by more than the last, so the loss grows. Lower the rate." },
+        { "text": "The learning rate is too small", "why": "A tiny rate makes the loss fall slowly. It does not make it grow." },
+        { "text": "The model has found the best <code>w</code>", "why": "At the best <code>w</code> the loss would be low and steady, not exploding." }
+      ]
+    },
+    {
+      "question": "Why does mean squared error square each error instead of just averaging them?",
+      "options": [
+        { "text": "Squaring makes the numbers smaller", "why": "For errors bigger than 1, squaring makes them bigger." },
+        { "text": "So positive and negative errors cannot cancel, and big errors count extra", "correct": true, "why": "Errors of +5 and −5 would average to 0 and hide a bad model. Squared, they cost 25 each." },
+        { "text": "Because the model's output is always squared", "why": "The model here is <code>w × km</code>; nothing about it is squared. The squaring is only in how we score it." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Our model predicted a number. <a href="/ai/regression-and-classification.html">Regression and Classification</a> adds a second parameter for a better line, then turns the same idea into a model that picks a category, like spam or not spam.</p>

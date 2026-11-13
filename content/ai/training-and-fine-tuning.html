@@ -1,0 +1,236 @@
+<!--
+{
+  "title": "Training and Fine-Tuning",
+  "description": "How a model learns from raw text by being less surprised each time, and how later fine-tuning turns a text predictor into a helpful assistant.",
+  "minutes": 15,
+  "tags": ["llm", "training", "fine-tuning"]
+}
+-->
+<p>Imagine a new hire who has read every document in the company archive: manuals, emails, old reports, the lot. They can tell you how almost anything works. But put them on the help desk, and when a customer asks a question they reply with three more questions. In the archive, a question was usually followed by more questions in a FAQ list, not by an answer, so that is what they produce.</p>
+
+<p>That is roughly what a language model is like after its first and biggest stage of training. It has absorbed a vast amount of text, but it has not yet learned to act like an assistant. Getting from one to the other takes more training of a different kind.</p>
+
+<h2>Stage 1: pretraining on raw text</h2>
+
+<p>The <a href="/ai/what-is-an-llm.html">first lesson</a> showed that a model outputs chances for the next token. Pretraining teaches it to give good chances. The recipe needs no human labels at all:</p>
+
+<ol>
+<li>Take a piece of real text, for example "The cat slept on the mat".</li>
+<li>Hide the next token, and ask the model for its chances given the text before it.</li>
+<li>Measure how surprised the model was by the real next token.</li>
+<li>Nudge the model's numbers so it would be a little less surprised next time.</li>
+</ol>
+
+<p>Every position in every document is a free practice question. That is why pretraining can use so much text: books, websites, code, articles, in many languages.</p>
+
+<p>Surprise has a precise form, called the <strong>loss</strong>: minus the natural log of the chance the model gave to the real token. If the model gave the right token 0.9, the loss is about 0.11, barely surprised. If it gave 0.01, the loss is about 4.6, very surprised. Training means making the average loss go down.</p>
+
+<h2>Watch one example being learned</h2>
+
+<p>Below, a model must predict the last word of "The cat slept on the ___". It considers three words, and the real answer is "mat". Each word has a raw score, and softmax turns scores into chances, as in the <a href="/ai/attention-and-transformers.html">attention lesson</a>.</p>
+
+<p>The nudge has a neat form: for every word, subtract <code>rate × (chance − target)</code> from its score, where <code>rate</code> is the learning rate and the target is 1 for the real word and 0 for the others. The real word's score goes up, the others go down, and the further off a chance is, the bigger its nudge. This is gradient descent, as in <a href="/ai/how-models-learn.html">How Models Learn</a>. Here we nudge the three scores directly; a real model nudges the billions of parameters that produced them.</p>
+
+<x-tracer title="Four nudges on one example">
+<script type="application/json">
+{
+  "code": [
+    "chances = softmax(scores)",
+    "loss = -ln(chances[real word])",
+    "for each word i:",
+    "  target = 1 if i is the real word else 0",
+    "  scores[i] -= rate * (chances[i] - target)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Before training, the model prefers \"sofa\": a sensible guess, but the real word was \"mat\". It gave \"mat\" only 0.24 (0.245 before rounding), so the loss is −ln(0.245) ≈ 1.41.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [0, 1, -1] }, { "label": "chance", "values": [0.24, 0.67, 0.09], "highlight": [0] } ], "vars": { "loss": 1.41, "rate": 1 } },
+    { "caption": "Nudge, with rate 1. mat: 0 − (0.24 − 1) = 0.76, up. sofa: 1 − 0.67 = 0.33, down a lot. moon: −1 − 0.09 = −1.09, down a little. \"sofa\" was most wrong, so it moves most.", "line": 5, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"] }, { "label": "score", "values": [0.76, 0.33, -1.09], "highlight": [0, 1, 2] } ], "vars": { "rate": 1 } },
+    { "caption": "New chances: \"mat\" is now the favourite at 0.55. The loss dropped from 1.41 to 0.60.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [0.76, 0.33, -1.09] }, { "label": "chance", "values": [0.55, 0.36, 0.09], "highlight": [0] } ], "vars": { "loss": 0.6, "rate": 1 } },
+    { "caption": "Nudge again and recompute. \"mat\" reaches 0.72 and the loss falls to 0.33.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [1.2, -0.03, -1.18] }, { "label": "chance", "values": [0.72, 0.21, 0.07], "highlight": [0] } ], "vars": { "loss": 0.33, "rate": 1 } },
+    { "caption": "Another nudge: \"mat\" is at 0.80 and the loss is 0.22 (the chances are rounded, so this row adds to 0.99). Each step helps less than the one before, because the chance is already close to right.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [1.48, -0.24, -1.24] }, { "label": "chance", "values": [0.8, 0.14, 0.05], "highlight": [0] } ], "vars": { "loss": 0.22, "rate": 1 } },
+    { "caption": "After four nudges: 0.85 for \"mat\", loss 0.16, down from 1.41. A real model never gets this one sentence perfect, because it must also leave room for \"sofa\" in all the texts where the cat really did sleep on the sofa.", "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "mark": [0] }, { "label": "score", "values": [1.68, -0.38, -1.3] }, { "label": "chance", "values": [0.85, 0.11, 0.04], "mark": [0] } ], "vars": { "loss": 0.16, "nudges": 4 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>That last caption is the important one. Training does not teach the model to recite one text. It pulls the chances toward what is common across millions of similar texts. Mostly, the model ends up with good guesses rather than stored documents. The exception is text repeated many times in training, like famous quotes or common licence text, which it can memorise word for word.</p>
+
+<h2>The code</h2>
+
+<x-code>
+<pre lang="js">
+function softmax(scores) {
+  const biggest = Math.max(...scores);
+  const exps = scores.map((s) => Math.exp(s - biggest));
+  const total = exps.reduce((a, b) => a + b, 0);
+  return exps.map((e) => e / total);
+}
+
+// One training step on one example. Returns the new scores and the loss.
+function trainStep(scores, correct, rate) {
+  const chances = softmax(scores);
+  const loss = -Math.log(chances[correct]); // surprise at the real word
+  const newScores = scores.map((s, i) => {
+    const target = i === correct ? 1 : 0;
+    return s - rate * (chances[i] - target); // the nudge
+  });
+  return { newScores, loss };
+}
+
+let scores = [0, 1, -1]; // mat, sofa, moon
+for (let step = 0; step < 4; step++) {
+  const { newScores, loss } = trainStep(scores, 0, 1);
+  console.log(loss.toFixed(2)); // 1.41, 0.60, 0.33, 0.22
+  scores = newScores;
+}
+</pre>
+<pre lang="py">
+import math
+
+def softmax(scores):
+    biggest = max(scores)
+    exps = [math.exp(s - biggest) for s in scores]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+# One training step on one example. Returns the new scores and the loss.
+def train_step(scores, correct, rate):
+    chances = softmax(scores)
+    loss = -math.log(chances[correct])  # surprise at the real word
+    new_scores = []
+    for i, (s, c) in enumerate(zip(scores, chances)):
+        target = 1 if i == correct else 0
+        new_scores.append(s - rate * (c - target))  # the nudge
+    return new_scores, loss
+
+scores = [0, 1, -1]  # mat, sofa, moon
+for step in range(4):
+    scores, loss = train_step(scores, 0, 1)
+    print(f"{loss:.2f}")  # 1.41, 0.60, 0.33, 0.22
+</pre>
+</x-code>
+
+<p>Real pretraining runs this over trillions of tokens, in batches of many examples at a time, on large clusters of specialised chips for weeks or months. That cost is why only a few organisations pretrain large models from scratch, and why everyone else starts from an existing one.</p>
+
+<h2>Stages 2 and 3: becoming an assistant</h2>
+
+<p>A pretrained, or <em>base</em>, model continues text. Ask it a question and it may continue with the kind of text that often follows a question on the web.</p>
+
+<x-prompt label="Base model" tone="weak">
+<x-user>
+How do I remove a stripped screw?
+</x-user>
+<x-model>
+How do I remove a rusted bolt? How do I fix a wobbly table leg? Browse our full list of 200 home repair questions below, sorted by
+</x-model>
+</x-prompt>
+
+<p>Two more stages fix this. Both are much smaller than pretraining.</p>
+
+<x-figure caption="Three stages of training. Each starts from the model the stage before produced.">
+<svg viewBox="0 0 520 170" aria-label="Three boxes left to right connected by arrows: Pretraining on huge amounts of raw text; Instruction tuning on example conversations; Preference tuning on feedback and rewards. Below, the result: a text predictor, then an assistant, then a more helpful and careful assistant.">
+  <defs><marker id="train-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <rect x="5" y="20" width="150" height="70" rx="8" class="f-accent-soft s-accent"/>
+  <text x="80" y="48" text-anchor="middle" class="t-sans t-bold">Pretraining</text>
+  <text x="80" y="70" text-anchor="middle" class="t-sans t-small">huge amounts of raw text</text>
+  <rect x="185" y="20" width="150" height="70" rx="8" class="f-surface s-line"/>
+  <text x="260" y="48" text-anchor="middle" class="t-sans t-bold">Instruction tuning</text>
+  <text x="260" y="70" text-anchor="middle" class="t-sans t-small">example conversations</text>
+  <rect x="365" y="20" width="150" height="70" rx="8" class="f-surface s-line"/>
+  <text x="440" y="48" text-anchor="middle" class="t-sans t-bold">Preference tuning</text>
+  <text x="440" y="70" text-anchor="middle" class="t-sans t-small">feedback and rewards</text>
+  <line x1="157" y1="55" x2="181" y2="55" class="s-accent" stroke-width="2" marker-end="url(#train-arrow)"/>
+  <line x1="337" y1="55" x2="361" y2="55" class="s-accent" stroke-width="2" marker-end="url(#train-arrow)"/>
+  <text x="80" y="120" text-anchor="middle" class="t-sans t-small f-muted">knows a lot,</text>
+  <text x="80" y="138" text-anchor="middle" class="t-sans t-small f-muted">continues any text</text>
+  <text x="260" y="120" text-anchor="middle" class="t-sans t-small f-muted">answers in the</text>
+  <text x="260" y="138" text-anchor="middle" class="t-sans t-small f-muted">shape of a reply</text>
+  <text x="440" y="120" text-anchor="middle" class="t-sans t-small f-muted">answers that people</text>
+  <text x="440" y="138" text-anchor="middle" class="t-sans t-small f-muted">and checks prefer</text>
+</svg>
+</x-figure>
+
+<p><strong>Instruction tuning</strong> continues training with the same next-token method, but on a much smaller set of carefully written conversations: a request, then a good reply. The model learns the pattern "after a user turn comes a helpful assistant turn". Knowledge mostly comes from pretraining; this stage mainly teaches format and behaviour.</p>
+
+<p><strong>Preference tuning</strong> goes further. The model writes several answers to the same request, and they are compared: by people, by a separate model trained on people's judgements, or by automatic checks where the answer can be verified, like code that must pass tests or a maths answer that can be checked. Training then makes the preferred kinds of answers more likely. This is where much of the tone, caution and step-by-step reasoning of an assistant comes from.</p>
+
+<x-callout type="key">
+<p>Pretraining gives a model its knowledge and language by predicting raw text. Fine-tuning stages are smaller and mostly shape behaviour: answer the question, follow instructions, and prefer the kinds of answers that were rewarded.</p>
+</x-callout>
+
+<p>You may also hear about fine-tuning as something a company does to an existing model: training it further on its own examples, for example to always produce a house format or to handle a narrow task well. It is the same idea, at a smaller scale.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Thinking the model learns from your chat">
+<p>A model's parameters are fixed after training. Correcting it in a conversation helps for the rest of that conversation, because the correction is in the text it reads, and is gone in the next one. Whether a provider uses conversations to train future models is a policy question, so check the settings; see <a href="/ai/privacy-and-security.html">Privacy and Security</a>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Fine-tuning to add facts">
+<p>Fine-tuning is good at changing style, format and behaviour. It is an unreliable way to teach new facts, like your product catalogue: the model may blend them with what it already believed. To give a model specific, current information, put that information in the prompt, often with <a href="/ai/rag-basics.html">retrieval</a>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting the cut-off">
+<p>Pretraining text was collected up to some date. The model knows nothing about events after it unless they are given to it in the prompt, and it may not even know where its own cut-off is.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Prompt, retrieval or fine-tuning">
+<x-task>
+<p>For each situation, choose the best first approach: a better prompt, giving the model documents in the prompt (retrieval), or fine-tuning. Give a one-line reason.</p>
+</x-task>
+<x-start>
+1. A support bot must answer questions about this month's pricing.
+2. Thousands of daily replies must follow a strict, unusual house format.
+3. Summaries of meeting notes come out too long and too formal.
+</x-start>
+<x-answer>
+<ol>
+<li><strong>Retrieval.</strong> Prices change and are specific facts. Put the current price list in the prompt; fine-tuning would bake in numbers that go stale.</li>
+<li><strong>Try a prompt with examples first, then consider fine-tuning.</strong> A few examples often get the format right. If it still slips at that volume, fine-tuning on many correct replies is exactly what fine-tuning is good at: consistent behaviour.</li>
+<li><strong>A better prompt.</strong> Say the length and tone you want. Training anything is far more work than writing "under 100 words, plain and friendly".</li>
+</ol>
+<p>The pattern: prompt first, add information with retrieval, and fine-tune only for behaviour you cannot get reliably any other way.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "The model gave the real next token a chance of 0.5. What is the loss?",
+      "options": [
+        { "text": "About 0.69", "correct": true, "why": "−ln(0.5) ≈ 0.69. Halfway confident means moderate surprise." },
+        { "text": "0.5", "why": "The loss is minus the log of the chance, not the chance itself." },
+        { "text": "0", "why": "Zero loss would need a chance of 1 for the real token." }
+      ]
+    },
+    {
+      "question": "Where does pretraining get its \"right answers\" from?",
+      "options": [
+        { "text": "People label each example by hand", "why": "That would be far too slow for the amount of text used. No labels are needed." },
+        { "text": "The next token in the real text is the answer", "correct": true, "why": "Right. Hide the next token, predict it, then compare. Every position in every text is a free example." },
+        { "text": "A search engine checks each prediction", "why": "Nothing checks the facts. The model is only rewarded for matching the text it was trained on." }
+      ]
+    },
+    {
+      "question": "A base model answers a question with a list of more questions. Which stage fixes this?",
+      "options": [
+        { "text": "More pretraining", "why": "More raw text makes it a better text predictor, which is the very behaviour causing this." },
+        { "text": "Instruction tuning on example conversations", "correct": true, "why": "It teaches the pattern that a request is followed by a helpful reply." },
+        { "text": "A higher temperature", "why": "Temperature changes how the next token is picked, not what kind of text the model expects to produce." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Training gives the model good chances for the next token. <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> covers the last step: how one token is actually chosen from those chances.</p>

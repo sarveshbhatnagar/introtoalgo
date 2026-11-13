@@ -1,0 +1,225 @@
+<!--
+{
+  "title": "Neural Networks",
+  "description": "Build a network from simple units, see why layers need a bend to be useful, trace a tiny network by hand, and learn how backpropagation trains it.",
+  "minutes": 16,
+  "tags": ["machine learning", "neural networks", "deep learning"]
+}
+-->
+<p>A hallway has a light switch at each end. Flip either one and the light changes. So with both switches down the light is off, with exactly one up it is on, and with both up it is off again. Simple to describe, and yet the weighted-sum classifier from <a href="/ai/regression-and-classification.html">Regression and Classification</a> cannot learn it, whatever weights you give it.</p>
+
+<p>Fixing it takes one new idea: stack simple units in layers, with a bend between them. Neural networks are built from that idea. Scaled up enormously, it is behind modern image recognition, speech recognition and language models.</p>
+
+<h2>Why one weighted sum is not enough</h2>
+
+<p>The classifier in <a href="/ai/regression-and-classification.html">Regression and Classification</a> computes a weighted sum of the features and compares it with a threshold. Geometrically, that draws one straight line through the space of inputs: on one side "yes", on the other "no".</p>
+
+<x-figure caption="The four switch positions. The light is on for the two corners on one diagonal and off for the other two. No single straight line can put both 'on' corners on one side and both 'off' corners on the other.">
+<svg viewBox="0 0 480 240" aria-label="A square with four corner points. Bottom-left (both switches down) and top-right (both up) are off. Top-left and bottom-right are on. A dashed line cuts off the bottom-left off point, but the top-right off point is left on the same side as the two on points.">
+  <line x1="80" y1="190" x2="250" y2="190" class="s-line"/>
+  <line x1="80" y1="190" x2="80" y2="30" class="s-line"/>
+  <text x="165" y="222" text-anchor="middle" class="t-sans t-small f-muted">switch 1</text>
+  <text x="40" y="125" text-anchor="middle" class="t-sans t-small f-muted">switch 2</text>
+  <text x="80" y="208" text-anchor="middle" class="t-small">0</text>
+  <text x="210" y="208" text-anchor="middle" class="t-small">1</text>
+  <text x="66" y="194" text-anchor="end" class="t-small">0</text>
+  <text x="66" y="64" text-anchor="end" class="t-small">1</text>
+  <line x1="60" y1="105" x2="150" y2="195" class="s-muted s-dash" stroke-width="2"/>
+  <circle cx="80" cy="190" r="10" class="f-bg s-fg" stroke-width="2"/>
+  <circle cx="210" cy="60" r="10" class="f-bg s-fg" stroke-width="2"/>
+  <circle cx="210" cy="190" r="10" class="f-good"/>
+  <circle cx="80" cy="60" r="10" class="f-good"/>
+  <circle cx="290" cy="80" r="8" class="f-good"/>
+  <text x="306" y="85" class="t-sans">light on</text>
+  <circle cx="290" cy="112" r="8" class="f-bg s-fg" stroke-width="2"/>
+  <text x="306" y="117" class="t-sans">light off</text>
+  <text x="282" y="160" class="t-sans t-small f-muted">Every straight line leaves</text>
+  <text x="282" y="178" class="t-sans t-small f-muted">at least one point on the</text>
+  <text x="282" y="196" class="t-sans t-small f-muted">wrong side.</text>
+</svg>
+</x-figure>
+
+<p>Now suppose you first computed two new features: "how many switches are up" and "are both up". Then the answer is easy: count minus twice "both". With 1 switch up that gives 1. With 2 up it gives 2 − 2 = 0. A network learns intermediate features like these on its own.</p>
+
+<h2>The building block: a neuron</h2>
+
+<p>A <strong>neuron</strong> in a network is three small steps:</p>
+
+<ol>
+<li>Multiply each input by its weight and add them up.</li>
+<li>Add a bias.</li>
+<li>Pass the result through an <strong>activation function</strong>.</li>
+</ol>
+
+<p>The first two steps are exactly the weighted sum you already know. The third adds the bend. The most common activation is <strong>ReLU</strong>: keep the number if it is positive, otherwise output 0. In code, <code>max(0, z)</code>.</p>
+
+<p>Neurons are arranged in <strong>layers</strong>. The inputs feed a hidden layer, the hidden layer's outputs feed the next layer, and the last layer gives the answer. "Deep learning" just means networks with many hidden layers.</p>
+
+<h2>Trace the hallway network</h2>
+
+<p>Here is a network with two hidden neurons that solves the hallway problem. The weights are set by hand so you can follow every number; training can find other weights that also work.</p>
+
+<ul>
+<li><code>h1 = ReLU(s1 + s2)</code>: how many switches are up.</li>
+<li><code>h2 = ReLU(s1 + s2 − 1)</code>: 1 only when both are up, because the bias of −1 cancels a single switch.</li>
+<li><code>light = h1 − 2 × h2</code>.</li>
+</ul>
+
+<x-tracer title="Forward pass through the hallway network">
+<script type="application/json">
+{
+  "code": [
+    "h1 = relu(1*s1 + 1*s2 + 0)",
+    "h2 = relu(1*s1 + 1*s2 - 1)",
+    "light = 1*h1 - 2*h2"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Both switches up: <code>s1 = 1</code>, <code>s2 = 1</code>. The numbers on the arrows are the weights.", "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "highlight": ["s1", "s2"], "labels": { "s1": "1", "s2": "1", "h2": "bias −1" } }, "vars": { "s1": 1, "s2": 1 } },
+    { "caption": "<code>h1</code>: 1 × 1 + 1 × 1 = 2. Positive, so ReLU keeps it. <code>h1 = 2</code>: two switches are up.", "line": 1, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "highlight": ["h1"], "highlightEdges": [["s1", "h1"], ["s2", "h1"]], "labels": { "s1": "1", "s2": "1", "h1": "2", "h2": "bias −1" } }, "vars": { "s1": 1, "s2": 1, "h1": 2 } },
+    { "caption": "<code>h2</code>: 1 + 1 − 1 = 1. Positive, so <code>h2 = 1</code>: both switches are up.", "line": 2, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "highlight": ["h2"], "highlightEdges": [["s1", "h2"], ["s2", "h2"]], "labels": { "s1": "1", "s2": "1", "h1": "2", "h2": "1" } }, "vars": { "s1": 1, "s2": 1, "h1": 2, "h2": 1 } },
+    { "caption": "Output: 1 × 2 + (−2) × 1 = 0. The light is off, which is correct.", "line": 3, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "mark": ["light"], "highlightEdges": [["h1", "light"], ["h2", "light"]], "labels": { "s1": "1", "s2": "1", "h1": "2", "h2": "1", "light": "0 (off)" } }, "vars": { "s1": 1, "s2": 1, "h1": 2, "h2": 1, "light": 0 } },
+    { "caption": "Now only switch 1 up: <code>s1 = 1</code>, <code>s2 = 0</code>. <code>h1</code> = 1 + 0 = 1.", "line": 1, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "highlight": ["h1"], "highlightEdges": [["s1", "h1"], ["s2", "h1"]], "labels": { "s1": "1", "s2": "0", "h1": "1", "h2": "bias −1" } }, "vars": { "s1": 1, "s2": 0, "h1": 1 } },
+    { "caption": "<code>h2</code>: 1 + 0 − 1 = 0, and ReLU of 0 is 0. The bias did its job: one switch is not enough to wake <code>h2</code>.", "line": 2, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "highlight": ["h2"], "highlightEdges": [["s1", "h2"], ["s2", "h2"]], "labels": { "s1": "1", "s2": "0", "h1": "1", "h2": "0" } }, "vars": { "s1": 1, "s2": 0, "h1": 1, "h2": 0 } },
+    { "caption": "Output: 1 × 1 + (−2) × 0 = 1. The light is on.", "line": 3, "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "mark": ["light"], "highlightEdges": [["h1", "light"], ["h2", "light"]], "labels": { "s1": "1", "s2": "0", "h1": "1", "h2": "0", "light": "1 (on)" } }, "vars": { "s1": 1, "s2": 0, "h1": 1, "h2": 0, "light": 1 } },
+    { "caption": "Both down: <code>h1</code> = 0, and <code>h2</code> = ReLU(−1) = 0, so the light is 0, off. Here ReLU matters: without it, <code>h2</code> would be −1 and the light would read 2.", "graph": { "nodes": [ { "id": "s1", "x": 10, "y": 15 }, { "id": "s2", "x": 10, "y": 75 }, { "id": "h1", "x": 50, "y": 15 }, { "id": "h2", "x": 50, "y": 75 }, { "id": "light", "x": 90, "y": 45 } ], "edges": [ ["s1", "h1", 1], ["s2", "h1", 1], ["s1", "h2", 1], ["s2", "h2", 1], ["h1", "light", 1], ["h2", "light", -2] ], "directed": true, "mark": ["light"], "labels": { "s1": "0", "s2": "0", "h1": "0", "h2": "0", "light": "0 (off)" } }, "vars": { "s1": 0, "s2": 0, "h1": 0, "h2": 0, "light": 0 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Switch 2 alone works like switch 1 alone and gives 1. All four positions come out right. Running inputs through the network to get an output like this is called the <strong>forward pass</strong>.</p>
+
+<x-code>
+<pre lang="js">
+function relu(z) {
+  return Math.max(0, z);
+}
+
+// Weighted sum of the inputs, plus the bias.
+function weightedSum(inputs, weights, bias) {
+  let z = bias;
+  for (let i = 0; i < inputs.length; i++) z += inputs[i] * weights[i];
+  return z;
+}
+
+// Two switches in, light out (1 = on).
+function hallwayLight(s1, s2) {
+  const h1 = relu(weightedSum([s1, s2], [1, 1], 0));  // switches up
+  const h2 = relu(weightedSum([s1, s2], [1, 1], -1)); // both up?
+  return weightedSum([h1, h2], [1, -2], 0);
+}
+
+hallwayLight(0, 0); // 0
+hallwayLight(1, 0); // 1
+hallwayLight(1, 1); // 0
+</pre>
+<pre lang="py">
+def relu(z):
+    return max(0, z)
+
+def weighted_sum(inputs, weights, bias):
+    """Weighted sum of the inputs, plus the bias."""
+    return bias + sum(x * w for x, w in zip(inputs, weights))
+
+def hallway_light(s1, s2):
+    """Two switches in, light out (1 = on)."""
+    h1 = relu(weighted_sum([s1, s2], [1, 1], 0))   # switches up
+    h2 = relu(weighted_sum([s1, s2], [1, 1], -1))  # both up?
+    return weighted_sum([h1, h2], [1, -2], 0)
+
+hallway_light(0, 0)  # 0
+hallway_light(1, 0)  # 1
+hallway_light(1, 1)  # 0
+</pre>
+</x-code>
+
+<h2>Why the bend matters</h2>
+
+<p>Remove ReLU and see what happens with school algebra. The output becomes</p>
+
+<p><code>(s1 + s2) − 2 × (s1 + s2 − 1) = 2 − s1 − s2</code></p>
+
+<p>That is one weighted sum again, a straight line, and it gives 2 for both switches down. Stacking layers of plain weighted sums always collapses into a single weighted sum, however many layers you add. The activation function is what lets each layer build something new on top of the last.</p>
+
+<x-callout type="key">
+<p>A neural network is layers of weighted sums with a simple bend after each one. The bends let later layers combine earlier features into new ones, which is what a single weighted sum cannot do.</p>
+</x-callout>
+
+<h2>How a network is trained</h2>
+
+<p>Training uses the loop from <a href="/ai/how-models-learn.html">How Models Learn</a>: start with small random weights, run the forward pass, measure the loss, compute the gradient for every weight, and step downhill. The only hard part is the gradient, because a weight in the first layer affects the output through every layer after it.</p>
+
+<p>The trick is to multiply rates of change along the path. Take the weight from <code>s1</code> to <code>h2</code>, with both switches up. Nudge it up by 0.01. Then <code>h2</code> rises by 0.01 × 1 = 0.01, because <code>s1</code> is 1. ReLU passes that change through unchanged, because its input (1) is positive. The output changes by −2 times whatever <code>h2</code> changes, so it falls by 0.02. The rate for that weight is 1 × 1 × (−2) = −2: the input, ReLU's rate and the next weight, multiplied together along the path. This is the chain rule. To get the gradient of the loss, multiply by one more rate at the end: how much the loss changes when the output changes.</p>
+
+<p><strong>Backpropagation</strong> does this for every weight at once, starting at the output and working backwards layer by layer, reusing each layer's rates for the layer before it. One backward sweep costs only a small multiple of one forward pass, which is why networks with millions or billions of weights can be trained at all.</p>
+
+<x-callout type="real-world">
+<p>In image models, early layers tend to learn edges and color patches, middle layers combine them into textures and parts, and late layers respond to whole objects. Nobody programs those features. They appear because they help lower the loss.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Forgetting the activation function">
+<p>A network without activations, however deep, is one weighted sum in disguise, as the algebra above shows. If a network cannot learn a pattern that should be easy, check that every hidden layer has its activation.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Feeding inputs on wildly different scales">
+<p>If one input is an age (around 40) and another is an income (around 40,000), the income dominates every weighted sum and gradient steps behave badly. Rescale inputs to similar ranges, for example by subtracting the average and dividing by the spread, before training.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Taking the brain comparison literally">
+<p>The word "neuron" is a loose metaphor. Each unit is a weighted sum and a <code>max</code>. A network that labels photos well has learned patterns that lower its loss, not an understanding of what it sees, and it can fail in ways no person would.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Rewire the output">
+<x-task>
+<p>Keep the two hidden neurons exactly as they are: <code>h1</code> counts the switches that are up, and <code>h2</code> is 1 only when both are up. Choose new output weights so that (a) the light is on only when both switches are up, and (b) the light is on when at least one switch is up. Check all four positions for each.</p>
+</x-task>
+<x-answer>
+<p><strong>(a) Both up:</strong> <code>light = 0 × h1 + 1 × h2</code>. Positions (0,0), (1,0), (0,1), (1,1) give 0, 0, 0, 1.</p>
+<p><strong>(b) At least one up:</strong> <code>light = 1 × h1 − 1 × h2</code>. The four positions give 0, 1, 1, 2 − 1 = 1.</p>
+<p>The hidden layer did not change at all, only the last layer's weights. That is what learned features buy you: once a network has computed useful intermediate signals, many different answers are a simple weighted sum away.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A neuron's weighted sum plus bias is −3. What does ReLU output?",
+      "options": [
+        { "text": "−3", "why": "ReLU only passes positive values through unchanged." },
+        { "text": "0", "correct": true, "why": "ReLU is <code>max(0, z)</code>, so any negative value becomes 0." },
+        { "text": "3", "why": "ReLU does not flip the sign. It replaces negative values with 0." }
+      ]
+    },
+    {
+      "question": "You build a 10-layer network but forget every activation function. What can it learn?",
+      "options": [
+        { "text": "The same things as a 10-layer network with activations, just more slowly", "why": "Without activations, the layers collapse into one weighted sum. It loses ability, not just speed." },
+        { "text": "Only what a single weighted sum can learn", "correct": true, "why": "Weighted sums of weighted sums are still one weighted sum. It cannot solve the hallway problem." },
+        { "text": "Nothing at all", "why": "It can still learn anything a single weighted sum can, like a straight-line fit." }
+      ]
+    },
+    {
+      "question": "What does backpropagation compute?",
+      "options": [
+        { "text": "The network's output for an input", "why": "That is the forward pass." },
+        { "text": "How much the loss changes when each weight is nudged", "correct": true, "why": "It computes the gradient for every weight in one backward sweep, by multiplying rates of change along each path." },
+        { "text": "The best possible weights, directly", "why": "It only gives the downhill direction. Gradient descent still takes many small steps." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The hidden values inside a network are lists of numbers that capture what the network has learned about its input. <a href="/ai/embeddings.html">Embeddings</a> takes that idea and turns it into one of the most useful tools in applied AI: representing words, documents and products as points where similar things sit close together.</p>

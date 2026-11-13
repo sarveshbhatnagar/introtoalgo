@@ -1,0 +1,157 @@
+{
+  "slug": "wiring-the-campsites",
+  "title": "Wiring the Campsites",
+  "topic": "graphs",
+  "difficulty": "medium",
+  "pattern": "greedy",
+  "aka": "Min Cost to Connect All Points",
+  "order": 10,
+  "story": [
+    "<p>A campground is adding electric hook-ups. Each pitch has grid coordinates <code>[x, y]</code> on the site map. Cable has to run along the gravel paths, which go only north-south and east-west, so a cable between two pitches costs <code>|x1 - x2| + |y1 - y2|</code> metres.</p>",
+    "<p>Power can pass through a pitch to reach the next one, so every pitch just needs to be connected to the rest by some chain of cables. The manager wants the least total cable that does it.</p>"
+  ],
+  "task": [
+    "<p>Write <code>minCable(pitches)</code>. Each entry is <code>[x, y]</code>. You may lay a cable between any two pitches, at a cost equal to their distance along the paths, <code>|x1 - x2| + |y1 - y2|</code>. Return the smallest total cost so that every pitch is connected to every other, directly or through other pitches.</p>",
+    "<p>One pitch needs no cable: return 0. Two pitches can share the same coordinates; joining them costs 0.</p>"
+  ],
+  "constraints": ["1 ≤ pitches.length ≤ 1,000", "-1,000,000 ≤ x, y ≤ 1,000,000"],
+  "examples": [
+    {
+      "args": [[[0, 0], [2, 2], [3, 10], [5, 2], [7, 0]]],
+      "expected": 20,
+      "explanation": "Lay [0,0]–[2,2] (4), [2,2]–[5,2] (3), [5,2]–[7,0] (4) and [2,2]–[3,10] (9). Total 20. The cable to [3,10] is the expensive one, and 9 is the cheapest cable that reaches it: every other one costs at least 10."
+    },
+    {
+      "args": [[[0, 0], [1, 0], [10, 0], [11, 0]]],
+      "expected": 11,
+      "explanation": "Two pairs, each with a 1-metre cable. Linking each pitch to its own nearest neighbor gives just those two cables, which leaves two separate groups. One more cable is needed to bridge the gap, and the cheapest is [1,0]–[10,0] at 9. Total 1 + 1 + 9 = 11."
+    }
+  ],
+  "hints": [
+    "Look at the second example. If you connect each pitch to its nearest neighbor, is everything connected? What is still missing?",
+    "Any cheapest plan uses exactly n - 1 cables and has no loops: a loop always contains a cable you could remove and stay connected. So you are choosing a tree.",
+    "Grow the network from one pitch. At every moment you have a connected group and the pitches outside it. Which single cable is always safe to add next?",
+    "Use Prim's algorithm. Keep, for every pitch outside the group, the cheapest cable to any pitch inside it. Repeatedly add the outside pitch with the smallest such cost, add that cost to the total, then update the other outside pitches using the distance to the newly added one. With all pairs possible, a plain O(n²) scan is simplest; no heap needed."
+  ],
+  "bruteForce": [
+    "<p>List all n(n - 1)/2 possible cables and try every subset of n - 1 of them that connects everything, keeping the cheapest.</p>",
+    "<p>With just 20 pitches there are 190 cables and about 6 × 10<sup>25</sup> ways to pick 19 of them. Greedy choices are provably safe here, so you never need to search. Kruskal's algorithm (sort all cables, add each one that joins two different groups) also works, but with 1,000 pitches it has to sort about 500,000 cables first.</p>"
+  ],
+  "signature": {"function": "minCable", "params": [{"name": "pitches", "type": "int[][]"}], "returns": "int"},
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number[][]} pitches  each [x, y]",
+      " * @return {number} least total cable length to connect them all",
+      " */",
+      "function minCable(pitches) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": ["def min_cable(pitches: list[list[int]]) -> int:", "    # Your code here", "    pass"]
+  },
+  "tests": [
+    {"args": [[[4, -7]]], "expected": 0, "note": "a single pitch"},
+    {
+      "args": [[[0, 0], [3, 4]]],
+      "expected": 7,
+      "note": "two pitches: distance along the paths, not straight-line 5"
+    },
+    {"args": [[[2, 2], [2, 2], [2, 2]]], "expected": 0, "note": "all at the same spot"},
+    {"args": [[[0, 0], [0, 5], [0, 1], [0, 9], [0, 3]]], "expected": 9, "note": "all in a line, unsorted"},
+    {
+      "args": [[[-3, -3], [3, 3], [-3, 3], [3, -3]]],
+      "expected": 18,
+      "note": "corners of a square, negative coordinates"
+    },
+    {
+      "args": [[[0, 0], [1, 0], [10, 0], [11, 0], [20, 0], [21, 0]]],
+      "expected": 21,
+      "note": "three clusters: nearest-neighbor links leave them apart"
+    },
+    {
+      "args": [[[0, 0], [5, 0], [-5, 0], [0, 5]]],
+      "expected": 15,
+      "note": "a star: a chain that hops to the nearest unvisited pitch pays 25, the tree pays 15"
+    },
+    {"args": [[[0, 0], [5, 5], [5, 0], [0, 5], [2, 3]]], "expected": 19, "note": "a hub in the middle"},
+    {"args": [[[1, 1], [1, 1], [4, 1], [4, 5]]], "expected": 7, "note": "duplicate pitch plus others"},
+    {
+      "args": [[[-1000000, -1000000], [1000000, 1000000], [0, 0]]],
+      "expected": 4000000,
+      "note": "largest coordinates"
+    },
+    {
+      "args": [[[0, 0], [2, 9], [7, 3], [8, 8], [3, 4], [9, 1], [5, 6], [1, 7], [6, 0], [4, 2]]],
+      "expected": 38,
+      "note": "scattered pitches"
+    }
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function minCable(pitches) {",
+      "  const n = pitches.length;",
+      "  const inTree = new Array(n).fill(false);",
+      "  const cheapest = new Array(n).fill(Infinity); // best cable into the tree",
+      "  cheapest[0] = 0;",
+      "  let total = 0;",
+      "  for (let added = 0; added < n; added++) {",
+      "    let pick = -1;",
+      "    for (let i = 0; i < n; i++) {",
+      "      if (!inTree[i] && (pick === -1 || cheapest[i] < cheapest[pick])) pick = i;",
+      "    }",
+      "    inTree[pick] = true;",
+      "    total += cheapest[pick];",
+      "    const [px, py] = pitches[pick];",
+      "    for (let i = 0; i < n; i++) {",
+      "      if (inTree[i]) continue;",
+      "      const d = Math.abs(px - pitches[i][0]) + Math.abs(py - pitches[i][1]);",
+      "      if (d < cheapest[i]) cheapest[i] = d;",
+      "    }",
+      "  }",
+      "  return total;",
+      "}"
+    ],
+    "py": [
+      "def min_cable(pitches):",
+      "    n = len(pitches)",
+      "    in_tree = [False] * n",
+      "    cheapest = [float('inf')] * n  # best cable into the tree",
+      "    cheapest[0] = 0",
+      "    total = 0",
+      "    for _ in range(n):",
+      "        pick = -1",
+      "        for i in range(n):",
+      "            if not in_tree[i] and (pick == -1 or cheapest[i] < cheapest[pick]):",
+      "                pick = i",
+      "        in_tree[pick] = True",
+      "        total += cheapest[pick]",
+      "        px, py = pitches[pick]",
+      "        for i in range(n):",
+      "            if not in_tree[i]:",
+      "                d = abs(px - pitches[i][0]) + abs(py - pitches[i][1])",
+      "                if d < cheapest[i]:",
+      "                    cheapest[i] = d",
+      "    return total"
+    ],
+    "walkthrough": [
+      "<p>The cheapest way to connect everything is a minimum spanning tree. Prim's algorithm builds it by growing one group: the cheapest cable that leaves the group is always part of some cheapest plan, so take it, and repeat.</p>",
+      "<p>Trace the first example. Pitches: A [0,0], B [2,2], C [3,10], D [5,2], E [7,0]. Start with A in the group.</p>",
+      "<ol>",
+      "<li>Cheapest cable from A to each outside pitch: B 4, C 13, D 7, E 7. Take B (4). Total 4.</li>",
+      "<li>Update with distances from B: C becomes 9, D becomes 3, E stays 7. Take D (3). Total 7.</li>",
+      "<li>Update with distances from D: C stays 9, E becomes 4. Take E (4). Total 11.</li>",
+      "<li>Update with distances from E: C stays 9 (E to C is 14). Take C (9). Total 20.</li>",
+      "</ol>",
+      "<p>Each pitch keeps only one number: its cheapest cable into the group so far. When a new pitch joins, that number can only go down, and only the new pitch's distances need checking. That is why one O(n) update per step is enough.</p>",
+      "<p>A heap version of Prim's is the usual choice for sparse graphs. Here every pair of pitches can be linked, so the graph is dense, and the plain array scan is both simpler and faster.</p>"
+    ],
+    "time": "O(n²)",
+    "timeWhy": "n rounds, each scanning all pitches once to pick and once to update.",
+    "space": "O(n)",
+    "spaceWhy": "Two arrays of length n; the cables are never stored.",
+    "takeaway": "To connect everything at the least total cost, build a minimum spanning tree. Grow it greedily: always add the cheapest edge from the tree to a node outside it (Prim), or the cheapest edge that joins two different groups (Kruskal)."
+  },
+  "related": ["minimum-spanning-trees", "greedy-algorithms", "union-find"]
+}

@@ -1,0 +1,143 @@
+{
+  "slug": "loose-pieces-on-the-table",
+  "title": "Loose Pieces on the Table",
+  "topic": "graphs",
+  "difficulty": "easy",
+  "pattern": "union-find",
+  "aka": "Number of Connected Components in an Undirected Graph",
+  "order": 4,
+  "story": [
+    "<p>Your little brother tipped out a box of building bricks numbered <code>0</code> to <code>n - 1</code> and spent the afternoon snapping them together. He kept a log: each line says which two bricks he snapped together, like <code>[2, 5]</code>.</p>",
+    "<p>Before tidying up, you want to know how many separate pieces are lying on the table. A piece is any group of bricks held together, directly or through other bricks. A brick nobody touched is a piece on its own.</p>"
+  ],
+  "task": [
+    "<p>Write <code>countPieces(n, snaps)</code>. There are <code>n</code> bricks, numbered <code>0</code> to <code>n - 1</code>. Each entry <code>[a, b]</code> in <code>snaps</code> means bricks <code>a</code> and <code>b</code> were snapped together. Return the number of separate pieces.</p>",
+    "<p>The same pair can appear more than once, and snaps can close loops (for example 0-1, 1-2, 2-0). Neither changes which bricks are joined.</p>"
+  ],
+  "constraints": ["1 ≤ n ≤ 2,000", "0 ≤ snaps.length ≤ 5,000", "0 ≤ a, b < n and a ≠ b"],
+  "examples": [
+    {
+      "args": [6, [[0, 1], [1, 2], [4, 5]]],
+      "expected": 3,
+      "explanation": "Bricks 0, 1 and 2 form one piece (0 is joined to 2 through 1). Bricks 4 and 5 form a second. Brick 3 was never touched, so it is a third piece."
+    },
+    {
+      "args": [4, [[0, 1], [1, 2], [2, 0], [0, 1]]],
+      "expected": 2,
+      "explanation": "Four snaps, but the last two add nothing new: 2-0 closes a loop and 0-1 repeats. Bricks 0, 1, 2 are one piece and brick 3 is another, so 2. Computing 4 bricks minus 4 snaps = 0 would be wrong."
+    }
+  ],
+  "hints": [
+    "Start with every brick as its own piece, so there are <code>n</code> pieces. When you process the snap <code>[0, 1]</code> in the first example, how does the count change? When does a snap <em>not</em> change it?",
+    "A snap lowers the count by one exactly when its two bricks were in different pieces before it. If they were already in the same piece, it changes nothing.",
+    "So you need a fast way to ask \"are these two bricks already in the same piece?\" and to merge two pieces. Give every piece one brick that acts as its leader.",
+    "Use union-find. Keep <code>parent[i]</code>, starting as <code>i</code>. <code>find(x)</code> follows parents up to the leader. For each snap, find both leaders; if they differ, point one at the other and subtract one from the count. Shortening the paths as <code>find</code> walks them keeps it fast."
+  ],
+  "bruteForce": [
+    "<p>For each snap, relabel: give every brick in the second brick's piece the first brick's label by scanning all <code>n</code> bricks. Count the distinct labels at the end.</p>",
+    "<p>That is <code>n</code> work per snap, so 5,000 snaps × 2,000 bricks = 10 million steps. It works, but union-find does each snap in nearly constant time. Building the full adjacency list and running a depth-first search from each unvisited brick is also fast and perfectly fine here.</p>"
+  ],
+  "signature": {
+    "function": "countPieces",
+    "params": [{"name": "n", "type": "int"}, {"name": "snaps", "type": "int[][]"}],
+    "returns": "int"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number} n  bricks are numbered 0 to n - 1",
+      " * @param {number[][]} snaps  each [a, b] joins two bricks",
+      " * @return {number} number of separate pieces",
+      " */",
+      "function countPieces(n, snaps) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": ["def count_pieces(n: int, snaps: list[list[int]]) -> int:", "    # Your code here", "    pass"]
+  },
+  "tests": [
+    {"args": [1, []], "expected": 1, "note": "one brick"},
+    {"args": [5, []], "expected": 5, "note": "no snaps"},
+    {"args": [2, [[1, 0]]], "expected": 1},
+    {"args": [5, [[0, 1], [1, 2], [2, 3], [3, 4]]], "expected": 1, "note": "one long chain"},
+    {"args": [5, [[3, 4], [2, 3], [1, 2], [0, 1]]], "expected": 1, "note": "chain built from the far end"},
+    {"args": [3, [[0, 1], [0, 1], [1, 0], [0, 1]]], "expected": 2, "note": "the same snap repeated"},
+    {
+      "args": [6, [[0, 1], [2, 3], [4, 5], [1, 2], [3, 4], [5, 0]]],
+      "expected": 1,
+      "note": "two halves merged later, plus a loop"
+    },
+    {
+      "args": [7, [[0, 6], [1, 5], [2, 4]]],
+      "expected": 4,
+      "note": "pairs from the outside in, 3 untouched in the middle"
+    },
+    {
+      "args": [8, [[0, 1], [2, 3], [0, 2], [4, 5], [6, 7], [4, 6], [1, 3], [5, 7]]],
+      "expected": 2,
+      "note": "loops inside each piece: n minus snaps would be 0"
+    },
+    {"args": [10, [[9, 0], [8, 0], [7, 0], [6, 0], [5, 0]]], "expected": 5, "note": "star around brick 0"},
+    {"args": [2000, [[0, 1999], [1999, 1000]]], "expected": 1998, "note": "largest n"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function countPieces(n, snaps) {",
+      "  const parent = Array.from({ length: n }, (_, i) => i);",
+      "  function find(x) {",
+      "    while (parent[x] !== x) {",
+      "      parent[x] = parent[parent[x]]; // shorten the path as we go",
+      "      x = parent[x];",
+      "    }",
+      "    return x;",
+      "  }",
+      "  let pieces = n;",
+      "  for (const [a, b] of snaps) {",
+      "    const ra = find(a), rb = find(b);",
+      "    if (ra !== rb) {",
+      "      parent[ra] = rb; // merge two different pieces",
+      "      pieces--;",
+      "    }",
+      "  }",
+      "  return pieces;",
+      "}"
+    ],
+    "py": [
+      "def count_pieces(n, snaps):",
+      "    parent = list(range(n))",
+      "",
+      "    def find(x):",
+      "        while parent[x] != x:",
+      "            parent[x] = parent[parent[x]]  # shorten the path as we go",
+      "            x = parent[x]",
+      "        return x",
+      "",
+      "    pieces = n",
+      "    for a, b in snaps:",
+      "        ra, rb = find(a), find(b)",
+      "        if ra != rb:",
+      "            parent[ra] = rb  # merge two different pieces",
+      "            pieces -= 1",
+      "    return pieces"
+    ],
+    "walkthrough": [
+      "<p>Start by assuming every brick is alone: <code>n</code> pieces. Each snap either joins two different pieces, which lowers the count by one, or joins two bricks that were already connected, which changes nothing. Union-find answers \"already connected?\" quickly by giving each piece a leader.</p>",
+      "<p>Trace the second example, <code>n = 4</code> with snaps 0-1, 1-2, 2-0, 0-1. At the start, <code>parent = [0, 1, 2, 3]</code> and pieces = 4.</p>",
+      "<ol>",
+      "<li>Snap 0-1. Leaders are 0 and 1, different. Set <code>parent[0] = 1</code>. Pieces = 3.</li>",
+      "<li>Snap 1-2. Leaders are 1 and 2, different. Set <code>parent[1] = 2</code>. Pieces = 2.</li>",
+      "<li>Snap 2-0. <code>find(2)</code> is 2. <code>find(0)</code> walks 0 → 1 → 2, so its leader is also 2. Same piece: skip.</li>",
+      "<li>Snap 0-1. Both leaders are 2. Skip.</li>",
+      "</ol>",
+      "<p>Answer: 2. Brick 3 was its own leader the whole time.</p>",
+      "<p>The line <code>parent[x] = parent[parent[x]]</code> makes each brick on the walk skip one level up. Over many calls the trees stay very flat, so <code>find</code> stays very fast.</p>"
+    ],
+    "time": "O(n + m log n)",
+    "timeWhy": "m snaps, each doing two finds. Path shortening keeps each find at O(log n) amortized, and in practice the trees are so flat it is close to constant. Adding union by size brings it to almost exactly constant.",
+    "space": "O(n)",
+    "spaceWhy": "One parent entry per brick.",
+    "takeaway": "When connections arrive one by one and you need to know how many groups there are, use union-find: start with n groups and subtract one each time a connection joins two different leaders."
+  },
+  "related": ["union-find", "depth-first-search", "graph-basics"]
+}

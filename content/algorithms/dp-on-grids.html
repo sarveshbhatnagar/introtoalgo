@@ -1,0 +1,252 @@
+<!--
+{
+  "title": "DP on Grids",
+  "description": "Find the cheapest route and count the routes across a grid that only moves right or down, by filling a 2D table row by row. Then shrink it to one row.",
+  "minutes": 16,
+  "tags": ["dynamic programming", "matrix"]
+}
+-->
+<p>A delivery robot crosses a warehouse floor laid out as a grid. It starts in the top-left corner and must reach the loading bay in the bottom-right. The aisles are one-way, so it can only move right or down. Each cell shows how many seconds it takes to cross, because some aisles are busier than others.</p>
+
+<x-figure caption="Each number is the time to cross that cell. Taking the cheapest next cell each time (dashed) costs 26 seconds. The best route (solid) costs 21.">
+<svg viewBox="0 0 540 225" aria-label="A grid of 3 rows and 4 columns. Row 0: 5, 3, 1, 6. Row 1: 2, 9, 1, 5. Row 2: 6, 2, 2, 9. A solid line goes right along row 0 to column 2, down to row 2, then right to the end. A dashed line goes down column 0 and then right along row 2.">
+  <rect x="60" y="20" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="88" y="54" text-anchor="middle">5</text>
+  <rect x="120" y="20" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="148" y="54" text-anchor="middle">3</text>
+  <rect x="180" y="20" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="208" y="54" text-anchor="middle">1</text>
+  <rect x="240" y="20" width="56" height="56" rx="6" class="f-surface s-line"/><text x="268" y="54" text-anchor="middle">6</text>
+  <rect x="60" y="80" width="56" height="56" rx="6" class="f-surface s-line"/><text x="88" y="114" text-anchor="middle">2</text>
+  <rect x="120" y="80" width="56" height="56" rx="6" class="f-surface s-line"/><text x="148" y="114" text-anchor="middle">9</text>
+  <rect x="180" y="80" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="208" y="114" text-anchor="middle">1</text>
+  <rect x="240" y="80" width="56" height="56" rx="6" class="f-surface s-line"/><text x="268" y="114" text-anchor="middle">5</text>
+  <rect x="60" y="140" width="56" height="56" rx="6" class="f-surface s-line"/><text x="88" y="174" text-anchor="middle">6</text>
+  <rect x="120" y="140" width="56" height="56" rx="6" class="f-surface s-line"/><text x="148" y="174" text-anchor="middle">2</text>
+  <rect x="180" y="140" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="208" y="174" text-anchor="middle">2</text>
+  <rect x="240" y="140" width="56" height="56" rx="6" class="f-accent-soft s-accent"/><text x="268" y="174" text-anchor="middle">9</text>
+  <polyline points="70,30 228,30 228,150 286,150" class="s-accent f-none" stroke-width="3"/>
+  <polyline points="68,40 68,188 286,188" class="s-bad f-none s-dash" stroke-width="2"/>
+  <text x="12" y="52" class="t-sans t-small f-muted">start</text>
+  <text x="268" y="216" class="t-sans t-small f-muted" text-anchor="middle">end</text>
+  <line x1="350" y1="70" x2="380" y2="70" class="s-accent" stroke-width="3"/><text x="388" y="75" class="t-sans">fastest: 21 s</text>
+  <line x1="350" y1="110" x2="380" y2="110" class="s-bad s-dash" stroke-width="2"/><text x="388" y="115" class="t-sans">greedy: 26 s</text>
+</svg>
+</x-figure>
+
+<p>A robot that always steps into the cheaper next cell goes down to the 2 (cheaper than the 3), down again to the 6 (cheaper than the 9), and along the bottom: 5 + 2 + 6 + 2 + 2 + 9 = 26 seconds. The best route goes the other way and takes 21. With 3 rows and 4 columns there are only 10 routes, so you could try them all. On a 20 by 20 floor there are more than 35 billion. You need a table.</p>
+
+<h2>The five steps</h2>
+
+<p>This is the recipe from <a href="/algorithms/dp-introduction.html">Introduction to Dynamic Programming</a> with two indexes instead of one. The trick is the same as in <a href="/algorithms/dp-1d.html">1D Dynamic Programming</a>: ask about the very last move.</p>
+
+<ol>
+<li><strong>State.</strong> <code>dp[r][c]</code> is the fastest time to get from the start to cell <code>(r, c)</code>, counting both the start cell and this one.</li>
+<li><strong>Recurrence.</strong> The robot entered <code>(r, c)</code> either from above or from the left. Whichever it was, it should have got there as fast as possible. So <code>dp[r][c] = min(dp[r − 1][c], dp[r][c − 1]) + cost[r][c]</code>.</li>
+<li><strong>Base cases.</strong> <code>dp[0][0] = cost[0][0]</code>. Cells in the top row can only be entered from the left, and cells in the left column only from above, so each of those has a single option.</li>
+<li><strong>Order.</strong> Each cell reads the cell above and the cell to its left. Go row by row, left to right inside each row, and both are always ready.</li>
+<li><strong>Answer.</strong> <code>dp[rows − 1][cols − 1]</code>, the bottom-right cell.</li>
+</ol>
+
+<x-tracer title="Fill the fastest-time table">
+<script type="application/json">
+{
+  "code": [
+    "for r from 0 to rows - 1:",
+    "  for c from 0 to cols - 1:",
+    "    if r == 0 and c == 0: dp[r][c] = cost[0][0]",
+    "    else if r == 0: dp[r][c] = dp[r][c-1] + cost[r][c]",
+    "    else if c == 0: dp[r][c] = dp[r-1][c] + cost[r][c]",
+    "    else: dp[r][c] = min(dp[r-1][c], dp[r][c-1]) + cost[r][c]",
+    "return dp[rows-1][cols-1]"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Base case. The robot starts here, so the time to reach the top-left cell is just its own cost: <code>dp[0][0] = 5</code>.", "line": 3, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, null, null, null], [null, null, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "mark": [[0, 0]]}, "vars": {"cost": 5}},
+    {"caption": "Top row: nothing is above, so the only way in is from the left. 5 + 3 = 8.", "line": 4, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, null, null], [null, null, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 0]], "mark": [[0, 1]]}, "vars": {"cost": 3, "left": 5}},
+    {"caption": "Top row: nothing is above, so the only way in is from the left. 8 + 1 = 9.", "line": 4, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, null], [null, null, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 1]], "mark": [[0, 2]]}, "vars": {"cost": 1, "left": 8}},
+    {"caption": "Top row: nothing is above, so the only way in is from the left. 9 + 6 = 15.", "line": 4, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [null, null, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 2]], "mark": [[0, 3]]}, "vars": {"cost": 6, "left": 9}},
+    {"caption": "Left column: the only way in is from above. 5 + 2 = 7.", "line": 5, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, null, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 0]], "mark": [[1, 0]]}, "vars": {"cost": 2, "up": 5}},
+    {"caption": "Arrive from above (8) or from the left (7). The faster is from the left, so 7 + 9 = 16.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, null, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 1], [1, 0]], "mark": [[1, 1]]}, "vars": {"cost": 9, "up": 8, "left": 7}},
+    {"caption": "Arrive from above (9) or from the left (16). The faster is from above, so 9 + 1 = 10.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, null], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 2], [1, 1]], "mark": [[1, 2]]}, "vars": {"cost": 1, "up": 9, "left": 16}},
+    {"caption": "Arrive from above (15) or from the left (10). The faster is from the left, so 10 + 5 = 15.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [null, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[0, 3], [1, 2]], "mark": [[1, 3]]}, "vars": {"cost": 5, "up": 15, "left": 10}},
+    {"caption": "Left column: the only way in is from above. 7 + 6 = 13.", "line": 5, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [13, null, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[1, 0]], "mark": [[2, 0]]}, "vars": {"cost": 6, "up": 7}},
+    {"caption": "Arrive from above (16) or from the left (13). The faster is from the left, so 13 + 2 = 15.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [13, 15, null, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[1, 1], [2, 0]], "mark": [[2, 1]]}, "vars": {"cost": 2, "up": 16, "left": 13}},
+    {"caption": "Arrive from above (10) or from the left (15). The faster is from above, so 10 + 2 = 12.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [13, 15, 12, null]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[1, 2], [2, 1]], "mark": [[2, 2]]}, "vars": {"cost": 2, "up": 10, "left": 15}},
+    {"caption": "Arrive from above (15) or from the left (12). The faster is from the left, so 12 + 9 = 21.", "line": 6, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [13, 15, 12, 21]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "highlight": [[1, 3], [2, 2]], "mark": [[2, 3]]}, "vars": {"cost": 9, "up": 15, "left": 12}},
+    {"caption": "The fastest route takes 21 seconds. Following the smaller neighbour back from the corner gives the green cells: 5, 3, 1, 1, 2, 9. Twelve cells, each filled once with at most one comparison.", "line": 7, "grid": {"label": "dp (fastest time to reach each cell)", "rows": [[5, 8, 9, 15], [7, 16, 10, 15], [13, 15, 12, 21]], "rowLabels": ["row 0", "row 1", "row 2"], "colLabels": ["col 0", "col 1", "col 2", "col 3"], "mark": [[0, 0], [0, 1], [0, 2], [1, 2], [2, 2], [2, 3]]}, "vars": {"answer": 21}}
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The table tells you the best time, not the route. To get the route, start at the bottom-right and repeatedly step to whichever of "above" or "left" holds the smaller number, as the last step of the tracer does. Reverse the cells you visited and you have the path.</p>
+
+<h2>The code</h2>
+
+<x-code title="Fastest route, full table">
+<pre lang="js">
+function fastestRoute(cost) {
+  const rows = cost.length;
+  const cols = cost[0].length;
+  const dp = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (r === 0 && c === 0) dp[r][c] = cost[0][0];
+      else if (r === 0) dp[r][c] = dp[r][c - 1] + cost[r][c];
+      else if (c === 0) dp[r][c] = dp[r - 1][c] + cost[r][c];
+      else dp[r][c] = Math.min(dp[r - 1][c], dp[r][c - 1]) + cost[r][c];
+    }
+  }
+  return dp[rows - 1][cols - 1];
+}
+
+fastestRoute([[5, 3, 1, 6], [2, 9, 1, 5], [6, 2, 2, 9]]); // 21
+</pre>
+<pre lang="py">
+def fastest_route(cost):
+    rows, cols = len(cost), len(cost[0])
+    dp = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if r == 0 and c == 0:
+                dp[r][c] = cost[0][0]
+            elif r == 0:
+                dp[r][c] = dp[r][c - 1] + cost[r][c]
+            elif c == 0:
+                dp[r][c] = dp[r - 1][c] + cost[r][c]
+            else:
+                dp[r][c] = min(dp[r - 1][c], dp[r][c - 1]) + cost[r][c]
+    return dp[rows - 1][cols - 1]
+
+fastest_route([[5, 3, 1, 6], [2, 9, 1, 5], [6, 2, 2, 9]])  # 21
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Try every route", "time": "Exponential", "space": "O(R + C)", "note": "Each route is R + C − 2 moves, each one right or down, so there are up to about 2<sup>R+C</sup> routes: 10 on this floor, over 35 billion on a 20 × 20 one." },
+    { "name": "Full table", "time": "O(R × C)", "space": "O(R × C)", "note": "One cell per grid square, one comparison per cell." },
+    { "name": "One row", "time": "O(R × C)", "space": "O(C)", "note": "Each cell only reads the row above, so keep one row and overwrite it." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Counting routes, with one row of memory</h2>
+
+<p>Now some cells hold shelves and cannot be entered at all, and the question changes: how many different routes reach the bay? The five steps barely move.</p>
+
+<ul>
+<li><strong>State:</strong> <code>ways[r][c]</code> is the number of routes from the start to <code>(r, c)</code>.</li>
+<li><strong>Recurrence:</strong> every route into a cell arrives from above or from the left, never both, so <code>ways[r][c] = ways[r − 1][c] + ways[r][c − 1]</code>. A shelf cell is 0.</li>
+<li><strong>Base case:</strong> <code>ways[0][0] = 1</code>, the route of standing still. Off-grid neighbours count as 0.</li>
+<li><strong>Order</strong> and <strong>answer</strong> are as before.</li>
+</ul>
+
+<p>Here is a 3 by 4 floor with one shelf in the middle of row 1, marked ■. Each number is the count of routes to that cell:</p>
+
+<table>
+<thead><tr><th></th><th>col 0</th><th>col 1</th><th>col 2</th><th>col 3</th></tr></thead>
+<tbody>
+<tr><th>row 0</th><td>1</td><td>1</td><td>1</td><td>1</td></tr>
+<tr><th>row 1</th><td>1</td><td>■ 0</td><td>1</td><td>2</td></tr>
+<tr><th>row 2</th><td>1</td><td>1</td><td>2</td><td>4</td></tr>
+</tbody>
+</table>
+
+<p>Without the shelf there would be 10 routes. The shelf removes 6 of them, leaving 4.</p>
+
+<p>Each row only reads the row above it and itself. So keep a single array <code>ways</code> of length <code>cols</code>. When you reach column <code>c</code> in a new row, <code>ways[c]</code> still holds the value from the row above, and <code>ways[c − 1]</code> already holds the value for the current row. Adding them is exactly the recurrence.</p>
+
+<x-code title="Counting routes in O(cols) memory">
+<pre lang="js">
+// grid[r][c] is 1 for a shelf, 0 for open floor.
+function countRoutes(grid) {
+  const cols = grid[0].length;
+  const ways = new Array(cols).fill(0);
+  ways[0] = 1;
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c] === 1) ways[c] = 0; // no route ends on a shelf
+      else if (c > 0) ways[c] += ways[c - 1]; // above + left
+    }
+  }
+  return ways[cols - 1];
+}
+
+countRoutes([[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]); // 4
+</pre>
+<pre lang="py">
+# grid[r][c] is 1 for a shelf, 0 for open floor.
+def count_routes(grid):
+    cols = len(grid[0])
+    ways = [0] * cols
+    ways[0] = 1
+    for row in grid:
+        for c in range(cols):
+            if row[c] == 1:
+                ways[c] = 0  # no route ends on a shelf
+            elif c > 0:
+                ways[c] += ways[c - 1]  # above + left
+    return ways[cols - 1]
+
+count_routes([[0, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]])  # 4
+</pre>
+</x-code>
+
+<x-callout type="key">
+<p>On a grid, ask "where could I have come from?" The answer for a cell is built from the neighbours that lead into it, and the fill order is any order that finishes those neighbours first.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Treating the first row like the rest">
+<p>For <code>r = 0</code>, the cell "above" is <code>dp[−1][c]</code>, which does not exist. In JavaScript that crashes; in Python it quietly reads the last row. Handle the top row and left column on their own, or treat off-grid cells as ∞ for a minimum and 0 for a count.</p>
+</x-callout>
+
+<x-callout type="mistake" title="One row copied many times in Python">
+<p><code>[[0] * cols] * rows</code> looks like a grid but is the same row repeated, so writing one cell changes it in every row. Build each row separately: <code>[[0] * cols for _ in range(rows)]</code>. In JavaScript, <code>new Array(rows).fill(new Array(cols))</code> has the same problem.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Following the cheapest neighbour">
+<p>The figure shows why this fails: a cheap step can lead into an expensive region. The table compares whole routes into each cell, which is what makes it correct. If you allow moves in all four directions, routes can loop back, there is no fill order that works, and you need <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> instead.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "In the fastest-time table, <code>dp[1][1]</code> has 8 above it and 7 to its left, and the cell costs 9. What is <code>dp[1][1]</code>?",
+      "options": [
+        { "text": "24", "why": "That adds both neighbours. The robot arrives from one direction only, so take the smaller." },
+        { "text": "16", "correct": true, "why": "min(8, 7) + 9 = 16. The robot comes in from the left, which was faster. This is the real cell from the tracer." },
+        { "text": "17", "why": "That uses the neighbour above, 8 + 9. The left was faster." }
+      ]
+    },
+    {
+      "question": "An open 3 by 3 grid with no shelves. How many right-or-down routes go from the top-left to the bottom-right?",
+      "options": [
+        { "text": "4", "why": "Fill the table: the first row and column are all 1, then 2, 3, 3, and the corner is 3 + 3." },
+        { "text": "6", "correct": true, "why": "Rows of the table: 1, 1, 1 / 1, 2, 3 / 1, 3, 6. Each route is 2 rights and 2 downs in some order, and there are 6 orders." },
+        { "text": "9", "why": "That is the number of cells, not the number of routes." }
+      ]
+    },
+    {
+      "question": "In the one-row version of <code>countRoutes</code>, just before <code>ways[c] += ways[c - 1]</code> runs, what does <code>ways[c]</code> hold?",
+      "options": [
+        { "text": "The count for the cell above", "correct": true, "why": "It has not been overwritten yet in this row, so it still holds the previous row's value. That is the \"from above\" half of the sum." },
+        { "text": "The count for the cell to the left", "why": "That is <code>ways[c - 1]</code>, which was already updated earlier in this row." },
+        { "text": "0, because the row was reset", "why": "Nothing resets the array between rows. Reusing the old value is the whole point." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Grids are not always floors. In <a href="/algorithms/knapsack.html">Knapsack</a> the rows are items and the columns are amounts of space left, and in <a href="/algorithms/dp-on-strings.html">DP on Strings</a> the rows and columns are letters of two words. The fill pattern you just used, above and to the left, carries straight over. To practise this lesson, try <a href="/practice/snowplow-to-the-road.html">Snowplow to the Road</a> for the cheapest route and <a href="/practice/roadworks-on-the-grid.html">Roadworks on the Grid</a> for counting routes around blocked cells.</p>

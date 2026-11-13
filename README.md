@@ -1,88 +1,53 @@
+# introtoalgo.com
 
-# Intro to Algorithms
+Free lessons and practice for algorithms and AI. Static site on GitHub Pages (repo root, custom domain in `CNAME`). No server, no CI: pages are generated locally and committed.
 
-Welcome to the Intro to Algorithms project! This repository hosts a static site dedicated to exploring various algorithms and computer science topics. The site is designed to be a resource for learning and understanding key concepts in the field.
+## Layout
 
-## Getting Started
-
-To view the static site locally, you can use a simple HTTP server. Here are two options:
-
-### Using Python
-
-```bash
-python -m http.server 8000
+```
+content/                 source of truth (edit here)
+  curriculum.json        tracks, modules, lesson order, practice topics, "start here" path
+  algorithms/<slug>.html lessons (front matter + HTML with x-* components)
+  ai/<slug>.html
+  practice/<slug>.json   practice problems
+  legacy/<name>.html     the original 2017 posts (re-wrapped into /posts/<name>.html)
+  AUTHORING.md           the guide for writers: voice, formats, components, schema
+tools/
+  build.mjs              validate everything, then generate all pages + sitemap.xml
+  check.mjs              validate content files (never writes to the repo)
+  selftest.mjs           tests for the problem harness and validator
+  serve.mjs              tiny static server for local preview
+  lib/                   shared code (components, highlighter, layout, schema)
+assets/
+  css/site.css           the only stylesheet
+  js/                    small ES modules, one per page type; harness.js is shared with Node
+  js/runner/             Web Workers that run learner code (JS, Python via Pyodide) + harness.py
+  vendor/codemirror/     bundled CodeMirror 6 (see README.txt there)
+index.html, about.html, archive.html, 404.html, algorithms/, ai/, practice/, posts/, sitemap.xml
+                         GENERATED. Do not edit by hand.
+algos.html, generic.html, category.html
+                         generated redirects from old URLs
 ```
 
-### Using Node.js
+## Commands
 
-First, install the `serve` package globally:
-
-```bash
-npm install -g serve
-```
-
-Then, run the server:
+Node 22 and python3 are needed. No `npm install`.
 
 ```bash
-serve -s .
+node tools/check.mjs [files or folders…]   # validate (all content if no args); --no-run skips running code
+node tools/build.mjs                        # validate, then regenerate the site (idempotent)
+node tools/serve.mjs 8000                   # preview at http://localhost:8000
+node tools/selftest.mjs                     # harness/validator self-test
 ```
 
-Open your browser and navigate to `http://localhost:8000` to view the site.
+`python3 -m http.server 8000` also works for previewing, but `tools/serve.mjs` serves `404.html` like GitHub Pages does.
 
-## Repository Overview
+## Adding content
 
-This repository contains the following key components:
+Read `content/AUTHORING.md`. In short: add a lesson file named after a slug in `curriculum.json`, or a problem JSON file; run `node tools/check.mjs <file>`; then run the build and commit the generated pages with the source.
 
-- **index.html**: The homepage of the blog, linking to various posts.
-- **algos.html**: An index of algorithms covered on the site.
-- **generic.html**: An about page providing more information about the site and its author.
-- **elements.html**: A reference page for various elements used in the site.
-- **posts/**: A directory containing individual HTML files for each blog post.
-- **assets/**: Contains CSS, JavaScript, and other assets used by the site.
-- **images/**: Contains images used in the blog posts.
-- **CNAME**: Specifies the custom domain for GitHub Pages hosting.
-## Contents by Directory
+Python in the practice workspace loads Pyodide lazily from `cdn.jsdelivr.net/npm/pyodide@314.0.7/`. To test against a local copy, set `localStorage['ia:pyodide-base']` to a URL that serves the npm `pyodide` package (for example `/node_modules/pyodide/` after `npm i pyodide@314.0.7`; `node_modules` is gitignored).
 
-- **/index.html**: Blog homepage.
-- **/algos.html**: Algorithms index page.
-- **/generic.html**: About page.
-- **/elements.html**: Elements reference page.
-- **/posts/**: Directory containing blog posts such as:
-  - `mst.html`: Minimum Spanning Tree
-  - `mergesort.html`: Merge Sort
-  - `communitydetection.html`: Community Detection
-  - `speedinguplinkedlist.html`: Speeding Up Linked List
-  - `networktheory.html`: Network Theory
-  - `semanticnetworks.html`: Semantic Networks
-  - `markovchains.html`: Markov Chains
-- **/assets/**: Contains CSS, JavaScript, and other assets.
-- **/images/**: Contains images used in the blog posts.
-- **/CNAME**: Custom domain configuration for GitHub Pages.
-## Featured Posts
+Analytics (Google Analytics) and AdSense tags are injected on every page by `tools/lib/layout.mjs`.
 
-Explore some of our featured posts:
-
-- [Minimum Spanning Tree](/posts/mst.html)
-- [Merge Sort](/posts/mergesort.html)
-- [Community Detection](/posts/communitydetection.html)
-- [Speeding Up Linked List](/posts/speedinguplinkedlist.html)
-- [Network Theory](/posts/networktheory.html)
-- [Semantic Networks](/posts/semanticnetworks.html)
-- [Markov Chains](/posts/markovchains.html)
-## How to Contribute
-
-We welcome contributions! To contribute, please fork the repository, make your changes, and submit a pull request. Ensure your code follows the project's style guidelines and includes appropriate tests.
-## License
-
-This project is licensed under the MIT License. See the `LICENSE.txt` file for more details.
-## Credits
-
-This project is maintained by Sarvesh Bhatnagar. Visit [Sarvesh's website](https://www.sarveshbhatnagar.com) for more information.
-## Contact
-
-For questions or feedback, please contact Sarvesh Bhatnagar at [sarvesh@example.com](mailto:sarvesh@example.com).
-## Badges/Links
-
-- [Old Website](http://www.introtoalgo.blogspot.com)
-- Custom Domain: [introtoalgo.com](http://www.introtoalgo.com)
-
+Maintained by [Sarvesh Bhatnagar](https://www.sarveshbhatnagar.com).

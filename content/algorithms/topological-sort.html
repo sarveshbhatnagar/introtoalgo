@@ -1,0 +1,266 @@
+<!--
+{
+  "title": "Topological Sort",
+  "description": "Order tasks so every task comes after the ones it depends on, and detect when no such order exists. Kahn's algorithm and the DFS version, in JS and Python.",
+  "minutes": 15,
+  "tags": ["graphs", "bfs", "dfs", "ordering"]
+}
+-->
+<p>You are making pizza at home with friends. The toppings cannot go on until the dough, the sauce and the grated cheese are ready. The pizza cannot bake until the toppings are on and the oven is hot. You cannot eat until it has baked. Four people want a job right now. Which jobs can start, and what is a full order that never makes anyone wait on something unfinished?</p>
+
+<p>Each rule is a one-way link: "dough must come before toppings". That makes this a directed graph, as in <a href="/algorithms/graph-basics.html">Graph Basics</a>, with an arrow from each task to the task that needs it. An order of all the tasks where every arrow points forward is called a <strong>topological order</strong>. Finding one is a topological sort.</p>
+
+<x-figure caption="The pizza tasks. An arrow from X to Y means X must be finished before Y can start. In the tracer below each task goes by its initial.">
+<svg viewBox="0 0 520 220" aria-label="Seven boxes with arrows. Dough, sauce and cheese each point to toppings. Toppings and oven each point to bake. Bake points to eat.">
+  <defs><marker id="topo-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <line x1="100" y1="27" x2="178" y2="86" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <line x1="100" y1="92" x2="178" y2="92" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <line x1="100" y1="157" x2="178" y2="98" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <line x1="270" y1="96" x2="318" y2="128" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <line x1="270" y1="183" x2="318" y2="146" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <line x1="410" y1="137" x2="438" y2="137" class="s-accent" stroke-width="2" marker-end="url(#topo-arrow)"/>
+  <rect x="10" y="10" width="90" height="34" rx="6" class="f-surface s-line"/><text x="55" y="32" text-anchor="middle" class="t-sans">dough</text>
+  <rect x="10" y="75" width="90" height="34" rx="6" class="f-surface s-line"/><text x="55" y="97" text-anchor="middle" class="t-sans">sauce</text>
+  <rect x="10" y="140" width="90" height="34" rx="6" class="f-surface s-line"/><text x="55" y="162" text-anchor="middle" class="t-sans">cheese</text>
+  <rect x="180" y="75" width="90" height="34" rx="6" class="f-surface s-line"/><text x="225" y="97" text-anchor="middle" class="t-sans">toppings</text>
+  <rect x="180" y="166" width="90" height="34" rx="6" class="f-surface s-line"/><text x="225" y="188" text-anchor="middle" class="t-sans">oven</text>
+  <rect x="320" y="120" width="90" height="34" rx="6" class="f-surface s-line"/><text x="365" y="142" text-anchor="middle" class="t-sans">bake</text>
+  <rect x="440" y="120" width="70" height="34" rx="6" class="f-surface s-line"/><text x="475" y="142" text-anchor="middle" class="t-sans">eat</text>
+</svg>
+</x-figure>
+
+<p>There is usually more than one valid order. Dough, sauce, cheese, oven, toppings, bake, eat works. So does oven, cheese, sauce, dough, toppings, bake, eat. What never works is a <strong>cycle</strong>: if toppings needed bake and bake needed toppings, neither could ever start. A topological order exists exactly when the directed graph has no cycle. Such a graph is called a <strong>DAG</strong> (directed acyclic graph).</p>
+
+<h2>The idea: start with what nothing blocks</h2>
+
+<p>For each task, count the arrows coming into it. That count is its <strong>in-degree</strong>: the number of tasks it is still waiting on. A task with in-degree 0 is ready right now.</p>
+
+<ol>
+<li>Put every ready task (in-degree 0) in a queue.</li>
+<li>Take a task from the queue and add it to the order.</li>
+<li>It is done, so remove its outgoing arrows: subtract 1 from the in-degree of each task after it. Any task that drops to 0 has just become ready. Add it to the queue.</li>
+<li>Repeat until the queue is empty.</li>
+</ol>
+
+<p>This is <strong>Kahn's algorithm</strong>. It looks a lot like <a href="/algorithms/breadth-first-search.html">BFS</a>, but a task joins the queue only when its <em>last</em> blocker is done, not the first time anything points at it.</p>
+
+<x-tracer title="Kahn's algorithm on the pizza tasks">
+<script type="application/json">
+{
+  "code": [
+    "count incoming arrows (in) for every task",
+    "ready = tasks with in = 0",
+    "while ready is not empty:",
+    "  take a task, append it to order",
+    "  for each task after it: in = in - 1, if 0: add to ready",
+    "order has every task? done : there is a cycle"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Count incoming arrows for each task. D, S, C and O have none: nothing blocks them, so they start in the ready queue.", "line": 2, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["D", "T"], ["S", "T"], ["C", "T"], ["T", "B"], ["O", "B"], ["B", "E"]], "directed": true, "highlight": ["D", "S", "C", "O"], "mark": [], "labels": {"D": "in=0", "S": "in=0", "C": "in=0", "O": "in=0", "T": "in=3", "B": "in=2", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["D", "S", "C", "O"]}, {"label": "order", "values": []}]},
+    {"caption": "Take D. Its arrow to T goes away, so T now waits on 2 tasks instead of 3.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["S", "T"], ["C", "T"], ["T", "B"], ["O", "B"], ["B", "E"]], "directed": true, "highlight": ["T"], "mark": ["D"], "labels": {"S": "in=0", "C": "in=0", "O": "in=0", "T": "in=2", "B": "in=2", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["S", "C", "O"]}, {"label": "order", "values": ["D"]}]},
+    {"caption": "Take S. T drops to 1. Still blocked by C.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["C", "T"], ["T", "B"], ["O", "B"], ["B", "E"]], "directed": true, "highlight": ["T"], "mark": ["D", "S"], "labels": {"C": "in=0", "O": "in=0", "T": "in=1", "B": "in=2", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["C", "O"]}, {"label": "order", "values": ["D", "S"]}]},
+    {"caption": "Take C. T drops to 0: every task it needed is done, so T joins the ready queue.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["T", "B"], ["O", "B"], ["B", "E"]], "directed": true, "highlight": ["T"], "mark": ["D", "S", "C"], "labels": {"O": "in=0", "T": "in=0", "B": "in=2", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["O", "T"]}, {"label": "order", "values": ["D", "S", "C"]}]},
+    {"caption": "Take O. B drops to 1. It still needs T.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["T", "B"], ["B", "E"]], "directed": true, "highlight": ["B"], "mark": ["D", "S", "C", "O"], "labels": {"T": "in=0", "B": "in=1", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["T"]}, {"label": "order", "values": ["D", "S", "C", "O"]}]},
+    {"caption": "Take T. B drops to 0 and becomes ready.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [["B", "E"]], "directed": true, "highlight": ["B"], "mark": ["D", "S", "C", "O", "T"], "labels": {"B": "in=0", "E": "in=1"}}, "arrays": [{"label": "ready queue", "values": ["B"]}, {"label": "order", "values": ["D", "S", "C", "O", "T"]}]},
+    {"caption": "Take B. E drops to 0 and becomes ready.", "line": 5, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [], "directed": true, "highlight": ["E"], "mark": ["D", "S", "C", "O", "T", "B"], "labels": {"E": "in=0"}}, "arrays": [{"label": "ready queue", "values": ["E"]}, {"label": "order", "values": ["D", "S", "C", "O", "T", "B"]}]},
+    {"caption": "Take E. Its list of next tasks is empty. The queue is empty too.", "line": 4, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [], "directed": true, "highlight": [], "mark": ["D", "S", "C", "O", "T", "B", "E"], "labels": {}}, "arrays": [{"label": "ready queue", "values": []}, {"label": "order", "values": ["D", "S", "C", "O", "T", "B", "E"]}]},
+    {"caption": "All 7 tasks placed: D, S, C, O, T, B, E. Every arrow points from a task earlier in the order to one later. 7 tasks taken once, 6 arrows removed once.", "line": 6, "graph": {"nodes": [{"id": "D", "x": 5, "y": 5}, {"id": "S", "x": 5, "y": 40}, {"id": "C", "x": 5, "y": 75}, {"id": "O", "x": 40, "y": 95}, {"id": "T", "x": 40, "y": 40}, {"id": "B", "x": 70, "y": 70}, {"id": "E", "x": 96, "y": 70}], "edges": [], "directed": true, "highlight": [], "mark": ["D", "S", "C", "O", "T", "B", "E"], "labels": {}}, "arrays": [{"label": "ready queue", "values": []}, {"label": "order", "values": ["D", "S", "C", "O", "T", "B", "E"]}]}
+  ]
+}
+</script>
+</x-tracer>
+
+<x-callout type="key">
+<p>A task is ready when everything pointing into it is done. Keep a count of unfinished blockers per task, and release a task the moment its count reaches 0.</p>
+</x-callout>
+
+<h2>The code</h2>
+
+<p>Notice the last line. If the graph has a cycle, the tasks on it never reach in-degree 0, so they never enter the queue. The order comes out shorter than the task list, and that is how you detect the cycle.</p>
+
+<x-code>
+<pre lang="js">
+// rules: list of [before, after] pairs.
+function taskOrder(tasks, rules) {
+  const next = {};
+  const inDegree = {};
+  for (const t of tasks) { next[t] = []; inDegree[t] = 0; }
+  for (const [before, after] of rules) {
+    next[before].push(after);
+    inDegree[after]++;
+  }
+  const queue = tasks.filter((t) => inDegree[t] === 0);
+  const order = [];
+  let head = 0;
+  while (head < queue.length) {
+    const task = queue[head++];
+    order.push(task);
+    for (const after of next[task]) {
+      inDegree[after]--;
+      if (inDegree[after] === 0) queue.push(after); // last blocker gone
+    }
+  }
+  return order.length === tasks.length ? order : null; // null: cycle
+}
+
+taskOrder(
+  ["dough", "sauce", "cheese", "oven", "toppings", "bake", "eat"],
+  [["dough", "toppings"], ["sauce", "toppings"], ["cheese", "toppings"],
+   ["toppings", "bake"], ["oven", "bake"], ["bake", "eat"]]
+); // ["dough", "sauce", "cheese", "oven", "toppings", "bake", "eat"]
+</pre>
+<pre lang="py">
+from collections import deque
+
+# rules: list of (before, after) pairs.
+def task_order(tasks, rules):
+    nxt = {t: [] for t in tasks}
+    in_degree = {t: 0 for t in tasks}
+    for before, after in rules:
+        nxt[before].append(after)
+        in_degree[after] += 1
+    queue = deque(t for t in tasks if in_degree[t] == 0)
+    order = []
+    while queue:
+        task = queue.popleft()
+        order.append(task)
+        for after in nxt[task]:
+            in_degree[after] -= 1
+            if in_degree[after] == 0:
+                queue.append(after)  # last blocker gone
+    return order if len(order) == len(tasks) else None  # None: cycle
+
+task_order(
+    ["dough", "sauce", "cheese", "oven", "toppings", "bake", "eat"],
+    [("dough", "toppings"), ("sauce", "toppings"), ("cheese", "toppings"),
+     ("toppings", "bake"), ("oven", "bake"), ("bake", "eat")],
+)  # ['dough', 'sauce', 'cheese', 'oven', 'toppings', 'bake', 'eat']
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(V + E)", "space": "O(V + E)", "note": "Counting in-degrees reads every rule once. Each task enters the queue once, and each arrow is removed once. The lists of next tasks hold E entries." } ] }
+</script>
+</x-complexity>
+
+<h2>The DFS version</h2>
+
+<p><a href="/algorithms/depth-first-search.html">Depth-First Search</a> gives a second way. A DFS call on a task does not return until it has finished every task reachable from it, which is every task that must come after it. So when a task finishes, everything that depends on it has already finished. Write tasks down in the order they finish, then reverse the list.</p>
+
+<p>Cycle detection needs one extra state. A task is either unvisited, <em>on the current path</em> (its call has started but not returned), or finished. If DFS reaches a task that is on the current path, it has followed arrows in a circle, and there is no valid order.</p>
+
+<x-code title="Topological sort with DFS">
+<pre lang="js">
+function taskOrderDfs(tasks, rules) {
+  const next = {};
+  for (const t of tasks) next[t] = [];
+  for (const [before, after] of rules) next[before].push(after);
+  const state = {}; // undefined: unvisited, 1: on the path, 2: finished
+  const finished = [];
+  function visit(task) {
+    if (state[task] === 2) return true;
+    if (state[task] === 1) return false; // back on our own path: cycle
+    state[task] = 1;
+    for (const after of next[task]) {
+      if (!visit(after)) return false;
+    }
+    state[task] = 2;
+    finished.push(task); // everything after it is already finished
+    return true;
+  }
+  for (const t of tasks) {
+    if (!visit(t)) return null;
+  }
+  return finished.reverse();
+}
+// pizza tasks → ["oven", "cheese", "sauce", "dough", "toppings", "bake", "eat"]
+</pre>
+<pre lang="py">
+def task_order_dfs(tasks, rules):
+    nxt = {t: [] for t in tasks}
+    for before, after in rules:
+        nxt[before].append(after)
+    state = {}  # missing: unvisited, 1: on the path, 2: finished
+    finished = []
+
+    def visit(task):
+        if state.get(task) == 2:
+            return True
+        if state.get(task) == 1:
+            return False  # back on our own path: cycle
+        state[task] = 1
+        for after in nxt[task]:
+            if not visit(after):
+                return False
+        state[task] = 2
+        finished.append(task)  # everything after it is already finished
+        return True
+
+    for t in tasks:
+        if not visit(t):
+            return None
+    return finished[::-1]
+# pizza tasks → ['oven', 'cheese', 'sauce', 'dough', 'toppings', 'bake', 'eat']
+</pre>
+</x-code>
+
+<p>On the pizza tasks, DFS starts at dough and runs dough, toppings, bake, eat. Eat finishes first, then bake, toppings and dough. Sauce, cheese and oven each finish straight away. Reversed, that gives a different order from Kahn's, and an equally valid one. Both versions are O(V + E). Kahn's needs no recursion, so it is the safer choice on large inputs; the DFS version is handy when you are already writing a DFS.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Arrows pointing the wrong way">
+<p>"Toppings depends on dough" means the arrow goes from dough <em>to</em> toppings: the thing that must happen first points at the thing that waits. Get it backwards and the algorithm still runs, but the order comes out backwards: eat first, dough last. Write the rule as a <code>[before, after]</code> pair and check it against one example by hand.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting the cycle check">
+<p>With a cycle, Kahn's algorithm does not crash or loop forever. It quietly returns a partial order with the stuck tasks missing. If you return that order without comparing its length to the number of tasks, your program claims a schedule that leaves work out.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Expecting one exact answer">
+<p>Most graphs have many valid orders. Which one you get depends on the order of the task list and the neighbour lists. If a problem asks for a specific one, such as "the alphabetically smallest", you need a rule for which ready task to take first, for example a <a href="/algorithms/heaps-and-priority-queues.html">priority queue</a> instead of a plain queue.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Build tools compile files after the files they import. Package managers install libraries after the libraries they need, and report an error when two packages need each other. Spreadsheets recalculate a cell only after the cells its formula reads. All of these are topological sorts.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Using the pizza rules, which of these is <strong>not</strong> a valid order?",
+      "options": [
+        { "text": "oven, dough, sauce, cheese, toppings, bake, eat", "why": "Valid. Oven has no blockers, and every other arrow points forward." },
+        { "text": "dough, sauce, toppings, cheese, oven, bake, eat", "correct": true, "why": "Toppings comes before cheese, but the arrow cheese → toppings says cheese must be first." },
+        { "text": "cheese, sauce, dough, toppings, oven, bake, eat", "why": "Valid. Bake still comes after both toppings and oven." }
+      ]
+    },
+    {
+      "question": "You run Kahn's algorithm on 6 tasks and the order comes out with only 4. What does that tell you?",
+      "options": [
+        { "text": "Two tasks have no rules, so they were skipped", "why": "A task with no rules has in-degree 0 and is in the queue from the start. It always ends up in the order." },
+        { "text": "The graph has a cycle, and the 2 missing tasks are stuck on it or behind it", "correct": true, "why": "Tasks on a cycle wait on each other, so their in-degree never reaches 0. Neither does anything that depends on them." },
+        { "text": "The queue was processed in the wrong order", "why": "Any order of taking ready tasks gives a full valid order when there is no cycle." }
+      ]
+    },
+    {
+      "question": "Rules: A before B, A before C, B before D, C before D. What is D's in-degree at the start?",
+      "options": [
+        { "text": "0", "why": "Two arrows point into D, from B and from C." },
+        { "text": "1", "why": "D waits on both B and C, not just one of them." },
+        { "text": "2", "correct": true, "why": "B → D and C → D. D becomes ready only after both B and C are done." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The next module asks harder questions about the same graphs. <a href="/algorithms/union-find.html">Union-Find</a> answers "are these two connected?" while edges keep arriving, and <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> finds shortest paths when edges have weights.</p>

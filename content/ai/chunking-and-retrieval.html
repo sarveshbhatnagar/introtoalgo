@@ -1,0 +1,236 @@
+<!--
+{
+  "title": "Chunking and Retrieval",
+  "description": "Cut documents into chunks that keep their meaning, then retrieve them well with overlap, headings, filters, hybrid search and reranking.",
+  "minutes": 15,
+  "tags": ["context", "retrieval"]
+}
+-->
+<p>You cut a cookbook into index cards so you can find recipes quickly. To save time, you cut every card at exactly 100 words. One card ends with "Bake at". The next starts with "180°C for 25 minutes, then let it cool." Later you search your cards for "how long does the lemon cake bake?" and the card with the answer never mentions lemon cake. It does not come up.</p>
+
+<p>This is one of the most common reasons <a href="/ai/rag-basics.html">RAG</a> systems give bad answers. The model is fine and the search is fine. The pieces were cut badly, so the right piece either does not exist or does not look like what it contains.</p>
+
+<h2>The size trade-off</h2>
+
+<p>Every chunk becomes one vector, and that one vector has to stand for the whole chunk. That pulls in two directions.</p>
+
+<ul>
+<li><strong>Too big</strong>, and a chunk covers several topics. Its vector becomes an average of all of them and matches none of them strongly. It also costs a lot of context when retrieved, mostly for text the question did not need.</li>
+<li><strong>Too small</strong>, and a chunk loses what it is about. "Bake for 25 minutes" is useless without "lemon cake". Answers that span two sentences get split across chunks.</li>
+</ul>
+
+<p>There is no single right size. A paragraph or a short section, a few hundred tokens, is a common starting point for prose. The better rule: <strong>a chunk should make sense on its own</strong>. If you handed it to someone with no other context, could they tell what it is about?</p>
+
+<x-callout type="key">
+<p>A good chunk is a self-contained unit of meaning that carries its own subject. Cut along the document's structure, and attach the heading it came from.</p>
+</x-callout>
+
+<h2>Three ways to cut</h2>
+
+<ol>
+<li><strong>Fixed size with overlap.</strong> Take a window of N words, move it forward by fewer than N, so neighbouring chunks share a few words. Simple, works on any text, and a sentence cut at one edge appears whole in the next chunk.</li>
+<li><strong>Follow the structure.</strong> Split on headings, then paragraphs, and only fall back to fixed size when a section is too long. An FAQ splits into one chunk per question and answer. Code splits by function. Tables stay whole.</li>
+<li><strong>Add the context back.</strong> Prefix each chunk with where it came from: "Lemon cake &gt; Baking: …". Store metadata too: document title, section, date, product, version. The prefix helps the vector match; the metadata lets you filter.</li>
+</ol>
+
+<p>Here is the first method on the recipe sentence: 15 words, windows of 6, overlap 2, so each window starts 4 words after the last.</p>
+
+<x-tracer title="Chunk 15 words: size 6, overlap 2">
+<script type="application/json">
+{
+  "code": [
+    "step = size - overlap",
+    "for start = 0, step, 2·step, ...:",
+    "  chunk = words[start : start + size]",
+    "  if start + size >= length: stop"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "15 words. With size 6 and overlap 2, each window starts 6 − 2 = 4 words after the previous one.", "line": 1, "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"] }, "vars": { "size": 6, "overlap": 2, "step": 4, "chunks": 0 } },
+    { "caption": "Chunk 1: words 0 to 5, \"Bake the lemon cake at 180°C\". 0 + 6 = 6 is less than 15, so keep going.", "line": 3, "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"], "pointers": { "start": 0 }, "highlight": [0, 1, 2, 3, 4, 5] }, "vars": { "size": 6, "overlap": 2, "step": 4, "chunks": 1 } },
+    { "caption": "Chunk 2: words 4 to 9, \"at 180°C for 25 minutes then\". Words 4 and 5 appear in both chunks, so the temperature is not cut away from the time.", "line": 3, "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"], "pointers": { "start": 4 }, "highlight": [4, 5, 6, 7, 8, 9], "mark": [4, 5] }, "vars": { "size": 6, "overlap": 2, "step": 4, "chunks": 2 } },
+    { "caption": "Chunk 3: words 8 to 13, \"minutes then let it cool before\".", "line": 3, "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"], "pointers": { "start": 8 }, "highlight": [8, 9, 10, 11, 12, 13], "mark": [8, 9] }, "vars": { "size": 6, "overlap": 2, "step": 4, "chunks": 3 } },
+    { "caption": "Chunk 4: words 12 to 14, \"cool before icing\". 12 + 6 = 18 reaches past the end, so stop. Shorter last chunks are normal.", "line": 4, "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"], "pointers": { "start": 12 }, "highlight": [12, 13, 14], "mark": [12, 13] }, "vars": { "size": 6, "overlap": 2, "step": 4, "chunks": 4 } },
+    { "caption": "Four chunks instead of three without overlap. But look at chunk 2, which holds the baking time: it never says \"lemon cake\". Overlap kept the sentence together; only a heading prefix like \"Lemon cake:\" would tell the search what it is about.", "array": { "label": "words", "values": ["Bake", "the", "lemon", "cake", "at", "180°C", "for", "25", "minutes", "then", "let", "it", "cool", "before", "icing"], "highlight": [4, 5, 6, 7, 8, 9], "dim": [2, 3] }, "vars": { "chunks": 4, "without overlap": 3 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code title="Fixed-size chunks with overlap">
+<pre lang="js">
+function chunkWords(text, size, overlap) {
+  const words = text.split(/\s+/);
+  const step = size - overlap; // must be at least 1
+  const chunks = [];
+  for (let start = 0; start < words.length; start += step) {
+    chunks.push(words.slice(start, start + size).join(" "));
+    if (start + size >= words.length) break;
+  }
+  return chunks;
+}
+
+chunkWords("Bake the lemon cake at 180°C for 25 minutes then let it cool before icing", 6, 2);
+// 4 chunks, the second is "at 180°C for 25 minutes then"
+</pre>
+<pre lang="py">
+def chunk_words(text, size, overlap):
+    words = text.split()
+    step = size - overlap  # must be at least 1
+    chunks = []
+    for start in range(0, len(words), step):
+        chunks.append(" ".join(words[start:start + size]))
+        if start + size >= len(words):
+            break
+    return chunks
+
+chunk_words("Bake the lemon cake at 180°C for 25 minutes then let it cool before icing", 6, 2)
+# 4 chunks, the second is "at 180°C for 25 minutes then"
+</pre>
+</x-code>
+
+<p>Chunking is one pass, O(n) for n words. Overlap has a storage cost: you get about n ÷ (size − overlap) chunks, so overlap 2 on size 6 makes about 1.5 times as many chunks as no overlap. Real systems count tokens instead of words, and use much larger windows.</p>
+
+<h2>Retrieving well</h2>
+
+<p>Plain "top k by cosine similarity" is a fine start. Each of these additions fixes a common way it goes wrong.</p>
+
+<ul>
+<li><strong>Metadata filters.</strong> If the user asks about the kettle, only search kettle chunks. Filters are exact and cheap, and they stop near-identical text about a different product from winning.</li>
+<li><strong>A minimum score.</strong> Top k always returns k chunks, even when none are relevant. A threshold lets retrieval say "nothing found" so the model can say so too.</li>
+<li><strong>Hybrid search.</strong> Embeddings are weak at exact strings like error codes, part numbers and names. Run a keyword search alongside the vector search and merge the results.</li>
+<li><strong>Reranking.</strong> Retrieve a generous 20 or 50 candidates cheaply, then have a slower, more careful model score each one against the question and keep the best few.</li>
+<li><strong>Query rewriting.</strong> In a chat, "and for the blue one?" means nothing on its own. Rewrite it into a full question using the conversation before searching.</li>
+</ul>
+
+<p>Here are the first two in code, building on <code>cosine</code> from <a href="/ai/rag-basics.html">RAG Basics</a>. Vectors use three toy dimensions: cleaning, indicator lights, filling.</p>
+
+<x-code title="Filter, score, threshold, top k">
+<pre lang="js">
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+const cosine = (a, b) => dot(a, b) / Math.sqrt(dot(a, a) * dot(b, b));
+
+function retrieve(queryVec, chunks, { product, k, minScore }) {
+  return chunks
+    .filter((c) => c.product === product)
+    .map((c) => ({ text: c.text, score: cosine(queryVec, c.vec) }))
+    .filter((c) => c.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k);
+}
+
+const manual = [
+  { product: "kettle", text: "Kettle > Care: descale monthly with vinegar.", vec: [5, 0, 1] },
+  { product: "kettle", text: "Kettle > Lights: red means boiling.", vec: [1, 4, 0] },
+  { product: "toaster", text: "Toaster > Care: empty the crumb tray weekly.", vec: [4, 1, 1] },
+  { product: "kettle", text: "Kettle > Filling: never fill above MAX.", vec: [1, 1, 4] },
+];
+// "How do I clean the kettle?" embeds to [5, 1, 0]
+retrieve([5, 1, 0], manual, { product: "kettle", k: 2, minScore: 0.5 });
+// [{ text: "Kettle > Care: ...", score: 0.96 }]
+</pre>
+<pre lang="py">
+import math
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def cosine(a, b):
+    return dot(a, b) / math.sqrt(dot(a, a) * dot(b, b))
+
+def retrieve(query_vec, chunks, product, k, min_score):
+    scored = [
+        {"text": c["text"], "score": cosine(query_vec, c["vec"])}
+        for c in chunks if c["product"] == product
+    ]
+    scored = [c for c in scored if c["score"] >= min_score]
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return scored[:k]
+
+manual = [
+    {"product": "kettle", "text": "Kettle > Care: descale monthly with vinegar.", "vec": [5, 0, 1]},
+    {"product": "kettle", "text": "Kettle > Lights: red means boiling.", "vec": [1, 4, 0]},
+    {"product": "toaster", "text": "Toaster > Care: empty the crumb tray weekly.", "vec": [4, 1, 1]},
+    {"product": "kettle", "text": "Kettle > Filling: never fill above MAX.", "vec": [1, 1, 4]},
+]
+# "How do I clean the kettle?" embeds to [5, 1, 0]
+retrieve([5, 1, 0], manual, "kettle", k=2, min_score=0.5)
+# [{'text': 'Kettle > Care: ...', 'score': 0.96}]
+</pre>
+</x-code>
+
+<p>Work through it. Without the filter, the toaster's care chunk would win with 0.97, because cleaning is cleaning. The filter removes it. Of the kettle chunks, care scores 0.96, lights 0.43 and filling 0.28. The threshold removes the last two, so you get <strong>one</strong> chunk even though k is 2. Sending the lights chunk just to fill a slot would only add noise.</p>
+
+<h2>Measure it</h2>
+
+<p>You cannot tune chunking by reading a few answers. Write 20 to 50 real questions, and for each one note which chunk or section holds the answer. Then run retrieval alone and count how often the right chunk lands in the top k. When you change chunk size, overlap or filters, run the list again. A number that goes up is far more trustworthy than a feeling that answers seem better. <a href="/ai/evals.html">Evals</a> builds this into a habit.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Chunks that lost their subject">
+<p>"Takes 25 minutes" or "this setting is off by default" mean nothing without the heading above them. Prefix each chunk with its document title and section path, and embed that prefix along with the text.</p>
+</x-callout>
+
+<x-callout type="mistake" title="One chunk size for every kind of document">
+<p>Prose, FAQs, code, tables and slide decks have different natural units. Splitting a table every 200 tokens separates rows from their column headers. Split by structure first and use fixed size only as a fallback.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Always sending k chunks">
+<p>When nothing is relevant, top k still returns k chunks, and the model treats them as relevant. Use a score threshold, and let "nothing found" reach the model.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Chunk an FAQ">
+<x-task>
+<p>You are indexing a 40-question FAQ for a gym. Each entry is a question in bold followed by a one-to-three-paragraph answer. Some answers say things like "Yes, as above, but only at weekends." How would you chunk it, what would you store with each chunk, and what would you do about answers like that one?</p>
+</x-task>
+<x-answer>
+<p>A sound plan:</p>
+<ul>
+<li><strong>One chunk per question and answer</strong>, with the question text included. Users phrase questions like the FAQ does, so the question itself is often the best thing to match against.</li>
+<li><strong>No fixed-size splitting</strong> unless one answer is very long. The FAQ's structure already gives self-contained units.</li>
+<li><strong>Prefix and metadata</strong>: "Gym FAQ &gt; Memberships &gt; Can I bring a guest?", plus the section, the gym location if there are several, and the date the FAQ was last updated.</li>
+<li><strong>"As above" answers</strong> depend on another entry. Rewrite them to stand alone when you index ("Yes, guests are allowed, but only at weekends."), or attach the referenced answer to the chunk. Otherwise a retrieved "as above" is meaningless.</li>
+</ul>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "With 100 words, size 10 and overlap 5, about how many chunks do you get?",
+      "options": [
+        { "text": "10", "why": "That is the count with no overlap. Overlap 5 means each window moves only 5 words." },
+        { "text": "About 20", "correct": true, "why": "Right. The step is 10 − 5 = 5, so roughly 100 ÷ 5 = 20 windows (19 with the loop in this lesson, since the last window already reaches the end)." },
+        { "text": "5", "why": "Overlap adds chunks; it never reduces the count below the no-overlap case." }
+      ]
+    },
+    {
+      "question": "Users search for error codes like <code>E-4012</code> and retrieval keeps returning the wrong troubleshooting page. What helps most?",
+      "options": [
+        { "text": "Bigger chunks", "why": "Bigger chunks blur the vector further. The problem is exact matching, not chunk size." },
+        { "text": "Hybrid search: add keyword matching alongside the vector search", "correct": true, "why": "Right. Embeddings capture meaning but are weak on exact codes. Keyword search finds the exact string." },
+        { "text": "A higher k", "why": "It might drag the right page in eventually, along with more wrong ones. It does not fix the ranking." }
+      ]
+    },
+    {
+      "question": "Why did the kettle example return one chunk when k was 2?",
+      "options": [
+        { "text": "Only one chunk passed both the product filter and the 0.5 minimum score", "correct": true, "why": "Right. Lights (0.43) and filling (0.28) fell below 0.5, and the toaster chunk was filtered out by product." },
+        { "text": "The code has a bug in <code>slice</code>", "why": "<code>slice(0, k)</code> returns at most k items. With only one candidate left, it returns one." },
+        { "text": "The toaster chunk scored higher and replaced the others", "why": "The toaster chunk would score 0.97, but the filter removes it before scoring matters." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Retrieval brings in knowledge from documents. <a href="/ai/memory.html">Memory</a> applies the same ideas to what the model learns about a user or project over many conversations.</p>

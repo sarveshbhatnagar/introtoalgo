@@ -1,0 +1,250 @@
+<!--
+{
+  "title": "Binary Search",
+  "description": "Find things in sorted data in O(log n) with one reusable template, lower bound, that avoids the classic off-by-one bugs. Traced, with JS and Python.",
+  "minutes": 17,
+  "tags": ["searching", "binary search"]
+}
+-->
+<p>Your app worked last week. Today it crashes, and 1,000 changes were made in between. You could test each change in order until you hit the first broken one. Or you could test change 500. If the app already crashes there, the culprit is in the first half; if not, it is in the second half. One test just ruled out 500 changes. Ten tests in total will pin it down.</p>
+
+<p>That is binary search. It works because the changes have a shape: every change before the culprit is fine, and every change from it onward is broken. Fine, fine, fine, broken, broken. You are looking for the boundary.</p>
+
+<h2>The idea: find the first "yes"</h2>
+
+<p>A sorted array has the same shape. Take <code>[3, 8, 8, 8, 12, 15, 20, 27]</code> and ask, for each position, "is this value at least 8?" The answers are no, yes, yes, yes, yes, yes, yes, yes. All the "no"s come first, then all the "yes"s, because the array is sorted.</p>
+
+<p>The position of the first "yes" is called the <strong>lower bound</strong> of 8. It is the most useful single answer binary search can give you:</p>
+
+<ul>
+<li>If the value there equals 8, it is the <strong>first</strong> 8 in the array.</li>
+<li>If it does not, 8 is not in the array, and this is where you would insert 8 to keep the array sorted.</li>
+<li>If every answer is "no", the lower bound is <code>n</code>, one past the end.</li>
+</ul>
+
+<p>To find it, keep two positions, <code>lo</code> and <code>hi</code>. Everything left of <code>lo</code> is known to be "no". Everything from <code>hi</code> onward is known to be "yes". The positions you have not decided yet are <code>[lo, hi)</code>: <code>lo</code> is included, <code>hi</code> is not. Check the middle of that range, then throw away the half that cannot hold the first "yes".</p>
+
+<x-figure caption="The lower-bound invariant. Left of lo: all too small. From hi on: all big enough. The first big-enough position is somewhere in [lo, hi].">
+<svg viewBox="0 0 500 140" aria-label="Eight boxes. The first two are labelled 'less than target', the middle four 'unknown', the last two 'at least target'. Pointer lo is under the first unknown box, and hi is under the first 'at least target' box.">
+  <rect x="20" y="40" width="50" height="36" rx="6" class="f-bad-soft s-line"/>
+  <rect x="76" y="40" width="50" height="36" rx="6" class="f-bad-soft s-line"/>
+  <rect x="132" y="40" width="50" height="36" rx="6" class="f-surface s-line"/>
+  <rect x="188" y="40" width="50" height="36" rx="6" class="f-surface s-line"/>
+  <rect x="244" y="40" width="50" height="36" rx="6" class="f-surface s-line"/>
+  <rect x="300" y="40" width="50" height="36" rx="6" class="f-surface s-line"/>
+  <rect x="356" y="40" width="50" height="36" rx="6" class="f-good-soft s-line"/>
+  <rect x="412" y="40" width="50" height="36" rx="6" class="f-good-soft s-line"/>
+  <text x="73" y="28" text-anchor="middle" class="t-sans t-small f-bad">&lt; target</text>
+  <text x="241" y="28" text-anchor="middle" class="t-sans t-small f-muted">unknown</text>
+  <text x="409" y="28" text-anchor="middle" class="t-sans t-small f-good">≥ target</text>
+  <text x="73" y="64" text-anchor="middle" class="t-small">no</text>
+  <text x="241" y="64" text-anchor="middle" class="t-small f-muted">?</text>
+  <text x="409" y="64" text-anchor="middle" class="t-small">yes</text>
+  <line x1="157" y1="86" x2="157" y2="100" class="s-accent" stroke-width="2.5"/>
+  <text x="157" y="120" text-anchor="middle" class="f-accent t-bold">lo</text>
+  <line x1="381" y1="86" x2="381" y2="100" class="s-accent" stroke-width="2.5"/>
+  <text x="381" y="120" text-anchor="middle" class="f-accent t-bold">hi</text>
+</svg>
+</x-figure>
+
+<h2>Lower bound, traced</h2>
+
+<p>Find the lower bound of 8. Watch what happens when the search lands on an 8: it does not stop, because an earlier 8 might exist.</p>
+
+<x-tracer title="Lower bound of 8 in [3, 8, 8, 8, 12, 15, 20, 27]">
+<script type="application/json">
+{
+  "code": [
+    "lo = 0, hi = n",
+    "while lo < hi:",
+    "  mid = lo + (hi - lo) // 2",
+    "  if a[mid] < target: lo = mid + 1",
+    "  else: hi = mid",
+    "return lo"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The answer could be any position from 0 to 8, where 8 would mean \"every value is smaller\". So <code>hi</code> starts at <code>n</code>, one past the end.", "line": 1, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "hi": 8 } }, "vars": { "target": 8, "checks": 0 } },
+    { "caption": "mid = 0 + (8 − 0) // 2 = 4. a[4] is 12.", "line": 3, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "mid": 4, "hi": 8 }, "highlight": [4] }, "vars": { "target": 8, "checks": 1 } },
+    { "caption": "12 is at least 8, a \"yes\". Position 4 might be the first yes, but nothing after it can be. Set <code>hi = mid</code>, which keeps 4 as the edge of the range.", "line": 5, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "hi": 4 }, "dim": [4, 5, 6, 7] }, "vars": { "target": 8, "checks": 1 } },
+    { "caption": "mid = 0 + (4 − 0) // 2 = 2. a[2] is 8.", "line": 3, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "mid": 2, "hi": 4 }, "highlight": [2], "dim": [4, 5, 6, 7] }, "vars": { "target": 8, "checks": 2 } },
+    { "caption": "8 is at least 8: another yes. You found an 8, but maybe not the first one. Do not return. Set <code>hi = 2</code> and keep looking to the left.", "line": 5, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "hi": 2 }, "dim": [2, 3, 4, 5, 6, 7] }, "vars": { "target": 8, "checks": 2 } },
+    { "caption": "mid = 0 + (2 − 0) // 2 = 1. a[1] is 8.", "line": 3, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "mid": 1, "hi": 2 }, "highlight": [1], "dim": [2, 3, 4, 5, 6, 7] }, "vars": { "target": 8, "checks": 3 } },
+    { "caption": "Yes again. <code>hi = 1</code>. Only position 0 is still unknown.", "line": 5, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "hi": 1 }, "dim": [1, 2, 3, 4, 5, 6, 7] }, "vars": { "target": 8, "checks": 3 } },
+    { "caption": "mid = 0 + (1 − 0) // 2 = 0. a[0] is 3.", "line": 3, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 0, "mid": 0, "hi": 1 }, "highlight": [0], "dim": [1, 2, 3, 4, 5, 6, 7] }, "vars": { "target": 8, "checks": 4 } },
+    { "caption": "3 is smaller than 8, a \"no\". Position 0 and everything before it is out, so <code>lo = mid + 1 = 1</code>.", "line": 4, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 1, "hi": 1 }, "dim": [0, 2, 3, 4, 5, 6, 7], "highlight": [1] }, "vars": { "target": 8, "checks": 4 } },
+    { "caption": "<code>lo</code> equals <code>hi</code>: the unknown range is empty, and the first yes is at 1. It is the first 8. Four checks for 8 items; a million items would take 20.", "line": 6, "array": { "label": "a", "values": [3, 8, 8, 8, 12, 15, 20, 27], "pointers": { "lo": 1, "hi": 1 }, "mark": [1] }, "vars": { "returns": 1, "checks": 4 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The template</h2>
+
+<p>Learn this one function well. Almost every binary search on an array is this function, or a small change to the comparison.</p>
+
+<x-code>
+<pre lang="js">
+// First index i with a[i] >= target, or a.length if there is none.
+// a must be sorted from low to high.
+function lowerBound(a, target) {
+  let lo = 0;
+  let hi = a.length; // half-open range [lo, hi)
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (a[mid] < target) lo = mid + 1; // mid is a "no": answer is right of it
+    else hi = mid;                     // mid is a "yes": answer is mid or left
+  }
+  return lo; // lo === hi
+}
+
+function contains(a, target) {
+  const i = lowerBound(a, target);
+  return i < a.length && a[i] === target;
+}
+
+lowerBound([3, 8, 8, 8, 12, 15, 20, 27], 8); // 1
+</pre>
+<pre lang="py">
+# First index i with a[i] >= target, or len(a) if there is none.
+# a must be sorted from low to high.
+def lower_bound(a, target):
+    lo, hi = 0, len(a)  # half-open range [lo, hi)
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if a[mid] < target:
+            lo = mid + 1  # mid is a "no": answer is right of it
+        else:
+            hi = mid      # mid is a "yes": answer is mid or left
+    return lo  # lo == hi
+
+def contains(a, target):
+    i = lower_bound(a, target)
+    return i < len(a) and a[i] == target
+
+lower_bound([3, 8, 8, 8, 12, 15, 20, 27], 8)  # 1
+</pre>
+</x-code>
+
+<p>Every piece of the template is there for a reason:</p>
+
+<ul>
+<li><strong><code>hi = n</code>, not <code>n − 1</code>.</strong> The answer can be <code>n</code> ("everything is smaller"), so the range has to be able to end there.</li>
+<li><strong><code>while lo &lt; hi</code>.</strong> The loop runs while the unknown range <code>[lo, hi)</code> has something in it. When <code>lo == hi</code>, the answer is pinned.</li>
+<li><strong><code>mid</code> rounds down</strong>, so <code>mid</code> is always at least <code>lo</code> and always less than <code>hi</code>. It is a real index inside the range.</li>
+<li><strong><code>lo = mid + 1</code> on a "no"</strong>, because <code>mid</code> itself is ruled out. <strong><code>hi = mid</code> on a "yes"</strong>, because <code>mid</code> might be the answer and must stay at the edge. Either way the range shrinks, so the loop always ends.</li>
+</ul>
+
+<x-callout type="key">
+<p>Binary search finds the boundary between "no" and "yes". Keep the undecided positions in <code>[lo, hi)</code>. Move <code>lo</code> past every "no" and <code>hi</code> onto every "yes". When they meet, <code>lo</code> is the first "yes".</p>
+</x-callout>
+
+<h2>One template, many questions</h2>
+
+<p>Change the question from "at least target" to "greater than target" and you get the <strong>upper bound</strong>: the first index after all copies of the target. The only change is <code>&lt;</code> to <code>&lt;=</code>.</p>
+
+<x-code title="Upper bound and its uses">
+<pre lang="js">
+// First index i with a[i] > target, or a.length.
+function upperBound(a, target) {
+  let lo = 0, hi = a.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (a[mid] <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const a = [3, 8, 8, 8, 12, 15, 20, 27];
+upperBound(a, 8) - lowerBound(a, 8); // 3 copies of 8
+upperBound(a, 8) - 1;                // 3: the last 8
+lowerBound(a, 13);                   // 5: insert 13 here
+</pre>
+<pre lang="py">
+# First index i with a[i] > target, or len(a).
+def upper_bound(a, target):
+    lo, hi = 0, len(a)
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if a[mid] <= target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+a = [3, 8, 8, 8, 12, 15, 20, 27]
+upper_bound(a, 8) - lower_bound(a, 8)  # 3 copies of 8
+upper_bound(a, 8) - 1                  # 3: the last 8
+lower_bound(a, 13)                     # 5: insert 13 here
+</pre>
+</x-code>
+
+<p>Python ships both as <code>bisect.bisect_left</code> (lower bound) and <code>bisect.bisect_right</code> (upper bound). JavaScript has no built-in, so keep the template handy.</p>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(log n)", "space": "O(1)", "note": "Each check halves the unknown range: about log₂ n checks, 20 for a million items." } ] }
+</script>
+</x-complexity>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Mixing two templates">
+<p>Most binary search bugs come from mixing styles: <code>hi = n − 1</code> from one version with <code>while lo &lt; hi</code> and <code>hi = mid</code> from another. With <code>hi = n − 1</code>, searching <code>[1, 2, 3]</code> for 9 returns 2 instead of 3. The answer "past the end" can never come out, so an insert position or a count built on it is off by one. Pick the template above and use all of it.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Writing lo = mid">
+<p>When one undecided position is left, say <code>lo = 4</code> and <code>hi = 5</code>, <code>mid</code> is 4. If a "no" sets <code>lo = mid</code>, nothing changes and the loop runs forever. A "no" at <code>mid</code> means <code>mid</code> is out, so skip it: <code>lo = mid + 1</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Returning as soon as you see the target">
+<p><code>if a[mid] == target: return mid</code> finds <em>an</em> 8, not the first one. In the trace it would have returned 2. If any match is fine, that is OK. If the question says first, last or how many, use the bounds.</p>
+</x-callout>
+
+<x-callout type="tip">
+<p>Write <code>lo + (hi − lo) / 2</code> rather than <code>(lo + hi) / 2</code>. In JavaScript and Python both work, but in Java, C++ and Go, <code>lo + hi</code> can overflow on huge arrays. The habit costs nothing.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>The opening story is a real tool: <code>git bisect</code> asks you to test one commit at a time and finds the first bad commit among thousands in a dozen steps. Databases use the same idea on sorted index pages to find a row without reading the whole table.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "What does <code>lowerBound([3, 8, 8, 8, 12, 15, 20, 27], 13)</code> return?",
+      "options": [
+        { "text": "5", "correct": true, "why": "a[5] = 15 is the first value that is at least 13. 13 is not in the array, and 5 is where it would go." },
+        { "text": "4", "why": "a[4] = 12 is less than 13, so it is a \"no\". The first \"yes\" is one further." },
+        { "text": "-1", "why": "Lower bound never returns -1. Not found shows up as a position whose value is not the target, or as n." }
+      ]
+    },
+    {
+      "question": "About how many checks does binary search need on a sorted array of 1,000,000 items?",
+      "options": [
+        { "text": "20", "correct": true, "why": "Each check halves the range. 2<sup>20</sup> is about a million, so 20 halvings get down to one position." },
+        { "text": "1,000", "why": "That would be the square root of n. Binary search is much better: log₂ n." },
+        { "text": "500,000", "why": "That is the average for a linear scan. Binary search throws away half each time." }
+      ]
+    },
+    {
+      "question": "In the template, why is it <code>hi = mid</code> and not <code>hi = mid − 1</code>?",
+      "options": [
+        { "text": "Because <code>mid</code> passed the test and might be the first \"yes\"", "correct": true, "why": "Right. <code>hi</code> marks the start of the known \"yes\" zone. Setting it to <code>mid − 1</code> could throw away the answer." },
+        { "text": "To make the loop end sooner", "why": "It does the opposite: it keeps one more position in play. Correctness, not speed, is the reason." },
+        { "text": "Because <code>mid</code> rounds up", "why": "In this template <code>mid</code> rounds down." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Notice that the template never needed an array. It only needed a yes/no question whose answers go no, no, …, yes, yes. <a href="/algorithms/binary-search-on-the-answer.html">Binary Search on the Answer</a> uses exactly this template to search over possible answers, such as "the smallest speed that is fast enough".</p>

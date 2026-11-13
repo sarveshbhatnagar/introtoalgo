@@ -1,0 +1,265 @@
+<!--
+{
+  "title": "Coding With AI",
+  "description": "Get real work out of an AI coding assistant: small steps, the right files and goal, a careful read of every diff, and tests that define what done means.",
+  "minutes": 16,
+  "tags": ["coding", "workflow", "testing"]
+}
+-->
+<p>You ask an AI assistant to "add CSV export to the reports page". A minute later it hands back 300 changed lines across six files. You skim it, it looks reasonable, and the page works when you click the button. You merge it.</p>
+
+<p>A week later a colleague finds that the change also rewrote a date helper in another file, and invoices now show the wrong month. The assistant did not do anything strange. It made a big change, and nobody read all of it. The model types faster than you can check, so the limit on safe progress is how much you can review, not how much it can write.</p>
+
+<h2>Work in steps you can check</h2>
+
+<p>The fix is to size each step to what you can read and test in a few minutes. Instead of "add CSV export", you ask for one piece at a time: first a function that turns rows into CSV text, with tests. Then the button that calls it. Then the file download.</p>
+
+<p>Each step follows the same loop:</p>
+
+<ol>
+<li><strong>Say the goal and give the files.</strong> The model can only use what is in its context. Paste or attach the code it will touch and the code it must fit with.</li>
+<li><strong>Get one small change.</strong> One function, one bug fix, one file if you can.</li>
+<li><strong>Read the diff</strong>, the list of lines it added and removed. Every line, before you run anything.</li>
+<li><strong>Run the tests.</strong> If something fails, paste the real error back.</li>
+<li><strong>Commit</strong> it to version control. Now you have a safe point to return to if the next step goes wrong.</li>
+</ol>
+
+<x-callout type="key">
+<p>An AI assistant makes writing code cheap. It does not make checking code cheap. Work in steps small enough that you actually check each one.</p>
+</x-callout>
+
+<h2>Give it the files and the goal</h2>
+
+<p>Here is a request that leaves the model to guess almost everything.</p>
+
+<x-prompt label="Request with no context" tone="weak">
+<x-user>
+Write a median function in JavaScript.
+</x-user>
+<x-model>
+function median(arr) {
+  arr.sort((a, b) => a - b);
+  return arr[Math.floor(arr.length / 2)];
+}
+</x-model>
+</x-prompt>
+
+<p>That reply looks fine at a glance. It has three problems: it picks the wrong middle for an even number of values, it sorts the caller's array in place, and it returns <code>undefined</code> for an empty list. The model could only have known about the first. The other two are problems because of how your code uses the function. Compare a request that carries the situation.</p>
+
+<x-prompt label="Request with files, goal and limits" tone="good">
+<x-user>
+Add a median(nums) function to stats.js (below). The reports page uses it to show the typical response time in milliseconds.
+
+Requirements:
+- Even number of values: return the average of the two middle values.
+- Empty list: throw an error.
+- Do not change the input array. The caller reuses it to draw a chart.
+- Match the style of mean() in the same file.
+- Only change stats.js.
+
+Also write tests for each requirement, using node:assert like stats.test.js (below).
+
+<file name="stats.js">
+[contents]
+</file>
+<file name="stats.test.js">
+[contents]
+</file>
+</x-user>
+</x-prompt>
+
+<p>The second request names the goal, the files, the rules that are specific to your code, and how the result will be checked. "Do not change the input array" is the kind of fact only you know. The model cannot read it from the world.</p>
+
+<h2>Tests are the contract</h2>
+
+<p>Tests turn "it looks right" into "it does what I said". Write them first, or have the model write them first and then read them carefully, because a wrong test makes wrong code look correct. Each test is one promise the code must keep.</p>
+
+<p>Step through what happens when the five tests from the brief run against three versions of the function.</p>
+
+<x-tracer title="Five tests, three versions of median">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "The contract: five tests that pin down what the brief asked for. Nothing has run yet.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, null, null, null], [2.5, null, null, null], [7, null, null, null], ["yes", null, null, null], ["yes", null, null, null]] },
+      "vars": { "version": "none yet" }
+    },
+    {
+      "caption": "v1 is the quick answer from the first prompt. It sorts and takes the middle. Odd lengths pass. For four values it returns 3, the upper middle, not 2.5.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, 2, null, null], [2.5, 3, null, null], [7, 7, null, null], ["yes", "no", null, null], ["yes", "no", null, null]], "mark": [[0, 1], [2, 1]], "highlight": [[1, 1], [3, 1], [4, 1]] },
+      "vars": { "version": "v1", "passed": "2 / 5" }
+    },
+    {
+      "caption": "It also fails the other two. <code>arr.sort</code> sorts the caller's array in place, and an empty list returns <code>undefined</code> instead of throwing. You paste the three failure messages back, word for word.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, 2, null, null], [2.5, 3, null, null], [7, 7, null, null], ["yes", "no", null, null], ["yes", "no", null, null]], "highlight": [[1, 1], [3, 1], [4, 1]] },
+      "vars": { "version": "v1", "next": "paste errors back" }
+    },
+    {
+      "caption": "v2 adds the empty check and averages the two middle values. Four pass. It still calls <code>sort</code> on the input, so the chart would get a sorted array.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, 2, 2, null], [2.5, 3, 2.5, null], [7, 7, 7, null], ["yes", "no", "no", null], ["yes", "no", "yes", null]], "mark": [[0, 2], [1, 2], [2, 2], [4, 2]], "highlight": [[3, 2]] },
+      "vars": { "version": "v2", "passed": "4 / 5" }
+    },
+    {
+      "caption": "This is the bug a quick read misses: the return values are all correct. Only the test that checks the input afterwards catches it. That test exists because the brief said the caller reuses the array.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, 2, 2, null], [2.5, 3, 2.5, null], [7, 7, 7, null], ["yes", "no", "no", null], ["yes", "no", "yes", null]], "highlight": [[3, 2]] },
+      "vars": { "version": "v2", "next": "sort a copy" }
+    },
+    {
+      "caption": "v3 sorts a copy. All five pass. You read the final diff once more, see that only <code>stats.js</code> and its test file changed, and commit.",
+      "grid": { "label": "tests", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["[3, 1, 2]", "[4, 1, 3, 2]", "[7]", "input unchanged", "[] throws"], "rows": [[2, 2, 2, 2], [2.5, 3, 2.5, 2.5], [7, 7, 7, 7], ["yes", "no", "no", "yes"], ["yes", "no", "yes", "yes"]], "mark": [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3]] },
+      "vars": { "version": "v3", "passed": "5 / 5" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Here is v3 with its tests. Every requirement in the brief has a line that checks it.</p>
+
+<x-code title="The final version and its contract">
+<pre lang="js">
+const assert = require("node:assert");
+
+function median(nums) {
+  if (nums.length === 0) throw new Error("median of empty list");
+  const sorted = [...nums].sort((a, b) => a - b); // copy: callers reuse nums
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+assert.strictEqual(median([3, 1, 2]), 2);
+assert.strictEqual(median([4, 1, 3, 2]), 2.5);
+assert.strictEqual(median([7]), 7);
+const times = [120, 80, 95];
+median(times);
+assert.deepStrictEqual(times, [120, 80, 95]); // input not changed
+assert.throws(() => median([]));
+</pre>
+<pre lang="py">
+def median(nums):
+    if not nums:
+        raise ValueError("median of empty list")
+    ordered = sorted(nums)  # copy: callers reuse nums
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+assert median([3, 1, 2]) == 2
+assert median([4, 1, 3, 2]) == 2.5
+assert median([7]) == 7
+times = [120, 80, 95]
+median(times)
+assert times == [120, 80, 95]  # input not changed
+try:
+    median([])
+    raise AssertionError("expected an error")
+except ValueError:
+    pass
+</pre>
+</x-code>
+
+<p>In Python the in-place bug looks different (<code>nums.sort()</code> versus <code>sorted(nums)</code>), but it is the same mistake, and the same test catches it.</p>
+
+<h2>Read every diff</h2>
+
+<p>Reading a diff is faster than writing the code, as long as you read with questions in mind:</p>
+
+<ul>
+<li><strong>Did it change anything I did not ask for?</strong> Renamed variables, reformatted files and "small improvements" elsewhere are where surprises hide.</li>
+<li><strong>Did it touch the tests?</strong> A loosened assertion or a deleted test makes the run go green without fixing anything.</li>
+<li><strong>Did it add a dependency?</strong> Check that the package really exists and is the one you think. Models sometimes invent plausible names, and <a href="/ai/privacy-and-security.html">Privacy and Security</a> explains why attackers care.</li>
+<li><strong>Does it hide errors?</strong> An empty <code>catch</code> block or a default value that swallows bad input turns a loud bug into a quiet one.</li>
+<li><strong>Could I explain every line to a colleague?</strong> If not, ask the model to explain it, then check the explanation against the code.</li>
+</ul>
+
+<x-callout type="tip" title="Paste the real error">
+<p>"It doesn't work, fix it" gives the model nothing to go on. Paste the exact error message, the failing test and what you expected.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Rewrite a coding request">
+<x-task>
+<p>This request produced a function that worked on the example but broke the app in two places. Rewrite it so the model knows the goal, the files, the rules and how the result will be checked.</p>
+</x-task>
+<x-start>
+make a function that formats prices
+</x-start>
+<x-answer>
+<p>One stronger version:</p>
+<x-prompt label="Rewritten request" tone="good">
+<x-user>
+Add formatPrice(cents) to money.js (below). It is used on the checkout page and in emailed receipts.
+
+Rules:
+- Input is a whole number of cents. 1999 becomes "$19.99", 5 becomes "$0.05", 0 becomes "$0.00".
+- Negative values are refunds: -250 becomes "-$2.50".
+- Do not use floating-point division on the cents; build the string from whole numbers.
+- Only change money.js and money.test.js.
+
+First write the tests for each rule above and show them to me. Then write the function.
+
+<file name="money.js">
+[contents]
+</file>
+</x-user>
+</x-prompt>
+<p>Why it works: it says where the function is used, so the model knows the format matters. The examples double as tests and settle the edge cases (small amounts, zero, refunds) that a quick answer would miss. Asking for the tests first lets you check the contract before any code exists.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Accepting a change too big to read">
+<p>If a diff is too long to read carefully, it is too long to accept. Throw it away and ask for the first piece only. Regenerating is cheap; finding a bug in 300 lines you skimmed is not.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Letting it edit the tests to pass">
+<p>When tests fail, a model will sometimes change the expected value instead of the code. Treat any edit to a test as a change to the contract. Approve it only if the old test was actually wrong.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Running one long session for everything">
+<p>After hours of back and forth, early instructions get lost and old wrong attempts sit in the context. Start a fresh session per task, with a short note of what is done. <a href="/ai/context-rot.html">Context Rot</a> explains why.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An assistant returns a 400-line change across eight files for a feature you asked for in one sentence. What is the best next move?",
+      "options": [
+        { "text": "Run the app, and merge if it works", "why": "Clicking around checks the happy path. It says nothing about the other changed files, which is where surprises hide." },
+        { "text": "Discard it and ask for the first small piece, with tests", "correct": true, "why": "A change you cannot read carefully is a change you cannot trust. Smaller steps keep review possible." },
+        { "text": "Ask the model whether the change is safe", "why": "It may spot a problem, but a \"yes\" from the process that wrote the code is not evidence. Nobody has read the 400 lines yet." }
+      ]
+    },
+    {
+      "question": "In the tracer, why did v2 pass four tests but still have a bug?",
+      "options": [
+        { "text": "It returned the wrong median for odd lengths", "why": "All its return values were correct. The problem was a side effect." },
+        { "text": "It sorted the caller's array in place", "correct": true, "why": "The return values were right, but the input was changed. Only a test that checks the input after the call catches this." },
+        { "text": "The test for the empty list was wrong", "why": "That test was right, and v2 passed it." }
+      ]
+    },
+    {
+      "question": "After you report a failing test, the model's next diff changes <code>assert.strictEqual(median([4, 1, 3, 2]), 2.5)</code> to expect 3. What does that tell you?",
+      "options": [
+        { "text": "The test was wrong all along", "why": "The median of 1, 2, 3, 4 is 2.5. The test was right." },
+        { "text": "The model changed the contract instead of fixing the code", "correct": true, "why": "Right. Treat edits to tests as changes to what done means, and reject this one." },
+        { "text": "Nothing important, as long as the run is green", "why": "A green run against a wrong test proves nothing." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Next time you use an assistant on real code, write the tests (or read its tests) before you look at the implementation. Then continue with <a href="/ai/verifying-ai-output.html">Verifying AI Output</a>, which covers checks for facts, numbers and sources as well as code.</p>

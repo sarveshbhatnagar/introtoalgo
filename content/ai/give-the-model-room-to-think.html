@@ -1,0 +1,248 @@
+<!--
+{
+  "title": "Give the Model Room to Think",
+  "description": "Why asking for the working before the answer makes models better at multi-step problems, how to separate the working from the answer, and when to skip it.",
+  "minutes": 14,
+  "tags": ["prompting", "reasoning"]
+}
+-->
+<p>Someone asks you what 17 × 24 is and wants the answer in one second. You blurt out something close, maybe 398. Give yourself a pencil and ten seconds and you write 17 × 20 = 340, 17 × 4 = 68, 340 + 68 = 408. Same brain. The difference is that the paper held the in-between steps.</p>
+
+<p>A language model has a similar limit, and the same fix. The only paper it has is the text it writes.</p>
+
+<h2>The text is the model's scratch paper</h2>
+
+<p>A model produces its reply one <a href="/ai/tokens.html">token</a> at a time. To choose each token, it runs the same fixed stack of calculations over everything before it: your prompt plus whatever it has already written. That is a limited amount of work per token. Unless a tool gives it a hidden scratch area (more on that below), it has no notebook where it can work things out first and then reply.</p>
+
+<p>That has a direct consequence. If the first words of the reply must be the answer, the answer is produced with no working on the page. If the reply starts with the working, each step becomes text, and every later token, including the final answer, can build on it.</p>
+
+<x-callout type="key">
+<p>For problems with several steps, ask for the working before the answer. Reasoning written down becomes input for everything the model writes after it.</p>
+</x-callout>
+
+<h2>Watch it happen</h2>
+
+<p>Here is a small shopping problem: pens cost $9 for a pack of 12, or $1 each. What is the cheapest way to buy exactly 30 pens? Work it out yourself first. The tracer shows two illustrative replies, one asked for the price only and one asked to work it out first.</p>
+
+<x-tracer title="Answer first, then working first">
+<script type="application/json">
+{
+  "code": [
+    "repeat:",
+    "  look at the prompt and everything written so far",
+    "  write the next piece"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {
+      "caption": "Prompt A says \"Reply with the price only.\" The model must start with the answer, and nothing is on the page yet except the problem.",
+      "line": 2,
+      "grid": { "label": "reply A, written so far", "rows": [["(empty)"]], "dim": [[0, 0]] },
+      "vars": { "steps on the page": 0 }
+    },
+    {
+      "caption": "It writes a quick, plausible number: $9 ÷ 12 is $0.75 a pen, and 30 × 0.75 = 22.50. That ignores that you cannot buy half a pack.",
+      "line": 3,
+      "grid": { "label": "reply A, written so far", "rows": [["$22.50"]], "highlight": [[0, 0]] },
+      "vars": { "steps on the page": 0 }
+    },
+    {
+      "caption": "Ask it to explain, and it explains $22.50. The explanation is consistent with the answer because it was written to fit it. Working that comes after the answer cannot change it.",
+      "line": 3,
+      "grid": { "label": "reply A, written so far", "rows": [["$22.50"], ["Each pen costs $0.75 in packs,"], ["and 30 × $0.75 = $22.50."]], "highlight": [[1, 0], [2, 0]], "dim": [[0, 0]] },
+      "vars": { "steps on the page": 0 }
+    },
+    {
+      "caption": "Prompt B says \"Work it out step by step, then give the price on the last line.\" The first piece is a step, not an answer: list the options. Three packs is 36 pens, so more than 3 is never needed.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"]], "highlight": [[0, 0]]},
+      "vars": { "steps on the page": 1 }
+    },
+    {
+      "caption": "With that line on the page, the next one prices the first option: 3 packs is $27, with 6 pens spare.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"], ["3 packs = $27 (6 spare)"]], "highlight": [[1, 0]]},
+      "vars": { "steps on the page": 2 }
+    },
+    {
+      "caption": "2 packs is 24 pens, 6 short. Add 6 singles at $1: $18 + $6 = $24.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"], ["3 packs = $27 (6 spare)"], ["2 packs + 6 singles = $18 + $6 = $24"]], "highlight": [[2, 0]]},
+      "vars": { "steps on the page": 3 }
+    },
+    {
+      "caption": "1 pack is 12 pens, 18 short: $9 + $18 = $27. Fewer packs means more pens at the full $1.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"], ["3 packs = $27 (6 spare)"], ["2 packs + 6 singles = $18 + $6 = $24"], ["1 pack + 18 singles = $9 + $18 = $27"]], "highlight": [[3, 0]]},
+      "vars": { "steps on the page": 4 }
+    },
+    {
+      "caption": "No packs at all: 30 singles is $30. Every option now sits in the text the model is reading.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"], ["3 packs = $27 (6 spare)"], ["2 packs + 6 singles = $18 + $6 = $24"], ["1 pack + 18 singles = $9 + $18 = $27"], ["0 packs: 30 singles = $30"]], "highlight": [[4, 0]]},
+      "vars": { "steps on the page": 5 }
+    },
+    {
+      "caption": "The last line only has to pick the smallest of four numbers already written: $24. Five lines of working came before the answer, against none for reply A.",
+      "line": 3,
+      "grid": {"label": "reply B, written so far", "rows": [["Options: 0, 1, 2 or 3 packs of 12"], ["3 packs = $27 (6 spare)"], ["2 packs + 6 singles = $18 + $6 = $24"], ["1 pack + 18 singles = $9 + $18 = $27"], ["0 packs: 30 singles = $30"], ["Answer: $24"]], "mark": [[5, 0]]},
+      "vars": { "steps on the page": 5 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Reply A was not careless. It was asked to commit first, so it committed to the most obvious-looking number. Reply B was allowed to lay the options out, which turned a tricky question into an easy one: pick the smallest.</p>
+
+<p>This does not make the model always right. Steps can still be wrong. But a wrong step written on the page is something you can see and check, which a wrong one-word answer is not.</p>
+
+<h2>Separate the working from the answer</h2>
+
+<p>Working makes replies longer. If a person or a program only needs the result, ask for the two parts in clearly marked sections.</p>
+
+<x-prompt label="Answer only" tone="weak">
+<x-user>
+Our team of 6 needs a meeting slot. Ana can't do mornings. Ben is out Tuesday and Wednesday. Chloe only works Monday to Wednesday. Slots: Mon 10:00, Tue 14:00, Wed 15:00, Thu 11:00. Which slot works for everyone? One word.
+</x-user>
+<x-model>
+Wednesday
+</x-model>
+</x-prompt>
+
+<p>Wednesday fails: Ben is out. Checking each person against each slot is several small steps, and the prompt left no room for them.</p>
+
+<x-prompt label="Working, then answer" tone="good">
+<x-user>
+Our team of 6 needs a meeting slot. Ana can't do mornings. Ben is out Tuesday and Wednesday. Chloe only works Monday to Wednesday. Slots: Mon 10:00, Tue 14:00, Wed 15:00, Thu 11:00.
+
+Check each slot against each constraint inside <thinking> tags. Then give the slot that works for everyone inside <answer> tags, or "none" if no slot works.
+</x-user>
+<x-model>
+<thinking>
+Mon 10:00: morning, so Ana can't. Out.
+Tue 14:00: Ben is out Tuesday. Out.
+Wed 15:00: Ben is out Wednesday. Out.
+Thu 11:00: morning for Ana, and Chloe doesn't work Thursday. Out.
+</thinking>
+<answer>none</answer>
+</x-model>
+</x-prompt>
+
+<p>The honest answer was "none", which the one-word prompt made very unlikely, because it implied one slot must work. The second prompt allowed for that case explicitly, a habit from <a href="/ai/be-clear-and-specific.html">Be Clear and Specific</a>.</p>
+
+<p>With the answer in tags, a program can ignore the working and pull out the result:</p>
+
+<x-code>
+<pre lang="js">
+function extractAnswer(reply) {
+  const match = reply.match(/<answer>([\s\S]*?)<\/answer>/);
+  return match ? match[1].trim() : null; // null: the tag was missing
+}
+
+const reply = "<thinking>Mon 10:00 ... Out.</thinking>\n<answer>none</answer>";
+console.log(extractAnswer(reply)); // "none"
+</pre>
+<pre lang="py">
+import re
+
+def extract_answer(reply):
+    match = re.search(r"<answer>(.*?)</answer>", reply, re.DOTALL)
+    return match.group(1).strip() if match else None  # None: the tag was missing
+
+reply = "<thinking>Mon 10:00 ... Out.</thinking>\n<answer>none</answer>"
+print(extract_answer(reply))  # none
+</pre>
+</x-code>
+
+<p>Always handle the missing-tag case. A model usually follows the format, not always, and your code should notice instead of crashing.</p>
+
+<x-callout type="real-world">
+<p>Some models and tools have a built-in thinking or reasoning setting. With it on, the model writes working before the final reply, and you may or may not get to see it. The principle is the same. When that setting is on, adding "think step by step" helps less, but asking for working in a set structure is still useful when you want to read or check the steps.</p>
+</x-callout>
+
+<h2>When to skip it</h2>
+
+<p>Room to think helps when there are steps: arithmetic, comparing options, checking rules, debugging, planning. It adds little to a lookup ("What is the capital of Peru?") or a short creative task, and it costs time and tokens on every request. For very large tasks, a different form of room helps more: split the job into several prompts, each doing one stage, and feed each result into the next.</p>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Let it compare before choosing">
+<x-task>
+<p>This prompt gets a one-word pick that often ignores the commute. Rewrite it so the model compares the offers on what matters before choosing, and so the choice is easy to find in the reply.</p>
+</x-task>
+<x-start>
+Which job offer should I take? Just tell me A, B or C.
+A: $62k, 70-minute commute each way.
+B: $58k, fully remote.
+C: $60k, 20-minute commute, 4-day week.
+</x-start>
+<x-answer>
+<x-prompt label="Rewritten prompt" tone="good">
+<x-user>
+Help me pick a job offer. I care most about time with my family, then pay.
+
+A: $62k, 70-minute commute each way, 5 days a week.
+B: $58k, fully remote.
+C: $60k, 20-minute commute each way, 4-day week.
+
+Inside <thinking> tags: work out the weekly hours spent commuting for each, then compare the offers on free time first and pay second.
+Then give your pick inside <answer> tags as one letter, followed by one sentence explaining why.
+</x-user>
+</x-prompt>
+<p>Why it works: the model now writes the numbers it needs before deciding (A is about 11.7 hours of commuting a week, C about 2.7, B none). Stating your priorities gives it a rule for weighing them. The answer tag keeps the choice easy to find, and the one-sentence reason lets you check it against the working.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Asking for the answer, then the reasoning">
+<p>"Give the answer, then explain" gets you a justification, not reasoning. The answer is fixed before any working exists. Put the working first.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Treating the working as proof">
+<p>Written steps make errors easier to spot, but they are not guaranteed to be correct, and they do not always reflect how the model really reached its answer. Read them, and check key numbers yourself, as <a href="/ai/verifying-ai-output.html">Verifying AI Output</a> explains.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Squeezing out the room by accident">
+<p>"Be brief" or "one word only" on a multi-step problem quietly removes the working. If you want a short final answer, say that the final answer should be short, not the whole reply.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Why does writing the working first help a model on multi-step problems?",
+      "options": [
+        { "text": "It makes the model try harder", "why": "A model has no motivation to appeal to. The benefit is mechanical: more written steps for later tokens to build on." },
+        { "text": "Each written step becomes input for the tokens that come after it", "correct": true, "why": "The model reads everything already written when choosing each next token, so the final answer can build on the steps." },
+        { "text": "Longer replies are always more accurate", "why": "Length alone does not help. What helps is useful steps that come before the answer." }
+      ]
+    },
+    {
+      "question": "A prompt says \"Give your answer, then explain your reasoning.\" What is the problem?",
+      "options": [
+        { "text": "Nothing; the explanation will catch any mistake", "why": "The answer is already written, so the explanation tends to defend it instead of correcting it." },
+        { "text": "The answer is produced before any working, so the explanation can only justify it", "correct": true, "why": "Right. Reverse the order: working first, answer last." },
+        { "text": "Explanations confuse the model", "why": "Explanations are fine. Their position in the reply is the issue." }
+      ]
+    },
+    {
+      "question": "For which request is asking for step-by-step working least useful?",
+      "options": [
+        { "text": "Checking which of 5 flights fits 3 travel rules", "why": "Several checks to make: working helps here." },
+        { "text": "Finding the bug in a 30-line function", "why": "Debugging is multi-step reasoning, where working helps." },
+        { "text": "Translating \"good morning\" into Spanish", "correct": true, "why": "A single lookup. Working adds time and tokens without improving the answer." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The tags in this lesson were a first step toward replies a program can read. <a href="/ai/structured-output.html">Structured Output</a> takes that all the way to JSON you can parse and check.</p>

@@ -1,0 +1,228 @@
+<!--
+{
+  "title": "Quicksort",
+  "description": "Pick a pivot, move smaller items left and bigger items right, and repeat on each side. Learn partitioning, why pivots matter, and quicksort's worst case.",
+  "minutes": 16,
+  "tags": ["sorting", "divide and conquer", "recursion"]
+}
+-->
+<p>A photographer wants a class of children lined up by height. She does not compare everyone with everyone. She picks one child, Sam, and says: "Shorter than Sam, stand on his left. Taller, on his right." Nobody on the left is sorted yet, nobody on the right is sorted yet, but Sam is now standing exactly where he belongs in the final line.</p>
+
+<p>Then she does the same thing with the group on the left, and the group on the right. Each round puts at least one more child in their final place, and the groups keep shrinking. That is quicksort.</p>
+
+<h2>The idea: partition around a pivot</h2>
+
+<p>Quicksort has three steps:</p>
+
+<ol>
+<li><strong>Pick a pivot</strong>, one item from the range.</li>
+<li><strong>Partition</strong>: rearrange the range so every item smaller than the pivot comes before it and every other item comes after it. The pivot lands in its final position.</li>
+<li><strong>Recurse</strong> on the part before the pivot and the part after it.</li>
+</ol>
+
+<p>Compare it with <a href="/algorithms/merge-sort.html">merge sort</a>. Merge sort splits without looking at the values, then does its real work when merging. Quicksort does its real work while splitting, and then there is nothing to combine: once both sides are sorted, the whole range is sorted. It also sorts in place, inside the original array.</p>
+
+<h2>Partitioning, traced</h2>
+
+<p>The partition step is the heart of quicksort, so trace it carefully. This version uses the last item as the pivot. A boundary <code>b</code> marks where the next small item should go: everything left of <code>b</code> is smaller than the pivot. Pointer <code>j</code> scans the range once.</p>
+
+<x-tracer title="Partition [7, 2, 9, 4, 1, 6] around 6">
+<script type="application/json">
+{
+  "code": [
+    "pivot = a[hi]",
+    "b = lo",
+    "for j from lo to hi - 1:",
+    "  if a[j] < pivot:",
+    "    swap a[b] and a[j]",
+    "    b = b + 1",
+    "swap a[b] and a[hi]",
+    "return b"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The pivot is the last item, 6. No small items found yet, so <code>b</code> is at the start.", "line": 2, "array": { "label": "a", "values": [7, 2, 9, 4, 1, 6], "pointers": { "b": 0, "j": 0 }, "mark": [5] }, "vars": { "pivot": 6, "comparisons": 0 } },
+    { "caption": "7 is not smaller than 6. Leave it where it is; it belongs on the right side.", "line": 4, "array": { "label": "a", "values": [7, 2, 9, 4, 1, 6], "pointers": { "b": 0, "j": 0 }, "highlight": [0], "mark": [5] }, "vars": { "pivot": 6, "comparisons": 1 } },
+    { "caption": "2 is smaller. Swap it into slot <code>b</code>, swapping 7 out, then move <code>b</code> right. Slot 0 now holds a small item.", "line": 6, "array": { "label": "a", "values": [2, 7, 9, 4, 1, 6], "pointers": { "b": 1, "j": 1 }, "highlight": [0, 1], "mark": [5] }, "vars": { "pivot": 6, "comparisons": 2 } },
+    { "caption": "9 is not smaller. Skip it.", "line": 4, "array": { "label": "a", "values": [2, 7, 9, 4, 1, 6], "pointers": { "b": 1, "j": 2 }, "highlight": [2], "mark": [5] }, "vars": { "pivot": 6, "comparisons": 3 } },
+    { "caption": "4 is smaller. Swap it with the 7 at slot <code>b</code>, then move <code>b</code>.", "line": 6, "array": { "label": "a", "values": [2, 4, 9, 7, 1, 6], "pointers": { "b": 2, "j": 3 }, "highlight": [1, 3], "mark": [5] }, "vars": { "pivot": 6, "comparisons": 4 } },
+    { "caption": "1 is smaller. Swap it with the 9 at slot <code>b</code>, then move <code>b</code>. The small items 2, 4, 1 are now packed at the front.", "line": 6, "array": { "label": "a", "values": [2, 4, 1, 7, 9, 6], "pointers": { "b": 3, "j": 4 }, "highlight": [2, 4], "mark": [5] }, "vars": { "pivot": 6, "comparisons": 5 } },
+    { "caption": "The scan is done. Swap the pivot into slot <code>b</code>. Everything before it is smaller, everything after it is bigger, so 6 is in its final place.", "line": 7, "array": { "label": "a", "values": [2, 4, 1, 6, 9, 7], "pointers": { "b": 3 }, "mark": [3] }, "vars": { "pivot": 6, "comparisons": 5 } },
+    { "caption": "Now recurse on <code>[2, 4, 1]</code> and <code>[9, 7]</code>. They never need to look at each other again, and there is no merge at the end.", "line": 8, "array": { "label": "a", "values": [2, 4, 1, 6, 9, 7], "highlight": [0, 1, 2, 4, 5], "mark": [3] }, "vars": { "returns": 3 } },
+    { "caption": "Both sides sorted the same way. One pass of 5 comparisons fixed the pivot and split the problem in two.", "array": { "label": "a", "values": [1, 2, 4, 6, 7, 9], "mark": [0, 1, 2, 3, 4, 5] } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>The partition below is the one you just traced, with one addition: it first picks a <em>random</em> item and swaps it to the end, so the pivot is random instead of always the last item. The next section explains why.</p>
+
+<x-code>
+<pre lang="js">
+function quickSort(a, lo = 0, hi = a.length - 1) {
+  if (lo >= hi) return a; // 0 or 1 items: sorted
+  const p = partition(a, lo, hi);
+  quickSort(a, lo, p - 1);  // the pivot at p is already final
+  quickSort(a, p + 1, hi);
+  return a;
+}
+
+function partition(a, lo, hi) {
+  const r = lo + Math.floor(Math.random() * (hi - lo + 1));
+  [a[r], a[hi]] = [a[hi], a[r]]; // random pivot, moved to the end
+  const pivot = a[hi];
+  let b = lo; // a[lo..b-1] holds items smaller than the pivot
+  for (let j = lo; j < hi; j++) {
+    if (a[j] < pivot) {
+      [a[b], a[j]] = [a[j], a[b]];
+      b++;
+    }
+  }
+  [a[b], a[hi]] = [a[hi], a[b]]; // pivot into its final slot
+  return b;
+}
+
+quickSort([7, 2, 9, 4, 1, 6]); // [1, 2, 4, 6, 7, 9]
+</pre>
+<pre lang="py">
+import random
+
+def quick_sort(a, lo=0, hi=None):
+    if hi is None:
+        hi = len(a) - 1
+    if lo >= hi:  # 0 or 1 items: sorted
+        return a
+    p = partition(a, lo, hi)
+    quick_sort(a, lo, p - 1)  # the pivot at p is already final
+    quick_sort(a, p + 1, hi)
+    return a
+
+def partition(a, lo, hi):
+    r = random.randint(lo, hi)
+    a[r], a[hi] = a[hi], a[r]  # random pivot, moved to the end
+    pivot = a[hi]
+    b = lo  # a[lo..b-1] holds items smaller than the pivot
+    for j in range(lo, hi):
+        if a[j] < pivot:
+            a[b], a[j] = a[j], a[b]
+            b += 1
+    a[b], a[hi] = a[hi], a[b]  # pivot into its final slot
+    return b
+
+quick_sort([7, 2, 9, 4, 1, 6])  # [1, 2, 4, 6, 7, 9]
+</pre>
+</x-code>
+
+<h2>Good pivots and bad pivots</h2>
+
+<p>Partitioning a range of <code>n</code> items costs O(n): one scan. What matters is how evenly the pivot splits the range.</p>
+
+<p>If the pivot lands near the middle every time, each level halves the work, just like merge sort. There are about log n levels with O(n) work each, so the total is <strong>O(n log n)</strong>.</p>
+
+<p>Now take an array that is already sorted and always use the last item as the pivot. The pivot is the biggest item, so the "smaller" side gets everything else and the "bigger" side is empty. Each level removes just one item. That is n + (n − 1) + … + 1 steps, which is <strong>O(n²)</strong>, and the recursion goes <code>n</code> calls deep.</p>
+
+<x-figure caption="Left: pivots near the middle halve the range, so 8 items take 3 levels. Right: the worst pivot every time peels off one item per level.">
+<svg viewBox="0 0 500 270" aria-label="Two diagrams. On the left, a bar of 8 splits into two bars of 4 then four bars of 2, over 3 levels. On the right, a bar of 8 shrinks to 7, 6, 5, 4, 3 and 2, one item per level, over 7 levels.">
+  <text x="110" y="20" text-anchor="middle" class="t-sans t-bold f-good">good pivots</text>
+  <rect x="10" y="34" width="200" height="22" rx="4" class="f-good-soft s-line"/><text x="110" y="50" text-anchor="middle" class="t-small">8</text>
+  <rect x="10" y="64" width="96" height="22" rx="4" class="f-good-soft s-line"/><text x="58" y="80" text-anchor="middle" class="t-small">4</text>
+  <rect x="114" y="64" width="96" height="22" rx="4" class="f-good-soft s-line"/><text x="162" y="80" text-anchor="middle" class="t-small">4</text>
+  <rect x="10" y="94" width="44" height="22" rx="4" class="f-good-soft s-line"/><text x="32" y="110" text-anchor="middle" class="t-small">2</text>
+  <rect x="62" y="94" width="44" height="22" rx="4" class="f-good-soft s-line"/><text x="84" y="110" text-anchor="middle" class="t-small">2</text>
+  <rect x="114" y="94" width="44" height="22" rx="4" class="f-good-soft s-line"/><text x="136" y="110" text-anchor="middle" class="t-small">2</text>
+  <rect x="166" y="94" width="44" height="22" rx="4" class="f-good-soft s-line"/><text x="188" y="110" text-anchor="middle" class="t-small">2</text>
+  <text x="110" y="146" text-anchor="middle" class="t-sans t-small f-muted">3 levels: about log₂ n</text>
+
+  <text x="380" y="20" text-anchor="middle" class="t-sans t-bold f-bad">worst pivots</text>
+  <rect x="280" y="34" width="200" height="22" rx="4" class="f-bad-soft s-line"/><text x="380" y="50" text-anchor="middle" class="t-small">8</text>
+  <rect x="280" y="64" width="175" height="22" rx="4" class="f-bad-soft s-line"/><text x="367" y="80" text-anchor="middle" class="t-small">7</text>
+  <rect x="280" y="94" width="150" height="22" rx="4" class="f-bad-soft s-line"/><text x="355" y="110" text-anchor="middle" class="t-small">6</text>
+  <rect x="280" y="124" width="125" height="22" rx="4" class="f-bad-soft s-line"/><text x="342" y="140" text-anchor="middle" class="t-small">5</text>
+  <rect x="280" y="154" width="100" height="22" rx="4" class="f-bad-soft s-line"/><text x="330" y="170" text-anchor="middle" class="t-small">4</text>
+  <rect x="280" y="184" width="75" height="22" rx="4" class="f-bad-soft s-line"/><text x="317" y="200" text-anchor="middle" class="t-small">3</text>
+  <rect x="280" y="214" width="50" height="22" rx="4" class="f-bad-soft s-line"/><text x="305" y="230" text-anchor="middle" class="t-small">2</text>
+  <text x="380" y="262" text-anchor="middle" class="t-sans t-small f-muted">7 levels: about n</text>
+</svg>
+</x-figure>
+
+<p>A random pivot fixes this. A sorted or reversed input can no longer force bad pivots, because the choice is made fresh every run. On a large array the chance of hitting the worst case is tiny, and the expected cost is O(n log n) for any input of distinct items. Many equal items are a separate problem, covered in the mistakes below.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Average (random pivot)", "time": "O(n log n)", "space": "O(log n)", "note": "About log n levels of O(n) partitioning. Space is the recursion stack." },
+    { "name": "Worst case", "time": "O(n²)", "space": "O(n)", "note": "Every pivot is the smallest or largest item, so each level removes only one." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>Partitioning puts the pivot in its final place in one O(n) pass. Quicksort is fast when pivots split the range roughly in half, and a random pivot makes that the expected case on any input.</p>
+</x-callout>
+
+<p>Quicksort is <strong>not stable</strong>. The swaps in the partition throw items over each other: in the trace, 7 was thrown from slot 0 to slot 1, then to slot 3, then to slot 5. If two items had the same key, nothing would keep them in their original order.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Always picking the first or last item">
+<p>It works on random data and falls apart on data that is already sorted or reversed, which is common in real life: log files, IDs, timestamps. Pick a random pivot, or the median of the first, middle and last items.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Including the pivot in the recursive call">
+<p>Recurse on <code>[lo, p − 1]</code> and <code>[p + 1, hi]</code>. If you recurse on <code>[lo, p]</code> and the pivot is the largest item, that call gets the same range again. With a fixed last-item pivot it never stops.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Many equal items">
+<p>If every item is the same, <code>a[j] &lt; pivot</code> is never true, so every partition puts everything on one side. That is the O(n²) case again, even with a random pivot. The fix is a <strong>three-way partition</strong>: split into smaller, equal and bigger, and only recurse on smaller and bigger.</p>
+</x-callout>
+
+<x-callout type="tip">
+<p>If you only need the k-th smallest item, partition once and recurse into the <em>one</em> side that contains position k. That is quickselect. It runs in O(n) on average: the scans cost about n + n/2 + n/4 + …, which is under 2n, because it never branches in two.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>C++'s <code>std::sort</code> is usually an introsort: quicksort, with insertion sort for tiny ranges and a switch to <a href="/algorithms/heap-sort.html">heap sort</a> if the recursion gets suspiciously deep. You get quicksort's speed with an O(n log n) guarantee.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "You partition <code>[3, 8, 1, 5]</code> using the last item, 5, as the pivot, with the code from the trace. Where does 5 end up?",
+      "options": [
+        { "text": "Index 2", "correct": true, "why": "Two items, 3 and 1, are smaller than 5, so they fill slots 0 and 1, and the pivot goes into slot 2. The result is <code>[3, 1, 5, 8]</code>." },
+        { "text": "Index 3", "why": "The pivot starts at index 3, but 8 is bigger, so 5 has to move left of it." },
+        { "text": "Index 1", "why": "That would mean only one item is smaller than 5. Both 3 and 1 are." }
+      ]
+    },
+    {
+      "question": "Quicksort with the last item as pivot gets <code>[1, 2, 3, …, 1000]</code>. Roughly how many comparisons does it make?",
+      "options": [
+        { "text": "About 10,000", "why": "That is n log n, the cost with good pivots. Here every pivot is the largest item." },
+        { "text": "About 500,000", "correct": true, "why": "Each partition removes only the pivot, so the scans are 999 + 998 + … + 1, which is about n²/2." },
+        { "text": "About 1,000", "why": "Even one level of partitioning already costs 999 comparisons." }
+      ]
+    },
+    {
+      "question": "Which is true of quicksort but not of merge sort?",
+      "options": [
+        { "text": "It sorts in place with only O(log n) extra space on average", "correct": true, "why": "Partitioning only swaps items inside the array. Merge sort needs an O(n) buffer for its merges." },
+        { "text": "It is stable", "why": "It is the other way round: merge sort is stable and quicksort is not." },
+        { "text": "It is O(n log n) in the worst case", "why": "Merge sort is. Quicksort's worst case is O(n²)." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Partition <code>[5, 9, 2, 7, 3]</code> by hand around its last item, 3: you should get <code>[2, 3, 5, 7, 9]</code> with the pivot at index 1. Then read <a href="/algorithms/heap-sort.html">Heap Sort</a>, which guarantees O(n log n) in place, with no bad inputs at all.</p>

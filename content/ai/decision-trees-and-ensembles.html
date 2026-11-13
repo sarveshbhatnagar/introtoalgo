@@ -1,0 +1,229 @@
+<!--
+{
+  "title": "Decision Trees and Ensembles",
+  "description": "Learn a model made of yes-or-no questions by picking the best split again and again, then combine many trees into forests that overfit far less.",
+  "minutes": 15,
+  "tags": ["machine learning", "decision trees", "ensembles"]
+}
+-->
+<p>Before taking a drone out, an experienced pilot runs through a few questions in their head. Is it raining? If so, stay home. If not, how windy is it? Too windy, stay home. Otherwise, fly. Nobody computed a weighted sum. They followed a short chain of questions, and each answer decided which question came next.</p>
+
+<p>A <strong>decision tree</strong> is a model that has exactly this shape, and it can be learned from examples. Trees are easy to read, need little data preparation, and, combined in large groups, they are some of the most accurate models for spreadsheet-style data.</p>
+
+<h2>A tree is a chain of questions</h2>
+
+<p>Each inner box of a tree asks a yes-or-no question about one feature. Each answer leads to another question or to a <strong>leaf</strong>, which holds the prediction. To predict, start at the top and follow the answers down.</p>
+
+<x-figure caption="The tree learned from 8 past days. The numbers show how many training days ended in each leaf.">
+<svg viewBox="0 0 480 240" aria-label="A decision tree. The top question is: raining? Yes leads to a leaf: don't fly, 3 days. No leads to a second question: wind at least 22 km/h? No leads to a leaf: fly, 4 days. Yes leads to a leaf: don't fly, 1 day.">
+  <line x1="240" y1="46" x2="95" y2="100" class="s-line" stroke-width="2"/>
+  <line x1="240" y1="46" x2="375" y2="100" class="s-line" stroke-width="2"/>
+  <line x1="375" y1="136" x2="265" y2="186" class="s-line" stroke-width="2"/>
+  <line x1="375" y1="136" x2="410" y2="186" class="s-line" stroke-width="2"/>
+  <text x="150" y="68" class="t-sans t-small f-muted">yes</text>
+  <text x="318" y="68" class="t-sans t-small f-muted">no</text>
+  <text x="288" y="164" class="t-sans t-small f-muted">no</text>
+  <text x="404" y="164" class="t-sans t-small f-muted">yes</text>
+  <rect x="170" y="10" width="140" height="36" rx="6" class="f-surface s-accent"/>
+  <text x="240" y="33" text-anchor="middle" class="t-sans t-bold">Raining?</text>
+  <rect x="20" y="100" width="150" height="44" rx="6" class="f-bad-soft s-line"/>
+  <text x="95" y="119" text-anchor="middle" class="t-sans t-bold">Don't fly</text>
+  <text x="95" y="136" text-anchor="middle" class="t-sans t-small f-muted">3 of 3 days</text>
+  <rect x="290" y="100" width="170" height="36" rx="6" class="f-surface s-accent"/>
+  <text x="375" y="123" text-anchor="middle" class="t-sans t-bold">Wind ≥ 22 km/h?</text>
+  <rect x="200" y="186" width="130" height="44" rx="6" class="f-good-soft s-line"/>
+  <text x="265" y="205" text-anchor="middle" class="t-sans t-bold">Fly</text>
+  <text x="265" y="222" text-anchor="middle" class="t-sans t-small f-muted">4 of 4 days</text>
+  <rect x="350" y="186" width="120" height="44" rx="6" class="f-bad-soft s-line"/>
+  <text x="410" y="205" text-anchor="middle" class="t-sans t-bold">Don't fly</text>
+  <text x="410" y="222" text-anchor="middle" class="t-sans t-small f-muted">1 of 1 day</text>
+</svg>
+</x-figure>
+
+<p>Unlike the weighted sums in <a href="/ai/regression-and-classification.html">Regression and Classification</a>, a tree can say "wind matters, but only on dry days". It handles that kind of interaction naturally, because the wind question only exists on one branch.</p>
+
+<h2>How a tree is learned</h2>
+
+<p>You already know the core move. In <a href="/ai/what-is-machine-learning.html">What Is Machine Learning</a> we tried every cut-off for one feature and kept the one with the fewest mistakes. A tree does that for every feature, picks the single best question, splits the examples into two groups, and then repeats the whole search inside each group.</p>
+
+<p>To score a question, let each group predict its most common answer and count how many examples that gets wrong. Here are 8 past days, sorted by wind, with whether flying went well.</p>
+
+<x-tracer title="Choosing the first question">
+<script type="application/json">
+{
+  "code": [
+    "for each feature f:",
+    "  for each value t of f:",
+    "    split days into f >= t and f < t",
+    "    cost = mistakes(group 1) + mistakes(group 2)",
+    "    keep the split with the lowest cost",
+    "repeat inside each group"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Question: wind ≥ 8? The 5 km/h day goes alone and is right. The other 7 days have 3 fly and 4 don't, so predicting \"don't\" gets 3 wrong. Cost 3.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 1 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [1, 2, 3, 4, 5, 6, 7] } ], "vars": { "cost": 3, "best": "wind ≥ 8 (3)" } },
+    { "caption": "Wind ≥ 10: the low group is 1 yes and 1 no (1 wrong); the high group is 3 and 3 (3 wrong). Cost 4.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 2 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [2, 3, 4, 5, 6, 7] } ], "vars": { "cost": 4, "best": "wind ≥ 8 (3)" } },
+    { "caption": "Wind ≥ 12: the low group (5, 8, 10) is 2 yes and 1 no, so 1 wrong. The high group is 2 yes and 3 no, so 2 wrong. Cost 3, a tie, so the first best stays.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 3 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [3, 4, 5, 6, 7] } ], "vars": { "cost": 3, "best": "wind ≥ 8 (3)" } },
+    { "caption": "Wind ≥ 15: 2 yes and 2 no on each side, so 2 wrong on each side. Cost 4.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 4 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [4, 5, 6, 7] } ], "vars": { "cost": 4, "best": "wind ≥ 8 (3)" } },
+    { "caption": "Wind ≥ 18: the low group is 3 yes and 2 no (2 wrong); the high group is 1 yes and 2 no (1 wrong). Cost 3, still no better.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 5 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [5, 6, 7] } ], "vars": { "cost": 3, "best": "wind ≥ 8 (3)" } },
+    { "caption": "Wind ≥ 22: the two windiest days are both \"don't\", so that group is perfect. The other 6 have 4 yes and 2 no: 2 wrong. Cost 2, a new best.", "line": 5, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 6 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [6, 7] } ], "vars": { "cost": 2, "best": "wind ≥ 22 (2)" } },
+    { "caption": "Wind ≥ 25: the low group has 4 yes and 3 no, so 3 wrong. Cost 3. Wind ≥ 22 is still the best wind question.", "line": 4, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "pointers": { "t": 7 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [7] } ], "vars": { "cost": 3, "best": "wind ≥ 22 (2)" } },
+    { "caption": "Now the other feature. Raining? The 3 rainy days are all \"don't\": perfect. The 5 dry days have 4 yes and 1 no: 1 wrong. Cost 1, the best of all.", "line": 5, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25] }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"], "highlight": [1, 3, 7] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "highlight": [1, 3, 7] } ], "vars": { "cost": 1, "best": "rain (1)" } },
+    { "caption": "The first question is \"Raining?\". The rainy group is pure, so it becomes a leaf: don't fly. Only the 5 dry days need more work.", "line": 6, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "dim": [1, 3, 7] }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"], "dim": [1, 3, 7] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "dim": [1, 3, 7] } ], "vars": { "first question": "rain", "left to split": 5 } },
+    { "caption": "Repeat the search on the dry days. Wind ≥ 22 puts the one bad day alone. Cost 0: both groups are pure, so the tree is finished.", "line": 6, "arrays": [ { "label": "wind", "values": [5, 8, 10, 12, 15, 18, 22, 25], "dim": [1, 3, 7], "pointers": { "t": 6 } }, { "label": "rain", "values": ["no", "yes", "no", "yes", "no", "no", "no", "yes"], "dim": [1, 3, 7] }, { "label": "fly", "values": ["yes", "no", "yes", "no", "yes", "yes", "no", "no"], "dim": [1, 3, 7], "mark": [0, 2, 4, 5], "highlight": [6] } ], "vars": { "second question": "wind ≥ 22", "cost": 0 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The result is the tree in the figure above. Notice that wind ≥ 22 was the best single wind question at the top, but rain was better still. Picking the best question at each step, without looking ahead, is a <a href="/algorithms/greedy-algorithms.html">greedy</a> strategy. It is fast and works well, though it does not guarantee the best possible tree.</p>
+
+<x-code>
+<pre lang="js">
+// Mistakes if a group predicts its most common label.
+function mistakes(labels) {
+  const yes = labels.filter((l) => l === 1).length;
+  return Math.min(yes, labels.length - yes);
+}
+
+// Try the question "feature >= t" for every feature and value.
+function bestSplit(rows, labels) {
+  let best = null;
+  for (let f = 0; f < rows[0].length; f++) {
+    for (const t of new Set(rows.map((r) => r[f]))) {
+      const yes = [], no = [];
+      rows.forEach((r, i) => (r[f] >= t ? yes : no).push(labels[i]));
+      if (no.length === 0) continue; // everyone said yes: no split
+      const cost = mistakes(yes) + mistakes(no);
+      if (best === null || cost < best.cost) best = { feature: f, t, cost };
+    }
+  }
+  return best;
+}
+
+// Each row: [wind in km/h, rain (1 = yes)]. Label: 1 = good to fly.
+const rows = [[5, 0], [8, 1], [10, 0], [12, 1], [15, 0], [18, 0], [22, 0], [25, 1]];
+bestSplit(rows, [1, 0, 1, 0, 1, 1, 0, 0]); // { feature: 1, t: 1, cost: 1 }
+</pre>
+<pre lang="py">
+def mistakes(labels):
+    """Mistakes if a group predicts its most common label."""
+    yes = sum(labels)
+    return min(yes, len(labels) - yes)
+
+def best_split(rows, labels):
+    """Try the question "feature >= t" for every feature and value."""
+    best = None
+    for f in range(len(rows[0])):
+        for t in sorted({r[f] for r in rows}):
+            yes = [l for r, l in zip(rows, labels) if r[f] >= t]
+            no = [l for r, l in zip(rows, labels) if r[f] < t]
+            if not no:
+                continue  # everyone said yes: no split
+            cost = mistakes(yes) + mistakes(no)
+            if best is None or cost < best[2]:
+                best = (f, t, cost)
+    return best
+
+# Each row: [wind in km/h, rain (1 = yes)]. Label: 1 = good to fly.
+rows = [[5, 0], [8, 1], [10, 0], [12, 1], [15, 0], [18, 0], [22, 0], [25, 1]]
+best_split(rows, [1, 0, 1, 0, 1, 1, 0, 0])  # (1, 1, 1)
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(f × n²)", "space": "O(n)", "note": "For each of f features, n candidate values, each checked against n examples. Real libraries sort each feature once and sweep, bringing one split down to O(f × n log n)." } ] }
+</script>
+</x-complexity>
+
+<p>Real libraries score splits with a smoother measure than a mistake count, usually <strong>Gini impurity</strong>: for a group where a share <code>p</code> say yes, it is <code>1 − p² − (1 − p)²</code>. It is 0 for a pure group and largest for a 50/50 group. Unlike a mistake count, it rewards a split that makes a group purer even when the group's majority answer does not change.</p>
+
+<h2>Trees overfit, forests do not as much</h2>
+
+<p>Left alone, a tree keeps splitting until every leaf is pure. With enough questions it can carve out a leaf for every single training example, which is memorization, the problem from <a href="/ai/overfitting-and-evaluation.html">Overfitting and Evaluation</a>. You can limit the depth, or require a minimum number of examples per leaf. But there is a better trick: grow many trees and let them vote. A group of models used together is called an <strong>ensemble</strong>.</p>
+
+<ul>
+<li><strong>Random forest.</strong> Train hundreds of trees, each on a random sample of the examples, and let each split consider only a random handful of features. Every tree overfits in its own different way. When they vote, their individual quirks mostly cancel out and the shared pattern remains.</li>
+<li><strong>Gradient boosting.</strong> Train small trees one after another. Each new tree is trained on the errors the earlier trees still make, so it focuses on the cases they got wrong. Their predictions are added up.</li>
+</ul>
+
+<x-callout type="key">
+<p>A single deep tree is easy to read and easy to overfit. Many trees trained on different views of the data, voting or adding up, are much harder to fool by noise.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>For tabular data, like rows of customers, transactions or sensor readings, forests and boosted trees are often the first thing practitioners try, and are hard to beat. Neural networks tend to win on images, sound and text.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Growing the tree until every leaf is pure">
+<p>A training score of 100% from a deep tree is a warning, not a win. Cap the depth or the leaf size, check the score on a validation set, or switch to a forest.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Reading too much into one tree's questions">
+<p>Change a few training examples and a single tree can pick a completely different first question. Do not treat its structure as the truth about your data. Forests report feature importance averaged over many trees, which is more stable, but it still shows what the model relies on, not what causes what.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Let the forest vote">
+<x-task>
+<p>A tiny random forest has three trees, each trained on a different random sample of past days. Predict for both new days, tree by tree, then give the forest's vote. Then explain why tree B might have learned a different rule from the others.</p>
+</x-task>
+<x-start>
+Tree A: raining? -> don't fly. Otherwise wind >= 22 -> don't fly. Otherwise fly.
+Tree B: wind >= 16 -> don't fly. Otherwise fly.
+Tree C: raining? -> don't fly. Otherwise fly.
+
+Day 1: wind 20 km/h, dry
+Day 2: wind 9 km/h, raining
+</x-start>
+<x-answer>
+<ul>
+<li><strong>Day 1</strong>: A says fly (dry, wind below 22). B says don't fly (wind 20 ≥ 16). C says fly (dry). The vote is 2 to 1: <strong>fly</strong>.</li>
+<li><strong>Day 2</strong>: A says don't fly (rain). B says fly (wind below 16). C says don't fly (rain). The vote is 2 to 1: <strong>don't fly</strong>.</li>
+</ul>
+<p>Tree B probably got a random sample with few rainy days, so rain never looked useful, and the windy days in its sample happened to fall at 16 km/h and above. On its own, B would disagree with the other two on both days. In the vote, they outnumber it. A forest works because each tree is wrong in its own way, so the majority is usually right more often than any single tree.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A group of 6 training days has 4 \"fly\" and 2 \"don't fly\". If it becomes a leaf, how many of those days does it get wrong?",
+      "options": [
+        { "text": "2", "correct": true, "why": "The leaf predicts the majority, \"fly\", so the 2 \"don't fly\" days are wrong." },
+        { "text": "4", "why": "That would be predicting the minority answer. A leaf predicts the most common label." },
+        { "text": "0", "why": "Only a pure group, where every day has the same label, gets 0 wrong." }
+      ]
+    },
+    {
+      "question": "Why does a random forest usually do better on new data than one deep tree?",
+      "options": [
+        { "text": "Each of its trees is more accurate than a single deep tree", "why": "Each forest tree sees less data and fewer features, so on its own it is often worse." },
+        { "text": "Its trees make different mistakes, and voting cancels many of them out", "correct": true, "why": "Right. Random samples and random features make the trees disagree on noise but agree on the real pattern." },
+        { "text": "It never overfits", "why": "It overfits far less than one deep tree, but it is not immune, especially with very noisy data." }
+      ]
+    },
+    {
+      "question": "In gradient boosting, what does each new tree learn from?",
+      "options": [
+        { "text": "A fresh random sample, independent of the other trees", "why": "That describes a random forest." },
+        { "text": "The errors the earlier trees still make", "correct": true, "why": "Each tree corrects what the sum of the previous trees gets wrong, so the ensemble improves step by step." },
+        { "text": "Only the features the first tree ignored", "why": "Boosting does not restrict trees to unused features." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Trees ask questions about the features you give them. <a href="/ai/neural-networks.html">Neural Networks</a> learn their own intermediate features, layer by layer, which is what makes them so strong on images and text.</p>

@@ -1,0 +1,166 @@
+{
+  "slug": "two-buses-for-the-trip",
+  "title": "Two Buses for the Trip",
+  "topic": "graphs",
+  "difficulty": "easy",
+  "pattern": "breadth-first search",
+  "aka": "Is Graph Bipartite?",
+  "order": 5,
+  "story": [
+    "<p>A teacher is taking the class to the science museum in two buses. Over the year she has learned which pairs of kids cannot sit near each other without trouble, and she wants every such pair on different buses. Buses are big, so there is no limit on how many kids ride in each.</p>",
+    "<p>Some lists are impossible. If Ana clashes with Ben, Ben with Cara, and Cara with Ana, then whichever bus Ana takes, one of the other two has to join her. The teacher wants to know before she makes the seating plan.</p>"
+  ],
+  "task": [
+    "<p>Write <code>canSplit(n, clashes)</code>. The kids are numbered <code>0</code> to <code>n - 1</code>. Each <code>[a, b]</code> in <code>clashes</code> means kids <code>a</code> and <code>b</code> must ride different buses. Return <code>true</code> if every kid can be put on one of the two buses so that no clashing pair shares a bus, otherwise <code>false</code>.</p>",
+    "<p>A kid with no clashes can ride either bus. The same pair may be listed more than once.</p>"
+  ],
+  "constraints": ["1 ≤ n ≤ 2,000", "0 ≤ clashes.length ≤ 5,000", "0 ≤ a, b < n and a ≠ b"],
+  "examples": [
+    {
+      "args": [4, [[0, 1], [1, 2], [2, 3], [3, 0]]],
+      "expected": true,
+      "explanation": "The clashes form a loop of four. Put 0 and 2 on bus A, and 1 and 3 on bus B. Every clash crosses between the buses."
+    },
+    {
+      "args": [3, [[0, 1], [1, 2], [2, 0]]],
+      "expected": false,
+      "explanation": "The triangle from the story. 0 on bus A forces 1 onto B, which forces 2 onto A, but 2 clashes with 0. No assignment works."
+    }
+  ],
+  "hints": [
+    "Put kid 0 on bus A in the first example. Do you now have any choice about kid 1? About kid 3? What about kid 2?",
+    "Once one kid in a connected group is placed, every other kid in that group is forced: each clash pushes the neighbor onto the opposite bus. The only question is whether those forced choices ever contradict each other.",
+    "Spread the bus assignments outward with a search, like paint flowing along the clash lines. A contradiction is a clash where both kids ended up on the same bus. What about kids that the search from kid 0 never reaches?",
+    "Keep <code>bus[i]</code> as unset, 0 or 1. Loop over every kid; if one is still unset, give it bus 0 and run a breadth-first search from it. For each neighbor: if unset, give it the opposite bus and queue it; if it already has the same bus as the current kid, return false. If every search finishes cleanly, return true."
+  ],
+  "bruteForce": [
+    "<p>Try every way to assign the kids: each kid gets bus A or B, so there are 2<sup>n</sup> assignments, and check each against the clash list.</p>",
+    "<p>With 40 kids that is already over a trillion assignments, and n can be 2,000. Almost all of that work is wasted, because placing one kid forces everyone connected to them.</p>"
+  ],
+  "signature": {
+    "function": "canSplit",
+    "params": [{"name": "n", "type": "int"}, {"name": "clashes", "type": "int[][]"}],
+    "returns": "bool"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number} n  kids are numbered 0 to n - 1",
+      " * @param {number[][]} clashes  each [a, b] must ride different buses",
+      " * @return {boolean}",
+      " */",
+      "function canSplit(n, clashes) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": ["def can_split(n: int, clashes: list[list[int]]) -> bool:", "    # Your code here", "    pass"]
+  },
+  "tests": [
+    {"args": [1, []], "expected": true, "note": "one kid"},
+    {"args": [5, []], "expected": true, "note": "no clashes"},
+    {"args": [2, [[0, 1], [1, 0], [0, 1]]], "expected": true, "note": "the same clash repeated"},
+    {
+      "args": [4, [[0, 1], [2, 3], [0, 2]]],
+      "expected": true,
+      "note": "coloring each pair as it arrives gives 0 and 2 the same bus; a search fixes it"
+    },
+    {"args": [5, [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]]], "expected": false, "note": "odd loop of five"},
+    {
+      "args": [6, [[0, 1], [1, 2], [3, 4], [4, 5], [5, 3]]],
+      "expected": false,
+      "note": "the bad triangle is in a second group the first search never reaches"
+    },
+    {"args": [6, [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]]], "expected": true, "note": "a long chain"},
+    {
+      "args": [7, [[0, 3], [0, 4], [0, 5], [1, 3], [1, 4], [1, 6], [2, 5], [2, 6]]],
+      "expected": true,
+      "note": "two clear groups: kids 0-2 versus 3-6"
+    },
+    {
+      "args": [7, [[0, 3], [0, 4], [0, 5], [1, 3], [1, 4], [1, 6], [2, 5], [2, 6], [5, 6]]],
+      "expected": false,
+      "note": "same, plus one clash inside a group"
+    },
+    {
+      "args": [8, [[6, 7], [4, 5], [2, 3], [0, 1], [1, 3], [3, 5], [5, 7], [7, 1]]],
+      "expected": true,
+      "note": "even loop through several pairs"
+    },
+    {
+      "args": [2000, [[0, 1999], [1999, 1000], [1000, 0]]],
+      "expected": false,
+      "note": "largest n, one triangle among many loners"
+    }
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function canSplit(n, clashes) {",
+      "  const adj = Array.from({ length: n }, () => []);",
+      "  for (const [a, b] of clashes) {",
+      "    adj[a].push(b);",
+      "    adj[b].push(a);",
+      "  }",
+      "  const bus = new Array(n).fill(-1); // -1 = not placed yet",
+      "  for (let start = 0; start < n; start++) {",
+      "    if (bus[start] !== -1) continue;",
+      "    bus[start] = 0; // a new group: either bus is fine",
+      "    const queue = [start];",
+      "    for (let head = 0; head < queue.length; head++) {",
+      "      const kid = queue[head];",
+      "      for (const other of adj[kid]) {",
+      "        if (bus[other] === -1) {",
+      "          bus[other] = 1 - bus[kid]; // forced onto the other bus",
+      "          queue.push(other);",
+      "        } else if (bus[other] === bus[kid]) {",
+      "          return false; // a clash on the same bus",
+      "        }",
+      "      }",
+      "    }",
+      "  }",
+      "  return true;",
+      "}"
+    ],
+    "py": [
+      "from collections import deque",
+      "",
+      "def can_split(n, clashes):",
+      "    adj = [[] for _ in range(n)]",
+      "    for a, b in clashes:",
+      "        adj[a].append(b)",
+      "        adj[b].append(a)",
+      "    bus = [-1] * n  # -1 = not placed yet",
+      "    for start in range(n):",
+      "        if bus[start] != -1:",
+      "            continue",
+      "        bus[start] = 0  # a new group: either bus is fine",
+      "        queue = deque([start])",
+      "        while queue:",
+      "            kid = queue.popleft()",
+      "            for other in adj[kid]:",
+      "                if bus[other] == -1:",
+      "                    bus[other] = 1 - bus[kid]  # forced onto the other bus",
+      "                    queue.append(other)",
+      "                elif bus[other] == bus[kid]:",
+      "                    return False  # a clash on the same bus",
+      "    return True"
+    ],
+    "walkthrough": [
+      "<p>Think of kids as nodes and clashes as edges. In one connected group, placing a single kid decides everyone else: a neighbor goes on the opposite bus, their neighbors on the opposite of that, and so on. So you never need to guess. Spread the assignment with a search and watch for a clash that lands both kids on the same bus.</p>",
+      "<p>Trace the triangle, <code>n = 3</code>, clashes 0-1, 1-2, 2-0:</p>",
+      "<ol>",
+      "<li>Kid 0 is unplaced. Put it on bus 0 and queue it.</li>",
+      "<li>Take 0. Neighbor 1 is unplaced: bus 1. Neighbor 2 is unplaced: bus 1. Queue both.</li>",
+      "<li>Take 1. Neighbor 0 is on bus 0, different, fine. Neighbor 2 is on bus 1, the same as kid 1. Return false.</li>",
+      "</ol>",
+      "<p>On the loop of four, the same process gives 0 → bus 0, 1 and 3 → bus 1, 2 → bus 0, and every clash checks out, so it returns true.</p>",
+      "<p>The outer loop matters. Kids with no link to kid 0 form their own groups, and a contradiction can hide in any of them. Starting a fresh search from every unplaced kid covers them all.</p>"
+    ],
+    "time": "O(n + m)",
+    "timeWhy": "Every kid is queued once and every clash is looked at twice, once from each end.",
+    "space": "O(n + m)",
+    "spaceWhy": "The adjacency lists, the bus array and the queue.",
+    "takeaway": "\"Split into two sides so every edge crosses\" is two-coloring. Color one node, let a breadth-first or depth-first search force every other color, and fail as soon as an edge joins two nodes of the same color. It works exactly when the graph has no odd-length loop."
+  },
+  "related": ["breadth-first-search", "depth-first-search", "graph-basics"]
+}

@@ -1,0 +1,267 @@
+<!--
+{
+  "title": "Tool Use",
+  "description": "Design tools an agent can use well: the right size, inputs that are hard to misuse, short results, errors that say what to do next, and safe retries.",
+  "minutes": 14,
+  "tags": ["agents", "tools"]
+}
+-->
+<p>A customer asks a support agent where order 1O42 is. The customer typed a capital O instead of a zero. The agent calls <code>getOrder("1O42")</code> and gets back <code>Error: invalid input</code>. It tries again with the same ID. Same error. It tries a third time, then tells the customer the order system is down.</p>
+
+<p>The model was not the main problem. The tool said something was wrong but not what, so the model had nothing to fix. Change that one error message and the same model will usually get it right on the second try.</p>
+
+<h2>The model only sees the text</h2>
+
+<p><a href="/ai/tools-and-mcp.html">Tools and MCP</a> showed the mechanics: the app describes each tool, the model writes a request, the app runs it and puts the result back in the context. For an agent, that means a tool is three pieces of text the model reads:</p>
+
+<ol>
+<li><strong>The description</strong>: the name, what it does, when to use it.</li>
+<li><strong>The inputs</strong>: what it takes, and in what form.</li>
+<li><strong>The output</strong>: the result, or the error.</li>
+</ol>
+
+<p>The model cannot read your source code or ask a colleague. If those three pieces are unclear, it guesses. Designing a tool for an agent is mostly writing those three pieces for a reader who is smart, literal and in a hurry.</p>
+
+<h2>Errors that say what to do next</h2>
+
+<p>Here is the order lookup twice, with the same model and the same typo. Only the error message changes.</p>
+
+<x-tracer title="Same typo, two error messages">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "The customer wrote \"1O42\" with a letter O. The agent copies it into the tool call, which is a reasonable thing to do.",
+      "grid": { "label": "version A: vague error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"]], "highlight": [[1, 1]] },
+      "vars": { "attempts": 1, "solved": "no" }
+    },
+    {
+      "caption": "The tool says only <code>invalid input</code>. The model cannot tell whether the ID is wrong, the system is broken, or it formatted the call badly.",
+      "grid": { "label": "version A: vague error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"], ["tool", "Error: invalid input"]], "highlight": [[2, 1]] },
+      "vars": { "attempts": 1, "solved": "no" }
+    },
+    {
+      "caption": "With nothing to go on, it retries the same call, gets the same error, and gives up with a wrong explanation. Three calls, no answer.",
+      "grid": { "label": "version A: vague error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"], ["tool", "Error: invalid input"], ["model", "getOrder(\"1O42\")"], ["tool", "Error: invalid input"], ["model", "getOrder(\"1O42\")"], ["tool", "Error: invalid input"], ["model", "Sorry, the order system seems to be down."]], "dim": [[3, 1], [5, 1]], "highlight": [[7, 1]] },
+      "vars": { "attempts": 3, "solved": "no" }
+    },
+    {
+      "caption": "Version B: same model, same typo. This time the tool explains what an ID looks like and offers a likely fix.",
+      "grid": { "label": "version B: helpful error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"], ["tool", "\"1O42\" is not an order ID. IDs are 4 digits. Did you mean \"1042\"?"]], "highlight": [[2, 1]] },
+      "vars": { "attempts": 1, "solved": "no" }
+    },
+    {
+      "caption": "The model now has something to act on. It retries with <code>1042</code> and gets the order.",
+      "grid": { "label": "version B: helpful error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"], ["tool", "\"1O42\" is not an order ID. IDs are 4 digits. Did you mean \"1042\"?"], ["model", "getOrder(\"1042\")"], ["tool", "order 1042: shipped, 3 items"]], "highlight": [[3, 1], [4, 1]] },
+      "vars": { "attempts": 2, "solved": "yes" }
+    },
+    {
+      "caption": "It answers the customer and mentions the corrected ID, so they can spot it if the guess was wrong. Two calls instead of three, and a right answer instead of a false outage.",
+      "grid": { "label": "version B: helpful error", "colLabels": ["who", "text"], "rows": [["user", "Where is order 1O42?"], ["model", "getOrder(\"1O42\")"], ["tool", "\"1O42\" is not an order ID. IDs are 4 digits. Did you mean \"1042\"?"], ["model", "getOrder(\"1042\")"], ["tool", "order 1042: shipped, 3 items"], ["model", "Order 1042 has shipped (3 items)."]], "mark": [[5, 1]] },
+      "vars": { "attempts": 2, "solved": "yes" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>A good error message answers three questions: what was wrong, what a correct input looks like, and what to try next. Write it as you would for a new colleague, not as a code for a log file.</p>
+
+<x-callout type="key">
+<p>Tool results and errors are prompts. The model's next step is only as good as the text you send back.</p>
+</x-callout>
+
+<h2>The tool in code</h2>
+
+<p>Here is version B. It checks the input before looking anything up, and every failure returns a sentence the model can act on. The data is fake so you can run it.</p>
+
+<x-code>
+<pre lang="js">
+const orders = { "1042": { status: "shipped", items: 3 } };
+
+function getOrder(orderId) {
+  if (!/^\d{4}$/.test(orderId)) {
+    const guess = orderId.replace(/[oO]/g, "0");
+    const hint = /^\d{4}$/.test(guess) ? ` Did you mean "${guess}"?` : "";
+    return { error: `"${orderId}" is not an order ID. IDs are 4 digits.${hint}` };
+  }
+  const order = orders[orderId];
+  if (!order) {
+    return { error: `No order "${orderId}". Use findOrders(email) to list a customer's orders.` };
+  }
+  return { orderId, ...order };
+}
+
+console.log(getOrder("1O42")); // error, suggests "1042"
+console.log(getOrder("1042")); // { orderId: '1042', status: 'shipped', items: 3 }
+</pre>
+<pre lang="py">
+import re
+
+orders = {"1042": {"status": "shipped", "items": 3}}
+
+def get_order(order_id):
+    if not re.fullmatch(r"\d{4}", order_id):
+        guess = re.sub(r"[oO]", "0", order_id)
+        hint = f' Did you mean "{guess}"?' if re.fullmatch(r"\d{4}", guess) else ""
+        return {"error": f'"{order_id}" is not an order ID. IDs are 4 digits.{hint}'}
+    order = orders.get(order_id)
+    if order is None:
+        return {"error": f'No order "{order_id}". Use find_orders(email) to list a customer\'s orders.'}
+    return {"order_id": order_id, **order}
+
+print(get_order("1O42"))  # error, suggests "1042"
+print(get_order("1042"))  # {'order_id': '1042', 'status': 'shipped', 'items': 3}
+</pre>
+</x-code>
+
+<p>The second error is just as deliberate. Besides saying "not found", it names the tool that can find the right ID. Errors are a cheap place to teach the agent how your tools fit together.</p>
+
+<h2>Short results, with a way to get more</h2>
+
+<p>Every result goes into the context and stays there for the rest of the run. A tool that returns 300 orders in full can take up a large share of the context in one step, and the model has to find the one line that matters in a wall of text. Return the few items and fields that are useful, and say what was left out:</p>
+
+<x-code>
+<pre lang="js">
+function limitResults(items, max = 5) {
+  if (items.length <= max) return { results: items };
+  return {
+    results: items.slice(0, max),
+    note: `Showing ${max} of ${items.length}. Add a status or date range to narrow it.`,
+  };
+}
+
+console.log(limitResults([1, 2, 3, 4, 5, 6, 7, 8]).note);
+// Showing 5 of 8. Add a status or date range to narrow it.
+</pre>
+<pre lang="py">
+def limit_results(items, max_items=5):
+    if len(items) <= max_items:
+        return {"results": items}
+    return {
+        "results": items[:max_items],
+        "note": f"Showing {max_items} of {len(items)}. Add a status or date range to narrow it.",
+    }
+
+print(limit_results([1, 2, 3, 4, 5, 6, 7, 8])["note"])
+# Showing 5 of 8. Add a status or date range to narrow it.
+</pre>
+</x-code>
+
+<p>The note matters. Without it, the model may assume those five orders are all there are.</p>
+
+<h2>Size the tools like the task</h2>
+
+<p>A tool can be too small or too big.</p>
+
+<ul>
+<li><strong>Too small</strong>: <code>getCustomerField(id, field)</code> takes one call per field. Looking up a customer's name, email and plan takes three calls, three chances to go wrong and three times the waiting.</li>
+<li><strong>Too big</strong>: <code>runSql(query)</code> can do anything, which means the model has to write correct SQL against a schema it cannot see, and a bad query can change or delete data.</li>
+<li><strong>About right</strong>: <code>findOrders(email, status)</code> matches a step a person would take. It returns what that step needs and can do nothing else.</li>
+</ul>
+
+<p>Then make the inputs hard to get wrong. Use a fixed list of values (<code>status</code>: "packing", "shipped" or "returned") instead of free text. Put units in names: <code>timeoutSeconds</code>, not <code>timeout</code>. Ask for IDs the model has seen in an earlier result rather than names it might misspell.</p>
+
+<h2>Read tools and write tools</h2>
+
+<p>A read tool, like <code>getOrder</code>, is safe to call twice. A write tool, like <code>refundOrder</code>, is not. Agents do repeat calls: a tool times out, the model cannot tell whether it worked, and it tries again. If that tool sends money, the customer is refunded twice.</p>
+
+<p>Make write tools safe to repeat. Have the tool check whether the action already happened ("order 1042 was already refunded on 3 March"), or accept a request ID and ignore a second request with the same ID. This property is called <strong>idempotency</strong>: doing it twice has the same effect as doing it once. Which write tools an agent gets at all, and which need a person's approval, is the subject of <a href="/ai/guardrails.html">Guardrails</a>.</p>
+
+<x-callout type="real-world">
+<p>Payment APIs have long accepted a request ID (often called an idempotency key) with each charge, because networks drop replies and clients retry. Agents retry too, so the same fix applies to their write tools.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Redesign a confusing tool">
+<x-task>
+<p>An agent keeps misusing this ticket tool: it passes made-up actions, puts the whole conversation into <code>data</code>, and loops when it sees <code>ERR_22</code>. Redesign it. Say what tools you would offer, what inputs they take, and what one of the error messages should say.</p>
+</x-task>
+<x-start>
+name: doTicket
+description: Does ticket stuff.
+inputs: action (string), data (string)
+errors: ERR_22 (bad action), ERR_31 (bad data)
+</x-start>
+<x-answer>
+<p>One better design splits it into tools that each match one step:</p>
+<x-code single title="Redesigned tools">
+<pre lang="text">
+createTicket(title, priority)
+  priority: one of "low", "normal", "urgent"
+  title: one line, under 80 characters
+  Returns: { ticketId: "T-5521" }
+
+closeTicket(ticketId, reason)
+  reason: one of "fixed", "duplicate", "won't fix"
+  Safe to repeat: closing a closed ticket returns
+  "T-5521 is already closed (fixed)."
+
+Example error:
+  "T-552 is not a ticket ID. IDs look like T-5521.
+   Use findTickets(text) to search by title."
+</pre>
+</x-code>
+<p>Why it works:</p>
+<ul>
+<li>Each tool does one thing, so the name says when to use it. There is no free-text <code>action</code> to invent values for.</li>
+<li>Fixed lists of values for <code>priority</code> and <code>reason</code> rule out whole classes of bad input.</li>
+<li>The error says what went wrong, what a right ID looks like, and which tool helps. A code like <code>ERR_22</code> gives the model nothing to change, so it repeats itself.</li>
+<li>Closing twice is harmless, so a retry after a timeout does no damage.</li>
+</ul>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Error codes instead of sentences">
+<p><code>ERR_22</code> or a stack trace means something to the person who wrote the tool. To the model it is noise. Return what went wrong and what to do instead, in one or two plain sentences.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Dumping everything the API returns">
+<p>Passing the raw API response through, with 60 fields and nested metadata, wastes context and buries the useful part. Pick the fields a person would look at, and leave the rest out.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Write tools that are unsafe to repeat">
+<p>If calling a tool twice sends two emails or two refunds, the agent will eventually do it. Check for an earlier identical action, or use a request ID, before you let an agent call a tool that changes anything.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An agent calls the same failing tool four times in a row with the same input. What is the most likely fix?",
+      "options": [
+        { "text": "Tell the model in the prompt not to repeat calls", "why": "It may repeat less, but it still does not know what to change, so it gives up instead of fixing the input." },
+        { "text": "Make the error message say what was wrong and what to try", "correct": true, "why": "Right. The model repeats because the error gives it nothing to act on. A specific error turns a loop into a fix." },
+        { "text": "Remove the tool", "why": "Then the agent cannot do the task at all. The tool is fine; its feedback is not." }
+      ]
+    },
+    {
+      "question": "Which tool is the best size for an agent that answers questions about customers' orders?",
+      "options": [
+        { "text": "<code>runSql(query)</code>", "why": "Too big: the model must write correct SQL for a schema it cannot see, and the tool can change data." },
+        { "text": "<code>getOrderField(orderId, field)</code>", "why": "Too small: one call per field means many calls, more waiting and more chances to go wrong." },
+        { "text": "<code>findOrders(email, status)</code>", "correct": true, "why": "It matches one step a person would take, returns what that step needs, and can do nothing else." }
+      ]
+    },
+    {
+      "question": "A <code>refundOrder</code> tool times out, and the agent calls it again. What design prevents a double refund?",
+      "options": [
+        { "text": "A longer timeout", "why": "Timeouts still happen, just less often. The second call would still refund again." },
+        { "text": "Making the tool idempotent, for example by checking whether the order was already refunded", "correct": true, "why": "Then a repeat call has no extra effect and returns a clear message instead." },
+        { "text": "Telling the model never to retry", "why": "Sometimes the first call really failed, and a retry is the right move. Fix the tool, not the model's judgement." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Take a tool or API you use and write the error message you would want to read if you were the model. Then continue with <a href="/ai/the-agent-loop.html">The Agent Loop</a>, where you write the loop that calls these tools and decide when it should stop.</p>
