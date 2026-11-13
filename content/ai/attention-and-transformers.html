@@ -8,11 +8,11 @@
 -->
 <p>Read this: "Sam made soup and ate it." You know instantly that "it" is the soup, not Sam. You looked back at the other words, decided which ones mattered, and borrowed their meaning.</p>
 
-<p>A language model has to do the same thing. After <a href="/ai/tokens.html">tokenization</a>, every token becomes a vector, a list of numbers that stands for its meaning. But the vector for "it" on its own says almost nothing: "it" could be anything. To predict the next token well, "it" needs to pick up information from "soup". The mechanism that does this is called <strong>attention</strong>, and it is the core of the <strong>transformer</strong>, the design behind today's LLMs.</p>
+<p>A language model has to do the same thing. After <a href="/ai/tokens.html">tokenization</a>, every token becomes a vector, a list of numbers that stands for its meaning. On its own, the vector for "it" says almost nothing. To predict the next token well, "it" needs to pick up information from "soup". The mechanism that does this is called <strong>attention</strong>, and it is the core of the <strong>transformer</strong>, the design behind most of today's LLMs.</p>
 
 <h2>The idea: ask, match, borrow</h2>
 
-<p>Picture each word in the sentence as a person at a table. Each person holds up three things:</p>
+<p>Picture each word as a person at a table, holding up three things:</p>
 
 <ul>
 <li>A <strong>query</strong>: what am I looking for? For "it", roughly "a thing that was mentioned earlier".</li>
@@ -64,7 +64,7 @@
     { "caption": "Each word has a key. \"Sam\" has a big person number. \"soup\" has a big thing number. The query for \"it\" is <code>[2, -1]</code>.", "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [5] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"] } ], "vars": { "query": "[2, -1]" } },
     { "caption": "Score for Sam: 2 × 0 + (−1) × 2 = −2. A person is the opposite of what \"it\" wants, so the score is negative.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [0] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"], "highlight": [0] }, { "label": "score", "values": [-2, null, null, null, null, null], "highlight": [0] } ], "vars": { "query": "[2, -1]" } },
     { "caption": "Score for soup: 2 × 2 + (−1) × 0 = 4. A strong match.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [2] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"], "highlight": [2] }, { "label": "score", "values": [-2, null, 4, null, null, null], "highlight": [2] } ], "vars": { "query": "[2, -1]" } },
-    { "caption": "The rest the same way: made 1, and 0, ate 2, it 1.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"] }, { "label": "score", "values": [-2, 1, 4, 0, 2, 1], "highlight": [1, 3, 4, 5] } ], "vars": { "query": "[2, -1]" } },
+    { "caption": "The rest work the same way: made 1, and 0, ate 2, it 1.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"] }, { "label": "score", "values": [-2, 1, 4, 0, 2, 1], "highlight": [1, 3, 4, 5] } ], "vars": { "query": "[2, -1]" } },
     { "caption": "Softmax, part 1: raise e to each score. This makes every number positive and stretches the gaps, so the best match pulls ahead. The total is 68.56.", "line": 3, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "score", "values": [-2, 1, 4, 0, 2, 1] }, { "label": "e^score", "values": [0.14, 2.72, 54.6, 1, 7.39, 2.72], "highlight": [0, 1, 2, 3, 4, 5] } ], "vars": { "total": 68.56 } },
     { "caption": "Softmax, part 2: divide each by the total. Now the shares add up to 1, and soup gets 54.6 ÷ 68.56 = 0.80 of the attention.", "line": 3, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "weight", "values": [0.00, 0.04, 0.80, 0.01, 0.11, 0.04], "highlight": [2] } ], "vars": { "total": 68.56 } },
     { "caption": "Blend the values. Only soup <code>[1, 0]</code>, ate <code>[0.5, 0]</code> and Sam <code>[0, 1]</code> carry anything here. Thing: 0.80 × 1 + 0.11 × 0.5 = 0.85. Person: 0.00 × 1 = 0.00.", "line": 4, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "weight", "values": [0.00, 0.04, 0.80, 0.01, 0.11, 0.04], "highlight": [0, 2, 4] }, { "label": "value", "values": ["0, 1", "0, 0", "1, 0", "0, 0", "0.5, 0", "0, 0"], "highlight": [0, 2, 4] } ] },
@@ -76,7 +76,7 @@
 
 <h2>The code</h2>
 
-<p>This is one attention step for one word, exactly as traced. Real models also divide each score by a fixed number (the square root of the vector length) before the softmax, to keep scores in a sensible range. With two numbers per vector it would not change the lesson, so it is left out.</p>
+<p>This is one attention step for one word, exactly as traced. Real models also divide each score by a fixed number, the square root of the key vector's length, before the softmax. Long vectors give big dot products, and this keeps the scores in a range where softmax does not put almost everything on one word. With two numbers per vector it would not change the lesson, so it is left out.</p>
 
 <x-code>
 <pre lang="js">
@@ -128,7 +128,7 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 </pre>
 </x-code>
 
-<p>Where do the query, key and value come from? Each is made from the word's current vector by multiplying it with a grid of numbers the model learned in training. The same word gets a different query, key and value depending on those learned numbers, not on rules anyone wrote.</p>
+<p>In the trace, the queries, keys and values were typed in by hand. In a real model, each one is made from the word's current vector by multiplying it with a grid of numbers (a matrix) learned in training. Nobody writes rules like "pronouns look for things". Training finds whatever grids make the next-token chances better. And because a word's vector changes as it picks up context, the same word can ask different questions in different sentences.</p>
 
 <h2>From one attention step to a transformer</h2>
 
@@ -141,10 +141,10 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 
 <p>Each block adds its result to the vector instead of replacing it, so information from earlier blocks is kept. After the last block, the vector at the final position is turned into chances for the next token, and the loop from <a href="/ai/what-is-an-llm.html">What Is an LLM</a> picks one.</p>
 
-<p>Three more details complete the picture:</p>
+<p>Three more details:</p>
 
 <ul>
-<li><strong>Many heads.</strong> Each block runs several attention steps side by side, called heads, each with its own learned query, key and value numbers. Some heads end up with a describable job, like linking a pronoun to its noun. Most do not; what they track is learned and often hard to name.</li>
+<li><strong>Many heads.</strong> Each block runs several attention steps side by side, called heads, each with its own learned query, key and value numbers. A few heads end up with a job you can name, like linking a pronoun to its noun. Most do not.</li>
 <li><strong>Looking back only.</strong> When generating, a token can attend to itself and the tokens before it, never after. Training uses the same rule, so the model never learns to rely on the future.</li>
 <li><strong>Word order.</strong> Attention on its own treats the text like a bag of words: "dog bites man" and "man bites dog" would match the same way. So position information is mixed into the vectors, letting the model tell first from last.</li>
 </ul>
@@ -155,13 +155,13 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 
 <h2>Cost: every token looks at every other</h2>
 
-<p>For a text of <code>n</code> tokens, each token compares itself with up to <code>n</code> others, so one attention step does about n²/2 comparisons. Double the text and that work roughly quadruples. When generating, models keep the keys and values of earlier tokens in memory, so each new token costs about <code>n</code> comparisons rather than redoing everything.</p>
+<p>For a text of <code>n</code> tokens, each token compares itself with up to <code>n</code> others, so one attention step does about n²/2 comparisons. Double the text and the work quadruples. When generating, models keep the keys and values of earlier tokens in memory, so each new token costs about <code>n</code> comparisons rather than redoing everything.</p>
 
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
-    { "name": "Read a whole text", "time": "O(n²)", "space": "O(n²)", "note": "Every token scores every earlier token. Clever implementations avoid storing all scores at once." },
+    { "name": "Read a whole text", "time": "O(n²)", "space": "O(n²)", "note": "Every token scores every earlier token. Space is for storing all the scores; optimised implementations compute them in blocks and avoid that." },
     { "name": "Add one new token", "time": "O(n)", "space": "O(n)", "note": "Reuses the stored keys and values of the <code>n</code> tokens before it." }
   ]
 }
@@ -173,15 +173,15 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 <h2>Common mistakes</h2>
 
 <x-callout type="mistake" title="Reading attention as &quot;what the model is thinking about&quot;">
-<p>Attention weights show where one step gathered information from. They do not explain why the model produced an answer: many other heads, layers and feed-forward networks play a part. Treat attention pictures as a hint, not proof.</p>
+<p>Attention weights show where one head gathered information from. They do not explain why the model produced an answer: many other heads and layers play a part. Treat attention pictures as a hint, not proof.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Thinking the toy numbers are how it really looks">
-<p>In this lesson the two numbers had human labels, "thing" and "person". Real vectors are long, and their numbers rarely line up with single human ideas. The mechanism is exactly as shown; the meanings are learned, spread out, and only partly understood.</p>
+<p>In this lesson the two numbers had human labels, "thing" and "person". Real vectors are long, and their numbers rarely line up with single human ideas. The mechanism is as shown; the meanings are learned and only partly understood.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Assuming the model reads ahead">
-<p>While generating, a token cannot see what comes after it. If the clue that settles an ambiguous word comes later in the sentence, only the later tokens can use it. This is one reason the order of information in your prompt can matter.</p>
+<p>While generating, a token cannot see what comes after it. If the clue that settles an ambiguous word comes later, only the later tokens can use it. So the order of information in your prompt can matter.</p>
 </x-callout>
 
 <h2>Try it yourself</h2>
@@ -201,7 +201,7 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 <li><strong>laughed</strong>: he about 0.5, Ben about 0.3, joke about 0.1. "laughed" needs to know who did it. "he" points to Ben, and an earlier layer may already have moved Ben's meaning into "he".</li>
 <li><strong>slippery</strong>: glass and shelf both plausible, around 0.4 each. Either could be slippery. A model has the same real ambiguity you do, and may spread its attention, or rely on what is more common in text it has seen.</li>
 </ol>
-<p>Attention answers "which earlier words help me here?" using grammar, meaning and world knowledge at once. Sentence 3 shows its limit: when the text does not decide, no attention pattern can make it certain.</p>
+<p>Sentence 3 shows the limit: when the text does not decide, no attention pattern can make the answer certain.</p>
 </x-answer>
 </x-tryit>
 
@@ -242,4 +242,4 @@ attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
 
 <h2>What to practise next</h2>
 
-<p>You have seen what the model computes. <a href="/ai/training-and-fine-tuning.html">Training and Fine-Tuning</a> shows how the learned numbers behind queries, keys and values get their values in the first place.</p>
+<p>Compute attention weights yourself in <a href="/practice/pronoun-looks-back.html">Pronoun Looks Back</a>, which includes the square-root scaling. Then <a href="/ai/training-and-fine-tuning.html">Training and Fine-Tuning</a> shows how the learned numbers behind queries, keys and values get set in the first place.</p>

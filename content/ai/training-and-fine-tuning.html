@@ -6,9 +6,9 @@
   "tags": ["llm", "training", "fine-tuning"]
 }
 -->
-<p>Imagine a new hire who has read every document in the company archive: manuals, emails, old reports, the lot. They can tell you how almost anything works. But on their first day at the help desk, when a customer asks a question, they reply with three more questions, because that is what the next page of the help-desk logs usually looked like.</p>
+<p>Imagine a new hire who has read every document in the company archive: manuals, emails, old reports, the lot. They can tell you how almost anything works. But put them on the help desk, and when a customer asks a question they reply with three more questions. In the archive, a question was usually followed by more questions in a FAQ list, not by an answer, so that is what they produce.</p>
 
-<p>That is roughly what a language model is like after its first and biggest stage of training. It has absorbed a vast amount of text, but it has not yet learned to act like an assistant. Getting from one to the other takes more training of a different kind. This lesson walks through both.</p>
+<p>That is roughly what a language model is like after its first and biggest stage of training. It has absorbed a vast amount of text, but it has not yet learned to act like an assistant. Getting from one to the other takes more training of a different kind.</p>
 
 <h2>Stage 1: pretraining on raw text</h2>
 
@@ -29,9 +29,9 @@
 
 <p>Below, a model must predict the last word of "The cat slept on the ___". It considers three words, and the real answer is "mat". Each word has a raw score, and softmax turns scores into chances, as in the <a href="/ai/attention-and-transformers.html">attention lesson</a>.</p>
 
-<p>The nudge has a neat form: for every word, subtract <code>rate × (chance − target)</code> from its score, where the target is 1 for the real word and 0 for the others. The real word's score goes up, the others go down, and the further off a chance is, the bigger its nudge. This is gradient descent, as in <a href="/ai/how-models-learn.html">How Models Learn</a>. Here we nudge the three scores directly; a real model nudges the billions of parameters that produced them.</p>
+<p>The nudge has a neat form: for every word, subtract <code>rate × (chance − target)</code> from its score, where <code>rate</code> is the learning rate and the target is 1 for the real word and 0 for the others. The real word's score goes up, the others go down, and the further off a chance is, the bigger its nudge. This is gradient descent, as in <a href="/ai/how-models-learn.html">How Models Learn</a>. Here we nudge the three scores directly; a real model nudges the billions of parameters that produced them.</p>
 
-<x-tracer title="Five training steps on one example">
+<x-tracer title="Four nudges on one example">
 <script type="application/json">
 {
   "code": [
@@ -47,14 +47,14 @@
     { "caption": "Nudge, with rate 1. mat: 0 − (0.24 − 1) = 0.76, up. sofa: 1 − 0.67 = 0.33, down a lot. moon: −1 − 0.09 = −1.09, down a little. \"sofa\" was most wrong, so it moves most.", "line": 5, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"] }, { "label": "score", "values": [0.76, 0.33, -1.09], "highlight": [0, 1, 2] } ], "vars": { "rate": 1 } },
     { "caption": "New chances: \"mat\" is now the favourite at 0.55. The loss dropped from 1.41 to 0.60.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [0.76, 0.33, -1.09] }, { "label": "chance", "values": [0.55, 0.36, 0.09], "highlight": [0] } ], "vars": { "loss": 0.6, "rate": 1 } },
     { "caption": "Nudge again and recompute. \"mat\" reaches 0.72 and the loss falls to 0.33.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [1.2, -0.03, -1.18] }, { "label": "chance", "values": [0.72, 0.21, 0.07], "highlight": [0] } ], "vars": { "loss": 0.33, "rate": 1 } },
-    { "caption": "Another step: \"mat\" is at 0.80 and the loss is 0.22. Each step helps less than the one before, because the chance is already close to right.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [1.48, -0.24, -1.24] }, { "label": "chance", "values": [0.8, 0.14, 0.05], "highlight": [0] } ], "vars": { "loss": 0.22, "rate": 1 } },
+    { "caption": "Another nudge: \"mat\" is at 0.80 and the loss is 0.22 (the chances are rounded, so this row adds to 0.99). Each step helps less than the one before, because the chance is already close to right.", "line": 2, "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "highlight": [0] }, { "label": "score", "values": [1.48, -0.24, -1.24] }, { "label": "chance", "values": [0.8, 0.14, 0.05], "highlight": [0] } ], "vars": { "loss": 0.22, "rate": 1 } },
     { "caption": "After four nudges: 0.85 for \"mat\", loss 0.16, down from 1.41. A real model never gets this one sentence perfect, because it must also leave room for \"sofa\" in all the texts where the cat really did sleep on the sofa.", "arrays": [ { "label": "word", "values": ["mat", "sofa", "moon"], "mark": [0] }, { "label": "score", "values": [1.68, -0.38, -1.3] }, { "label": "chance", "values": [0.85, 0.11, 0.04], "mark": [0] } ], "vars": { "loss": 0.16, "nudges": 4 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>That last caption is the important one. Training does not teach the model to recite one text. It pulls the chances toward what is common across millions of similar texts. The model ends up with good guesses, not stored documents.</p>
+<p>That last caption is the important one. Training does not teach the model to recite one text. It pulls the chances toward what is common across millions of similar texts. Mostly, the model ends up with good guesses rather than stored documents. The exception is text repeated many times in training, like famous quotes or common licence text, which it can memorise word for word.</p>
 
 <h2>The code</h2>
 
@@ -113,7 +113,7 @@ for step in range(4):
 
 <p>Real pretraining runs this over trillions of tokens, in batches of many examples at a time, on large clusters of specialised chips for weeks or months. That cost is why only a few organisations pretrain large models from scratch, and why everyone else starts from an existing one.</p>
 
-<h2>Stage 2 and 3: becoming an assistant</h2>
+<h2>Stages 2 and 3: becoming an assistant</h2>
 
 <p>A pretrained, or <em>base</em>, model continues text. Ask it a question and it may continue with the kind of text that often follows a question on the web.</p>
 

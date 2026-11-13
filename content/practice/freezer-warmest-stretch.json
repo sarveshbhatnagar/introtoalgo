@@ -1,0 +1,142 @@
+{
+  "slug": "freezer-warmest-stretch",
+  "title": "Freezer Warmest Stretch",
+  "topic": "linked-lists-stacks-queues",
+  "difficulty": "hard",
+  "pattern": "queue",
+  "aka": "Sliding Window Maximum",
+  "order": 12,
+  "story": [
+    "<p>A restaurant's walk-in freezer logs its temperature once a minute, in degrees Celsius. A food-safety rule looks at every stretch of <code>k</code> consecutive minutes and cares about the warmest reading in that stretch: one warm spike can matter even if the average looks fine.</p>",
+    "<p>The inspector wants a report with the warmest reading for every possible <code>k</code>-minute stretch: minutes 0 to k - 1, then 1 to k, and so on to the end of the log. Logs cover whole weeks, so the report must be quick to compute.</p>"
+  ],
+  "task": [
+    "<p>Write <code>warmestStretches(temps, k)</code>. Return a list with one entry for each window of <code>k</code> consecutive readings, in order from the start: the largest value in that window. A log of <code>n</code> readings has <code>n - k + 1</code> windows.</p>",
+    "<p>Aim for O(n) time in total, no matter how large <code>k</code> is.</p>"
+  ],
+  "constraints": [
+    "1 ≤ temps.length ≤ 100,000",
+    "1 ≤ k ≤ temps.length",
+    "-40 ≤ temps[i] ≤ 40"
+  ],
+  "examples": [
+    {
+      "args": [[-18, -16, -19, -20, -17, -21], 3],
+      "expected": [-16, -16, -17, -17],
+      "explanation": "Windows of 3: [-18, -16, -19] peaks at -16. [-16, -19, -20] still has -16. [-19, -20, -17] peaks at -17, because -16 has left. [-20, -17, -21] peaks at -17."
+    },
+    {
+      "args": [[-6, -9, -12], 1],
+      "expected": [-6, -9, -12],
+      "explanation": "With k = 1 every window holds one reading, so the report is the log itself."
+    }
+  ],
+  "hints": [
+    "In the window <code>[-19, -20, -17]</code>, the reading -17 arrived last. Can -19 or -20 ever be the warmest of a later window that also contains -17?",
+    "A reading that is colder than (or equal to) a newer reading can never be the peak again: the newer one is warmer and stays in the window at least as long. So you can throw such readings away for good.",
+    "Keep only readings that could still be a peak, in arrival order. They are then in falling order, so the front is the current peak. You need to add at the back, drop useless readings from the back, and drop expired readings from the front. Which structure does all three in O(1)?",
+    "Use a deque of indexes. For each minute <code>i</code>: pop from the back while <code>temps[back] &lt;= temps[i]</code>, push <code>i</code>, then pop the front if it is <code>i - k</code> or older. Once <code>i &gt;= k - 1</code>, record <code>temps[front]</code>."
+  ],
+  "bruteForce": [
+    "<p>For each of the <code>n - k + 1</code> windows, scan its <code>k</code> readings and take the maximum.</p>",
+    "<p>That is O(n·k). With 100,000 readings and <code>k = 50,000</code> there are 50,001 windows of 50,000 readings each: about 2.5 billion comparisons. Neighbouring windows share all but one reading, yet every scan starts from nothing.</p>"
+  ],
+  "signature": {
+    "function": "warmestStretches",
+    "params": [
+      {
+        "name": "temps",
+        "type": "int[]"
+      },
+      {
+        "name": "k",
+        "type": "int"
+      }
+    ],
+    "returns": "int[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number[]} temps  one reading per minute",
+      " * @param {number} k  window length in minutes",
+      " * @return {number[]} the warmest reading of each window, in order",
+      " */",
+      "function warmestStretches(temps, k) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def warmest_stretches(temps: list[int], k: int) -> list[int]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[-18], 1], "expected": [-18], "note": "one reading"},
+    {"args": [[-18, -20, -15], 1], "expected": [-18, -20, -15], "note": "window of 1: every reading is its own peak"},
+    {"args": [[-18, -20, -15, -19], 4], "expected": [-15], "note": "window covers the whole log"},
+    {"args": [[-5, -6, -7, -8, -9, -10], 3], "expected": [-5, -6, -7, -8], "note": "falling: the peak leaves the window at every step"},
+    {"args": [[-10, -9, -8, -7, -6, -5], 3], "expected": [-8, -7, -6, -5], "note": "rising: every new reading is the new peak"},
+    {"args": [[-12, -12, -12, -12], 2], "expected": [-12, -12, -12], "note": "all equal"},
+    {"args": [[-3, -3, -20, -20, -20], 2], "expected": [-3, -3, -20, -20], "note": "a duplicate peak leaves while its twin stays"},
+    {"args": [[-20, -19, -4, -18, -17, -16, -15], 3], "expected": [-4, -4, -4, -16, -15], "note": "a spike that must expire"},
+    {"args": [[5, -30, -30, -30, -30, 4], 5], "expected": [5, 4], "note": "thawed at both ends"},
+    {"args": [[-18, -21, -17, -22, -25, -16, -19, -23, -14, -20], 4], "expected": [-17, -17, -16, -16, -16, -14, -14]},
+    {"args": [[-40, 40, -40, 40, -40, 40], 2], "expected": [40, 40, 40, 40, 40], "note": "extreme swings"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function warmestStretches(temps, k) {",
+      "  const dq = []; // indexes; their temps fall from front to back",
+      "  let head = 0;  // front of the deque (avoids slow shift())",
+      "  const peaks = [];",
+      "  for (let i = 0; i < temps.length; i++) {",
+      "    // drop readings that can never be a peak again",
+      "    while (dq.length > head && temps[dq[dq.length - 1]] <= temps[i]) dq.pop();",
+      "    dq.push(i);",
+      "    if (dq[head] <= i - k) head++; // the front reading left the window",
+      "    if (i >= k - 1) peaks.push(temps[dq[head]]);",
+      "  }",
+      "  return peaks;",
+      "}"
+    ],
+    "py": [
+      "from collections import deque",
+      "",
+      "def warmest_stretches(temps, k):",
+      "    dq = deque()  # indexes; their temps fall from front to back",
+      "    peaks = []",
+      "    for i, t in enumerate(temps):",
+      "        # drop readings that can never be a peak again",
+      "        while dq and temps[dq[-1]] <= t:",
+      "            dq.pop()",
+      "        dq.append(i)",
+      "        if dq[0] <= i - k:  # the front reading left the window",
+      "            dq.popleft()",
+      "        if i >= k - 1:",
+      "            peaks.append(temps[dq[0]])",
+      "    return peaks"
+    ],
+    "walkthrough": [
+      "<p>When a warmer reading arrives, every older reading that is not warmer than it becomes useless: the new one beats it and stays in the window longer. Throw those away. What remains, in arrival order, is falling, so the front is always the peak. Readings enter at the back and leave at both ends, which is a deque. Store indexes so you can tell when the front has expired.</p>",
+      "<p>Trace <code>[-18, -16, -19, -20, -17, -21]</code> with <code>k = 3</code> (deque shown as index(temp), front first):</p>",
+      "<ol>",
+      "<li>i = 0 (-18). Push. Deque: 0(-18).</li>",
+      "<li>i = 1 (-16). -18 ≤ -16, so drop 0. Push. Deque: 1(-16).</li>",
+      "<li>i = 2 (-19). Colder than -16, keep both. Deque: 1(-16), 2(-19). First full window: peak -16.</li>",
+      "<li>i = 3 (-20). Push. Deque: 1(-16), 2(-19), 3(-20). Front index 1 is still inside (window is 1 to 3). Peak -16.</li>",
+      "<li>i = 4 (-17). Drop 3 and 2 from the back (both colder). Push. Deque: 1(-16), 4(-17). Front index 1 is 4 - 3 = 1, so it expired: drop it. Peak -17.</li>",
+      "<li>i = 5 (-21). Push. Deque: 4(-17), 5(-21). Peak -17.</li>",
+      "</ol>",
+      "<p>Report: <code>[-16, -16, -17, -17]</code>. Note the order in each step: clean the back, push, then check the front. Checking the front against <code>i - k</code> keeps exactly the last <code>k</code> minutes.</p>"
+    ],
+    "time": "O(n)",
+    "timeWhy": "Each index enters the deque once and leaves it at most once, from one end or the other.",
+    "space": "O(k)",
+    "spaceWhy": "The deque only ever holds indexes from the current window.",
+    "takeaway": "For the max (or min) of every sliding window, keep a monotonic deque: drop items from the back that can never win again, drop expired items from the front, and read the answer at the front. It is the monotonic stack idea with a second exit for items that age out."
+  },
+  "related": ["queues-and-deques", "monotonic-stack", "sliding-window"]
+}

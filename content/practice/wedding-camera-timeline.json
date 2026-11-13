@@ -1,0 +1,158 @@
+{
+  "slug": "wedding-camera-timeline",
+  "title": "Wedding Camera Timeline",
+  "topic": "heaps-tries-bits",
+  "difficulty": "hard",
+  "pattern": "heap",
+  "aka": "Merge k Sorted Lists",
+  "order": 11,
+  "story": [
+    "<p>A wedding photographer ran several cameras all day: her own, an assistant's, a drone, and a few cameras clipped to the tables. Each camera's photos are already in time order. Times are seconds relative to the start of the ceremony, so a shot taken 10 minutes before it is <code>-600</code>.</p>",
+    "<p>She wants one album timeline for the couple, with every photo from every camera in time order. Some cameras took thousands of shots, some took none, and two cameras can fire at the very same second.</p>"
+  ],
+  "task": [
+    "<p>Write <code>mergeTimelines(cameras)</code>. <code>cameras</code> is a list of lists; each inner list holds one camera's photo times in non-decreasing order. Return a single list with every time from every camera, in non-decreasing order. Keep repeated times: each one is a separate photo.</p>",
+    "<p>An empty <code>cameras</code> list, or cameras with no photos, give an empty result. Aim for O(N log k) time for N photos and k cameras.</p>"
+  ],
+  "constraints": [
+    "0 ≤ k = cameras.length ≤ 1,000",
+    "0 ≤ cameras[i].length ≤ 2,000, and N, the total number of photos, is at most 50,000",
+    "-36,000 ≤ each time ≤ 86,400",
+    "Each cameras[i] is sorted in non-decreasing order."
+  ],
+  "examples": [
+    {"args": [[[-600, 0, 45], [-30, 10], [5, 45, 90]]], "expected": [-600, -30, 0, 5, 10, 45, 45, 90], "explanation": "At each step, look only at the earliest unused photo of each camera and take the smallest: -600, then -30, then 0, 5, 10. Both 45s are kept because they are two different photos."},
+    {"args": [[[], [12, 12], []]], "expected": [12, 12], "explanation": "Two cameras took nothing. The result is just the other camera's photos."},
+    {"args": [[]], "expected": [], "explanation": "No cameras at all: an empty timeline."}
+  ],
+  "hints": [
+    "With just two cameras, how would you merge their lists in one pass? Now picture three cameras. At any moment, which photos could possibly be the next one in the album?",
+    "The next photo is always the earliest <em>unused</em> photo of some camera. So you only ever need to compare k candidates: one front photo per camera.",
+    "Scanning all k fronts each time costs O(k) per photo. You need \"give me the smallest candidate\" and \"replace it with the next photo from the same camera\" to be fast. Which structure does both in O(log k)?",
+    "Put each non-empty camera's first photo into a min-heap as <code>(time, camera, index)</code>. Repeatedly pop the smallest, append its time, and if that camera has another photo, push <code>(next time, camera, index + 1)</code>. Stop when the heap is empty."
+  ],
+  "bruteForce": [
+    "<p>Two obvious ways. One: pour every photo into one list and sort it. That is O(N log N) and correct, but it throws away the fact that each camera is already sorted, and it needs all photos in memory before producing the first one.</p>",
+    "<p>Two: merge the cameras one at a time into a growing album. The album gets merged again and again, so early photos are copied up to k times: O(N · k), which is 50 million steps for 50,000 photos on 1,000 cameras. Scanning all k camera fronts for each photo is O(N · k) too.</p>"
+  ],
+  "signature": {
+    "function": "mergeTimelines",
+    "params": [
+      {
+        "name": "cameras",
+        "type": "int[][]"
+      }
+    ],
+    "returns": "int[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number[][]} cameras  each sorted ascending",
+      " * @return {number[]} every time, sorted ascending",
+      " */",
+      "function mergeTimelines(cameras) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def merge_timelines(cameras: list[list[int]]) -> list[int]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[[]]], "expected": [], "note": "one camera, no photos"},
+    {"args": [[[7]]], "expected": [7], "note": "one photo"},
+    {"args": [[[1, 2, 3]]], "expected": [1, 2, 3], "note": "one camera: already sorted"},
+    {"args": [[[5, 6], [1, 2], [3, 4]]], "expected": [1, 2, 3, 4, 5, 6], "note": "whole cameras fall in blocks"},
+    {"args": [[[1, 4, 7], [2, 5, 8], [3, 6, 9]]], "expected": [1, 2, 3, 4, 5, 6, 7, 8, 9], "note": "perfectly interleaved"},
+    {"args": [[[0, 0, 0], [0, 0]]], "expected": [0, 0, 0, 0, 0], "note": "all equal times: keep every one"},
+    {"args": [[[-36000, 86400], [-36000], [86400]]], "expected": [-36000, -36000, 86400, 86400], "note": "extreme times and duplicates"},
+    {"args": [[[-50, -40, -30], [], [-45, 100], [], [-60]]], "expected": [-60, -50, -45, -40, -30, 100], "note": "negatives, empty cameras between"},
+    {"args": [[[10], [9], [8], [7], [6], [5], [4], [3]]], "expected": [3, 4, 5, 6, 7, 8, 9, 10], "note": "many cameras with one photo each, reversed"},
+    {"args": [[[1, 1, 2, 2, 3], [2, 2], [1, 3, 3, 3]]], "expected": [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3], "note": "duplicates across and within cameras"},
+    {"args": [[[], [], []]], "expected": [], "note": "all cameras empty"},
+    {"args": [[[-5, 20, 21, 22, 23, 24, 25], [0], [19, 26]]], "expected": [-5, 0, 19, 20, 21, 22, 23, 24, 25, 26], "note": "one long camera must keep being re-picked"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function mergeTimelines(cameras) {",
+      "  const heap = []; // entries [time, camera, index], smallest time on top",
+      "  const less = (a, b) => a[0] < b[0];",
+      "  const swap = (i, j) => { [heap[i], heap[j]] = [heap[j], heap[i]]; };",
+      "  const push = (entry) => {",
+      "    heap.push(entry);",
+      "    let i = heap.length - 1;",
+      "    while (i > 0) {",
+      "      const parent = (i - 1) >> 1;",
+      "      if (!less(heap[i], heap[parent])) break;",
+      "      swap(i, parent);",
+      "      i = parent;",
+      "    }",
+      "  };",
+      "  const pop = () => {",
+      "    const top = heap[0];",
+      "    const last = heap.pop();",
+      "    if (heap.length === 0) return top;",
+      "    heap[0] = last;",
+      "    let i = 0;",
+      "    while (true) {",
+      "      const l = 2 * i + 1, r = l + 1;",
+      "      let m = i;",
+      "      if (l < heap.length && less(heap[l], heap[m])) m = l;",
+      "      if (r < heap.length && less(heap[r], heap[m])) m = r;",
+      "      if (m === i) break;",
+      "      swap(i, m);",
+      "      i = m;",
+      "    }",
+      "    return top;",
+      "  };",
+      "",
+      "  cameras.forEach((cam, c) => { if (cam.length) push([cam[0], c, 0]); });",
+      "  const album = [];",
+      "  while (heap.length) {",
+      "    const [time, c, i] = pop();",
+      "    album.push(time);",
+      "    if (i + 1 < cameras[c].length) push([cameras[c][i + 1], c, i + 1]);",
+      "  }",
+      "  return album;",
+      "}"
+    ],
+    "py": [
+      "import heapq",
+      "",
+      "def merge_timelines(cameras):",
+      "    # one entry per camera: (time of its next photo, camera, index)",
+      "    heap = [(cam[0], c, 0) for c, cam in enumerate(cameras) if cam]",
+      "    heapq.heapify(heap)",
+      "    album = []",
+      "    while heap:",
+      "        time, c, i = heapq.heappop(heap)",
+      "        album.append(time)",
+      "        if i + 1 < len(cameras[c]):",
+      "            heapq.heappush(heap, (cameras[c][i + 1], c, i + 1))",
+      "    return album"
+    ],
+    "walkthrough": [
+      "<p>Merging two sorted lists means repeatedly taking the smaller of the two fronts. With k lists, the next item is the smallest of k fronts. A min-heap holds those k fronts, so finding the smallest and replacing it with that camera's next photo both cost O(log k).</p>",
+      "<p>Trace <code>[[-600, 0, 45], [-30, 10], [5, 45, 90]]</code>. Cameras are A, B, C.</p>",
+      "<ol>",
+      "<li>Heap starts with the fronts: A -600, B -30, C 5.</li>",
+      "<li>Pop A -600. Push A's next, 0. Heap: B -30, A 0, C 5.</li>",
+      "<li>Pop B -30. Push B 10. Heap: A 0, C 5, B 10.</li>",
+      "<li>Pop A 0. Push A 45. Heap: C 5, B 10, A 45.</li>",
+      "<li>Pop C 5, push C 45. Pop B 10; B is finished, push nothing. Heap: A 45, C 45.</li>",
+      "<li>Pop A 45 (A is finished), pop C 45, push C 90, pop C 90. The heap is empty.</li>",
+      "</ol>",
+      "<p>Album: -600, -30, 0, 5, 10, 45, 45, 90. The heap never held more than 3 entries, one per camera, however many photos there were. Storing the camera and index with each time is what lets you find \"that camera's next photo\" after a pop.</p>"
+    ],
+    "time": "O(N log k)",
+    "timeWhy": "Each of the N photos is pushed and popped once on a heap of at most k entries.",
+    "space": "O(k)",
+    "spaceWhy": "The heap holds one entry per camera, not counting the output.",
+    "takeaway": "To merge k sorted sequences, keep each sequence's current front in a min-heap, tagged with where it came from. Pop the smallest, then push the next item from the same source. The same pattern drives external sorting and merging sorted files or streams."
+  },
+  "related": ["heaps-and-priority-queues", "merge-sort"]
+}

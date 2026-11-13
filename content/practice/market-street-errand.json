@@ -1,0 +1,151 @@
+{
+  "slug": "market-street-errand",
+  "title": "Market Street Errand",
+  "topic": "two-pointers-sliding-window",
+  "difficulty": "hard",
+  "pattern": "sliding window",
+  "aka": "Minimum Window Substring",
+  "order": 12,
+  "story": [
+    "<p>On Saturdays a long street turns into a market. The stalls stand in one row, and each sells a single kind of thing, written as a letter: <code>b</code> for bread, <code>h</code> for honey, <code>e</code> for eggs. Several stalls can sell the same thing. The street, read from one end, is a string like <code>\"ebxhbqe\"</code>.</p>",
+    "<p>Your shopping list, <code>wanted</code>, is also written as letters, and each stall sells you one item. Your bags are heavy, so you want to walk the shortest unbroken section of the street where you can buy everything on the list.</p>"
+  ],
+  "task": [
+    "<p>Write <code>shortestErrand(street, wanted)</code>. Return the shortest substring of <code>street</code> that contains every character of <code>wanted</code>, including repeats: if <code>wanted</code> has two <code>h</code>'s, the substring needs at least two <code>h</code>'s. Extra stalls inside the section are fine.</p>",
+    "<p>If several substrings tie for shortest, return the one that starts first (leftmost). If no section works, return the empty string <code>\"\"</code>. Letters are case-sensitive.</p>"
+  ],
+  "constraints": [
+    "0 ≤ street.length ≤ 10,000",
+    "1 ≤ wanted.length ≤ 1,000",
+    "street and wanted contain letters a-z and A-Z only."
+  ],
+  "examples": [
+    {
+      "args": ["ebxhbqe", "hbe"],
+      "expected": "ebxh",
+      "explanation": "The section <code>ebxh</code> (stalls 0 to 3) has e, b and h, length 4. The section <code>hbqe</code> (stalls 3 to 6) also has all three, but it is also length 4 and starts later. Nothing shorter works: every 3-stall section is missing at least one item."
+    },
+    {
+      "args": ["hbhxxeh", "hhe"],
+      "expected": "hxxeh",
+      "explanation": "The list needs two h's and an e. <code>hbhxxe</code> (length 6) works, but <code>hxxeh</code> (stalls 2 to 6, length 5) is shorter. Counting only the kinds of item, and not how many, would wrongly accept <code>eh</code>."
+    }
+  ],
+  "hints": [
+    "In the first example, walk from the start until you have everything: that happens at stall 3, with section <code>ebxh</code>. Could you drop the first stall and still have everything? What does that tell you about where to look next?",
+    "Every valid section ends somewhere. For each end position, you want the latest start that still covers the list. As the end moves right, that best start never moves left.",
+    "So use a window: move the right edge one stall at a time. When the window covers the list, pull the left edge in as far as it stays covering, record it, then pull once more to break it and continue.",
+    "To check \"covers the list\" in O(1), keep <code>need</code>: how many of each letter the list still wants, and <code>missing</code>: how many list items are still uncovered. When a stall enters and <code>need[c] &gt; 0</code>, decrease <code>missing</code>. Decrease <code>need[c]</code> either way. When <code>missing</code> is 0, shrink from the left, adding back <code>need</code> and increasing <code>missing</code> when it goes above 0. Only record a window if it is strictly shorter, which keeps the leftmost tie."
+  ],
+  "bruteForce": [
+    "<p>Try every start and every end, count the letters in that section, and check them against the list. Or, slightly better, try each length from 1 upward and stop at the first length where some section works.</p>",
+    "<p>There are about 50 million sections in a 10,000-stall street, and each check costs more work. Even the smarter version recounts overlapping sections over and over, when a section and its neighbour differ by just one stall.</p>"
+  ],
+  "signature": {
+    "function": "shortestErrand",
+    "params": [
+      {"name": "street", "type": "string"},
+      {"name": "wanted", "type": "string"}
+    ],
+    "returns": "string"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {string} street  one letter per stall",
+      " * @param {string} wanted  items to buy, repeats allowed",
+      " * @return {string} shortest covering section, leftmost on ties, or \"\"",
+      " */",
+      "function shortestErrand(street, wanted) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def shortest_errand(street: str, wanted: str) -> str:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": ["", "a"], "expected": "", "note": "empty street"},
+    {"args": ["a", "a"], "expected": "a", "note": "single stall"},
+    {"args": ["a", "aa"], "expected": "", "note": "not enough of one item"},
+    {"args": ["bca", "abc"], "expected": "bca", "note": "the whole street"},
+    {"args": ["xyz", "q"], "expected": "", "note": "item sold nowhere"},
+    {"args": ["aB", "b"], "expected": "", "note": "case-sensitive"},
+    {"args": ["abcab", "ab"], "expected": "ab", "note": "ties: leftmost wins"},
+    {"args": ["axxxbxxcab", "abc"], "expected": "cab", "note": "defeats returning the first covering section"},
+    {"args": ["aaxbaa", "aab"], "expected": "baa", "note": "repeats in the list"},
+    {"args": ["kkkkk", "kk"], "expected": "kk", "note": "all equal"},
+    {"args": ["pqrsXpq", "X"], "expected": "X"},
+    {"args": ["mnmxxmnn", "mnn"], "expected": "mnn", "note": "answer at the very end"},
+    {"args": ["deedtd", "ddt"], "expected": "dtd"},
+    {"args": ["ZaZbZcZ", "ZZZZ"], "expected": "ZaZbZcZ", "note": "needs the whole street"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function shortestErrand(street, wanted) {",
+      "  const need = new Map(); // letter -> how many more the window needs",
+      "  for (const c of wanted) need.set(c, (need.get(c) || 0) + 1);",
+      "  let missing = wanted.length;",
+      "  let left = 0, bestStart = 0, bestLen = Infinity;",
+      "  for (let right = 0; right < street.length; right++) {",
+      "    const c = street[right];",
+      "    if ((need.get(c) || 0) > 0) missing--;",
+      "    need.set(c, (need.get(c) || 0) - 1);",
+      "    while (missing === 0) {",
+      "      if (right - left + 1 < bestLen) { bestStart = left; bestLen = right - left + 1; }",
+      "      const out = street[left];",
+      "      need.set(out, need.get(out) + 1);",
+      "      if (need.get(out) > 0) missing++; // dropped a stall we needed",
+      "      left++;",
+      "    }",
+      "  }",
+      "  return bestLen === Infinity ? \"\" : street.slice(bestStart, bestStart + bestLen);",
+      "}"
+    ],
+    "py": [
+      "def shortest_errand(street, wanted):",
+      "    need = {}  # letter -> how many more the window needs",
+      "    for c in wanted:",
+      "        need[c] = need.get(c, 0) + 1",
+      "    missing = len(wanted)",
+      "    left = best_start = 0",
+      "    best_len = float('inf')",
+      "    for right, c in enumerate(street):",
+      "        if need.get(c, 0) > 0:",
+      "            missing -= 1",
+      "        need[c] = need.get(c, 0) - 1",
+      "        while missing == 0:",
+      "            if right - left + 1 < best_len:",
+      "                best_start, best_len = left, right - left + 1",
+      "            out = street[left]",
+      "            need[out] += 1",
+      "            if need[out] > 0:",
+      "                missing += 1  # dropped a stall we needed",
+      "            left += 1",
+      "    if best_len == float('inf'):",
+      "        return \"\"",
+      "    return street[best_start:best_start + best_len]"
+    ],
+    "walkthrough": [
+      "<p>Slide a window over the street. The right edge adds stalls until the window covers the list. Then the left edge removes stalls for as long as the window still covers it, because each removal gives a shorter candidate. The moment it stops covering, go back to growing on the right.</p>",
+      "<p>The bookkeeping: <code>need[c]</code> is how many more <code>c</code>'s the window still wants (negative means it has spares), and <code>missing</code> is the total still wanted. The window covers the list exactly when <code>missing</code> is 0.</p>",
+      "<p>Trace <code>\"ebxhbqe\"</code> with list <code>\"hbe\"</code> (need h 1, b 1, e 1, missing 3):</p>",
+      "<ol>",
+      "<li>Add e (stall 0): wanted, missing 2. Add b: missing 1. Add x: not wanted, need[x] = -1.</li>",
+      "<li>Add h (stall 3): missing 0. Window <code>ebxh</code>, length 4. Best = <code>ebxh</code>. Drop e: need[e] goes back to 1, missing 1. Stop shrinking.</li>",
+      "<li>Add b (stall 4): need[b] was 0, so it is a spare. Missing stays 1. Add q: spare.</li>",
+      "<li>Add e (stall 6): missing 0. Window <code>bxhbqe</code>, length 6, not better. Drop b: it was a spare, still covering. Window <code>xhbqe</code>, length 5, not better. Drop x: <code>hbqe</code>, length 4, ties but is not strictly shorter, so the leftmost answer stays. Drop h: missing 1. Stop.</li>",
+      "</ol>",
+      "<p>The answer is <code>ebxh</code>. Each stall is added once and dropped at most once, so the total work is linear.</p>"
+    ],
+    "time": "O(n + m)",
+    "timeWhy": "Counting the list is O(m). Each stall enters and leaves the window at most once.",
+    "space": "O(1)",
+    "spaceWhy": "The need map has at most 52 letters.",
+    "takeaway": "For \"shortest window that contains everything\", track how much is still missing with a single counter, so checking the window is O(1). Grow until nothing is missing, shrink while nothing is missing, and record inside the shrinking loop."
+  },
+  "related": ["sliding-window", "hash-tables", "strings"]
+}

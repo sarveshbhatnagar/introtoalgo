@@ -1,0 +1,141 @@
+{
+  "slug": "pronoun-looks-back",
+  "title": "Pronoun Looks Back",
+  "topic": "ml-from-scratch",
+  "difficulty": "medium",
+  "pattern": "linear algebra",
+  "aka": "Scaled Dot-Product Attention Weights",
+  "order": 8,
+  "story": [
+    "<p>A translation model reads: \"The parcel did not fit in the locker because it was too big.\" To translate <em>it</em> correctly, the model has to work out which earlier word <em>it</em> is about. In a transformer, each word sends out a <strong>query</strong> vector (\"what am I looking for?\") and every word offers a <strong>key</strong> vector (\"what do I contain?\").</p>",
+    "<p>The model scores each key against the query with a dot product, shrinks the scores by the square root of the vector size so they do not get too extreme, and turns them into weights with softmax. Those weights say how much <em>it</em> pays attention to each word. This is the core step inside every transformer layer.</p>"
+  ],
+  "task": [
+    "<p>Write <code>attentionWeights(query, keys)</code>. Let <code>d</code> be the length of <code>query</code>. For each key, compute the score <code>(query · keys[i]) / √d</code>. Return the softmax of the scores: <code>e^scoreᵢ / Σ e^scoreⱼ</code>, one weight per key, in the same order.</p>",
+    "<p>Scores can be large, so your answer must not overflow. The weights must add up to 1.</p>"
+  ],
+  "constraints": [
+    "1 ≤ keys.length ≤ 1,000",
+    "1 ≤ d = query.length = keys[i].length ≤ 256",
+    "-1,000 ≤ query[j], keys[i][j] ≤ 1,000",
+    "Answers within 0.000001 of the expected values are accepted."
+  ],
+  "examples": [
+    {
+      "args": [[1, 0, 1, 0], [[2, 0, 2, 0], [0, 1, 0, 1], [1, 1, 1, 1]]],
+      "expected": [0.6652409557748218, 0.09003057317038046, 0.24472847105479764],
+      "explanation": "d = 4, so divide by √4 = 2. Dot products: 4, 0, 2. Scores: 2, 0, 1. Softmax: e² ≈ 7.389, e⁰ = 1, e¹ ≈ 2.718, total 11.107, so the weights are about 0.665, 0.090 and 0.245. The first key matches the query best and gets most of the attention."
+    },
+    {
+      "args": [[0, 0], [[3, 1], [-2, 5]]],
+      "expected": [0.5, 0.5],
+      "explanation": "A zero query has dot product 0 with every key. All scores are 0, so attention is spread evenly: 0.5 and 0.5."
+    },
+    {
+      "args": [[30, 40], [[30, 40], [40, 30]]],
+      "expected": [1.0, 1.9531818567219233e-31],
+      "explanation": "Dot products are 2500 and 2400, scores 2500 / √2 ≈ 1767.8 and 2400 / √2 ≈ 1697.1. e^1767.8 overflows, so shift by the largest score first. The gap is about 70.7, so the second weight is e^-70.7, tiny but not zero, and the first is almost exactly 1."
+    }
+  ],
+  "hints": [
+    "In the first example, which key looks most like the query? Compute the three dot products before doing anything else. Does the biggest dot product match your guess?",
+    "The dot product is large when two vectors point the same way and are long. Without the <code>√d</code> division, longer vectors (bigger <code>d</code>) give bigger scores, and softmax would put nearly all the weight on one key.",
+    "Once you have the scores, this is plain softmax. What do you subtract from every score so that no <code>e^x</code> can overflow?",
+    "For each key: dot product with the query, divide by <code>√d</code>. Find the maximum score. Compute <code>e^(score − max)</code> for each, sum them, and divide each by the sum."
+  ],
+  "bruteForce": [
+    "<p>There is no faster way for one query: you must look at every number of every key once, which is O(n · d). Real models do this for every word at once as a matrix multiplication, so a sentence of n words costs O(n² · d). That quadratic cost is why long inputs are expensive.</p>",
+    "<p>The mistakes to avoid are leaving out the <code>√d</code> scaling, dividing by <code>d</code> instead of <code>√d</code>, and exponentiating raw scores, which overflows for large vectors.</p>"
+  ],
+  "signature": {
+    "function": "attentionWeights",
+    "params": [
+      {
+        "name": "query",
+        "type": "float[]"
+      },
+      {
+        "name": "keys",
+        "type": "float[][]"
+      }
+    ],
+    "returns": "float[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number[]} query  what the current word is looking for",
+      " * @param {number[][]} keys  one key vector per word, same length as query",
+      " * @return {number[]} attention weight per key, summing to 1",
+      " */",
+      "function attentionWeights(query, keys) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def attention_weights(query: list[float], keys: list[list[float]]) -> list[float]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[0.5, -1], [[2, 3]]], "expected": [1.0], "note": "single key gets all attention"},
+    {"args": [[2], [[1], [3], [-1]]], "expected": [0.017980286735531543, 0.9816903928255046, 0.00032932043896389293], "note": "d = 1, no scaling effect"},
+    {"args": [[1, 1, 1, 1], [[1, 0, 0, 0], [1, 1, 0, 0], [1, 1, 1, 1]]], "expected": [0.14024438316608848, 0.23122389762214907, 0.6285317192117624], "note": "defeats skipping the square-root scaling"},
+    {"args": [[1, 1, 1, 1, 1, 1, 1, 1, 1], [[1, 1, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0]]], "expected": [0.7310585786300049, 0.2689414213699951], "note": "d = 9: defeats dividing by d"},
+    {"args": [[1, 2], [[1, 2], [1, 2], [1, 2]]], "expected": [0.3333333333333333, 0.3333333333333333, 0.3333333333333333], "note": "identical keys: equal weights"},
+    {"args": [[-1, 2, -3], [[1, -2, 3], [-1, 2, -3], [0, 0, 0]]], "expected": [9.531140506178851e-08, 0.9996912269027664, 0.0003086777858285981], "note": "negatives: opposite key gets least"},
+    {"args": [[100, 100, 100], [[100, 100, 100], [90, 100, 110], [99, 99, 99]]], "expected": [0.5, 0.5, 2.998880733148683e-76], "note": "large scores need a stable softmax"},
+    {"args": [[-1000, 1000], [[1000, -1000], [-1000, 1000]]], "expected": [0.0, 1.0], "note": "largest values"},
+    {"args": [[0.2, -0.1, 0.4, 0.3], [[0.1, 0.0, 0.5, 0.2], [-0.3, 0.4, 0.1, 0.0], [0.2, -0.1, 0.4, 0.3], [0.0, 0.0, 0.0, 0.1]]], "expected": [0.2676507731470327, 0.2258075404389716, 0.2703407081373671, 0.23620097827662856], "note": "realistic small vectors"},
+    {"args": [[3, 4], [[4, 3], [3, 4]]], "expected": [0.3302384506733434, 0.6697615493266567], "note": "defeats cosine similarity scoring"},
+    {"args": [[1, -1, 0.5], [[2, 0, 1], [0, 2, 1], [1, 1, 1], [-2, 0, -1]]], "expected": [0.6801658401050048, 0.06755456043945936, 0.21435555592106587, 0.03792404353446993]}
+  ],
+  "compare": "approx",
+  "solution": {
+    "js": [
+      "function attentionWeights(query, keys) {",
+      "  const scale = Math.sqrt(query.length);",
+      "  const scores = keys.map((key) => {",
+      "    let dot = 0;",
+      "    for (let i = 0; i < query.length; i++) dot += query[i] * key[i];",
+      "    return dot / scale;",
+      "  });",
+      "  const top = Math.max(...scores); // stable softmax: shift by the max",
+      "  const weights = scores.map((s) => Math.exp(s - top));",
+      "  let total = 0;",
+      "  for (const w of weights) total += w;",
+      "  return weights.map((w) => w / total);",
+      "}"
+    ],
+    "py": [
+      "import math",
+      "",
+      "def attention_weights(query, keys):",
+      "    scale = math.sqrt(len(query))",
+      "    scores = [sum(q * k for q, k in zip(query, key)) / scale for key in keys]",
+      "    top = max(scores)  # stable softmax: shift by the max",
+      "    weights = [math.exp(s - top) for s in scores]",
+      "    total = sum(weights)",
+      "    return [w / total for w in weights]"
+    ],
+    "walkthrough": [
+      "<p>Attention weights are two familiar pieces glued together: a dot product to score how well each key matches the query, and a softmax to turn scores into weights that add up to 1. The <code>√d</code> division sits between them.</p>",
+      "<p>Trace the first example, query <code>[1, 0, 1, 0]</code>, so d = 4 and √d = 2:</p>",
+      "<ol>",
+      "<li>Key 0 <code>[2, 0, 2, 0]</code>: dot 2 + 2 = 4, score 2.</li>",
+      "<li>Key 1 <code>[0, 1, 0, 1]</code>: dot 0, score 0.</li>",
+      "<li>Key 2 <code>[1, 1, 1, 1]</code>: dot 1 + 1 = 2, score 1.</li>",
+      "<li>Max score 2. Shifted: 0, -2, -1. Exponentials: 1, 0.135, 0.368. Total 1.503.</li>",
+      "<li>Weights: 0.665, 0.090, 0.245.</li>",
+      "</ol>",
+      "<p>Why <code>√d</code>? If each entry is roughly random, a dot product of d entries spreads out by about <code>√d</code>. Dividing by it keeps scores in a similar range whatever the vector size, so softmax does not collapse onto a single key and training stays steady.</p>"
+    ],
+    "time": "O(n · d)",
+    "timeWhy": "One dot product of length d for each of the n keys, then a linear softmax.",
+    "space": "O(n)",
+    "spaceWhy": "One score and one weight per key.",
+    "takeaway": "Scaled dot-product attention for one query: score every key with a dot product, divide by √d, softmax. The output weights then mix the value vectors. Score-then-softmax is the same shape as retrieval: find what matches, weigh it, combine."
+  },
+  "related": ["attention-and-transformers", "embeddings", "what-is-an-llm"]
+}

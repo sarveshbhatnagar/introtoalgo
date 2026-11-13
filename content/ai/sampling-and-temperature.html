@@ -8,7 +8,7 @@
 -->
 <p>Ask an assistant to suggest a name for your new bakery. Ask again in a fresh chat with the exact same words. You get a different name. Nothing broke, and the model did not change its mind. It rolled a weighted die, and the die landed somewhere else.</p>
 
-<p>In <a href="/ai/what-is-an-llm.html">What Is an LLM</a>, the toy generator always took the most likely word. Real systems usually do not. This lesson shows how they pick instead, and what the settings called <em>temperature</em> and <em>top-p</em> actually do to the pick.</p>
+<p>In <a href="/ai/what-is-an-llm.html">What Is an LLM</a>, the toy generator always took the most likely word. Most assistants do not. Here is how they pick instead, and what the settings called <em>temperature</em> and <em>top-p</em> do to the pick.</p>
 
 <h2>Picking from the chances</h2>
 
@@ -48,7 +48,7 @@
     { "caption": "Draw a random number: say <code>r = 0.62</code>. Start walking. After apple the running total is 0.46. 0.62 is not below 0.46, so apple's slice does not contain it. Keep going.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "highlight": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "highlight": [0] } ], "vars": { "r": 0.62, "running": 0.46 } },
     { "caption": "After mango the running total is 0.74. 0.62 is below 0.74, so the pick is <strong>mango</strong>, even though apple was more likely. Greedy decoding would have said apple every time.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "mark": [1], "dim": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "mark": [1] } ], "vars": { "r": 0.62, "running": 0.74, "pick": "mango" } },
     { "caption": "Now temperature 0.5. Dividing by 0.5 doubles every score: 4, 3, 2, 0, −2. The gaps double too, so apple jumps from 0.46 to 0.66 and durian all but disappears.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [4, 3, 2, 0, -2] }, { "label": "chance", "values": [0.66, 0.24, 0.09, 0.01, 0.00], "highlight": [0] } ], "vars": { "temperature": 0.5 } },
-    { "caption": "Temperature 2 halves every score: 1, 0.75, 0.5, 0, −0.5. The gaps shrink, the chances even out, and durian is now picked about 1 time in 13.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [1, 0.75, 0.5, 0, -0.5] }, { "label": "chance", "values": [0.34, 0.26, 0.2, 0.12, 0.07], "highlight": [4] } ], "vars": { "temperature": 2 } },
+    { "caption": "Temperature 2 halves every score: 1, 0.75, 0.5, 0, −0.5. The gaps shrink, the chances (rounded) even out, and durian is now picked about 1 time in 13.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [1, 0.75, 0.5, 0, -0.5] }, { "label": "chance", "values": [0.34, 0.26, 0.2, 0.12, 0.07], "highlight": [4] } ], "vars": { "temperature": 2 } },
     { "caption": "The order never changes: apple is always first. Temperature only changes how far ahead of the others it is. Same scores, three very different amounts of variety.", "arrays": [ { "label": "T = 0.5", "values": [0.66, 0.24, 0.09, 0.01, 0.00] }, { "label": "T = 1", "values": [0.46, 0.28, 0.17, 0.06, 0.02] }, { "label": "T = 2", "values": [0.34, 0.26, 0.2, 0.12, 0.07] } ] }
   ]
 }
@@ -115,11 +115,11 @@ words[sample(chances, 0.62)]  # "mango"
 </pre>
 </x-code>
 
-<p>The cost is tiny next to running the model: one pass over the vocabulary to scale and normalise, and one pass to sample, so O(V) for a vocabulary of V tokens.</p>
+<p>The cost is tiny next to running the model: one pass over the vocabulary to scale and normalise, and one pass to sample, so O(V) for a vocabulary of V tokens. The top-p filter below adds a sort, O(V log V), which is still tiny.</p>
 
 <h2>Top-p: cut off the long tail</h2>
 
-<p>A real vocabulary has tens of thousands of tokens. Most have tiny chances, but together that "long tail" adds up, and any one of them can be picked now and then, often derailing a sentence. <strong>Top-p</strong> sampling (also called nucleus sampling) cuts the tail off first.</p>
+<p>A real vocabulary has tens of thousands of tokens or more. Most have tiny chances, but together that "long tail" adds up, and any one of them can be picked now and then, often derailing a sentence. <strong>Top-p</strong> sampling (also called nucleus sampling) cuts the tail off first.</p>
 
 <p>Sort the tokens by chance and keep the most likely ones until their chances add up to at least <code>p</code>. Drop the rest, and rescale the kept ones so they sum to 1 again. With the fruit example at temperature 1 and <code>p = 0.9</code>: apple 0.46, plus mango 0.74, plus banana 0.91. That passes 0.9, so kiwi and durian are dropped, and the three survivors become about 0.51, 0.31 and 0.19.</p>
 
@@ -158,7 +158,7 @@ def top_p(chances, p):
 
 <h2>Choosing settings</h2>
 
-<p>Low temperature suits tasks with one right answer: extracting fields from a form, classifying a ticket, writing code to a spec. Moderate temperature suits open-ended writing and brainstorming, where several different good answers are worth seeing. Very high temperatures rarely help: past a point, the extra variety is mostly mistakes. Many apps pick these values for you and do not expose them at all.</p>
+<p>Low temperature suits tasks with one right answer: extracting fields from a form, classifying a ticket, writing code to a spec. Moderate temperature suits open-ended writing and brainstorming, where several different good answers are worth seeing. Very high temperatures rarely help: past a point, the extra variety is mostly mistakes. Many apps pick these values for you and do not expose them at all. Where you can set them, check the documentation: the allowed range and the default differ between providers, so the same number does not mean exactly the same thing everywhere.</p>
 
 <h2>Common mistakes</h2>
 
@@ -234,4 +234,4 @@ def top_p(chances, p):
 
 <h2>What to practise next</h2>
 
-<p>Continue with <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a>, which uses everything in this module to explain why a model can be fluent and wrong at the same time.</p>
+<p>Write the temperature step yourself in <a href="/practice/storyteller-word-odds.html">Storyteller Word Odds</a>. Then continue with <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a>, which uses everything in this module to explain why a model can be fluent and wrong at the same time.</p>

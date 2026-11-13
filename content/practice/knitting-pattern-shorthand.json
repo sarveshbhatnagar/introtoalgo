@@ -1,0 +1,169 @@
+{
+  "slug": "knitting-pattern-shorthand",
+  "title": "Knitting Pattern Shorthand",
+  "topic": "ml-from-scratch",
+  "difficulty": "hard",
+  "pattern": "hash map",
+  "aka": "Byte Pair Encoding (BPE) Merges",
+  "order": 11,
+  "story": [
+    "<p>A knitting club writes patterns as long lists of stitches: <code>k</code> for knit, <code>p</code> for purl, <code>yo</code> for yarn over. Patterns repeat the same neighbours again and again, so the club invents shorthand. They find the pair of neighbouring stitches that appears most often, give it a single new symbol (<code>k</code> then <code>p</code> becomes <code>kp</code>), rewrite the pattern, and repeat.</p>",
+    "<p>This is byte pair encoding, the method many language models use to build their token vocabulary. Start from single characters, merge the most common neighbouring pair, repeat thousands of times, and common chunks of words become single tokens.</p>"
+  ],
+  "task": [
+    "<p>Write <code>shorthand(stitches, merges)</code>. Repeat the following at most <code>merges</code> times:</p>",
+    "<ol><li>Count every pair of neighbouring tokens <code>(tokens[i], tokens[i+1])</code> for every <code>i</code>. Overlapping pairs count separately, so <code>[a, a, a]</code> has the pair <code>(a, a)</code> twice.</li><li>Pick the pair with the highest count. If several tie, pick the one whose first occurrence is furthest left. If no pair appears at least twice, stop.</li><li>Scan left to right. Wherever that pair appears, replace the two tokens with one token, their concatenation. A token already used in a merge cannot be part of another merge in the same scan.</li></ol>",
+    "<p>Return the final list of tokens.</p>"
+  ],
+  "constraints": [
+    "0 ≤ stitches.length ≤ 2,000",
+    "0 ≤ merges ≤ 100",
+    "Each token is 1 to 10 lowercase letters."
+  ],
+  "examples": [
+    {
+      "args": [["k", "p", "k", "p", "yo", "k", "p"], 1],
+      "expected": ["kp", "kp", "yo", "kp"],
+      "explanation": "Pair counts: (k, p) 3, (p, k) 1, (p, yo) 1, (yo, k) 1. Merge (k, p) everywhere: [\"kp\", \"kp\", \"yo\", \"kp\"]."
+    },
+    {
+      "args": [["k", "p", "k", "p", "yo", "k", "p"], 3],
+      "expected": ["kp", "kp", "yo", "kp"],
+      "explanation": "After the first merge: [kp, kp, yo, kp]. Now (kp, kp), (kp, yo) and (yo, kp) each appear once. No pair appears twice, so stop early, even though 3 merges were allowed."
+    },
+    {
+      "args": [["k", "k", "k", "p", "k", "k"], 2],
+      "expected": ["kk", "k", "p", "kk"],
+      "explanation": "(k, k) appears 3 times (positions 0, 1 and 4). Scanning left to right merges positions 0 and 1, then position 2 is a lone k, then p, then the last two k's merge: [kk, k, p, kk]. Second round: every pair appears once, so stop."
+    }
+  ],
+  "hints": [
+    "In the third example, <code>(k, k)</code> is counted 3 times but only 2 merges actually happen. Why can't all three happen?",
+    "Counting and merging are separate passes. Counting looks at every neighbouring position. Merging walks left to right and, after a merge, skips past both tokens it used.",
+    "Counting pairs by scanning the list once per distinct pair is slow. Which structure lets you count every pair in one pass? If it remembers insertion order, the first-occurrence tie-break comes almost for free.",
+    "Each round: one pass building a map from pair to count (in first-seen order). Take the first pair with the highest count; stop if that count is below 2. Then one pass building a new list: if the current and next token form the pair, push their concatenation and jump 2, else push the token and move 1. Key the map by the pair, not by the joined string, so <code>(a, ab)</code> and <code>(aa, b)</code> stay different."
+  ],
+  "bruteForce": [
+    "<p>For each neighbouring pair, scan the whole list to count how often it appears, and keep the best. That is O(n²) per round. With 2,000 tokens and 100 rounds, that is up to 400 million comparisons.</p>",
+    "<p>A hash map counts every pair in a single O(n) pass. Real tokenizer training goes further and only updates the counts that a merge changes, because it runs tens of thousands of rounds on huge text.</p>"
+  ],
+  "signature": {
+    "function": "shorthand",
+    "params": [
+      {
+        "name": "stitches",
+        "type": "string[]"
+      },
+      {
+        "name": "merges",
+        "type": "int"
+      }
+    ],
+    "returns": "string[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {string[]} stitches  the pattern, one token per stitch",
+      " * @param {number} merges  the most merge rounds allowed",
+      " * @return {string[]} the pattern after merging",
+      " */",
+      "function shorthand(stitches, merges) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def shorthand(stitches: list[str], merges: int) -> list[str]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[], 5], "expected": [], "note": "empty pattern"},
+    {"args": [["k"], 3], "expected": ["k"], "note": "single stitch"},
+    {"args": [["k", "p", "k", "p"], 0], "expected": ["k", "p", "k", "p"], "note": "zero merges allowed"},
+    {"args": [["k", "p", "yo", "sl"], 4], "expected": ["k", "p", "yo", "sl"], "note": "no pair repeats: unchanged"},
+    {"args": [["k", "k", "k"], 1], "expected": ["kk", "k"], "note": "overlap: count 2, merge once"},
+    {"args": [["k", "k", "k", "k"], 1], "expected": ["kk", "kk"], "note": "overlap: merge left to right"},
+    {"args": [["p", "yo", "k", "p", "k", "p", "yo", "k"], 1], "expected": ["pyo", "k", "p", "k", "pyo", "k"], "note": "tie: earliest first occurrence wins"},
+    {"args": [["a", "ab", "x", "aa", "b"], 1], "expected": ["a", "ab", "x", "aa", "b"], "note": "defeats keying pairs by joined string"},
+    {"args": [["k", "p", "k", "p", "k", "p", "k", "p"], 3], "expected": ["kpkp", "kpkp"], "note": "merges build on earlier merges"},
+    {"args": [["yo", "k", "yo", "k", "p", "p", "p", "p", "yo", "k"], 2], "expected": ["yok", "yok", "pp", "pp", "yok"], "note": "two different merges"},
+    {"args": [["k", "k", "k", "k", "k", "k", "k", "k"], 10], "expected": ["kkkk", "kkkk"], "note": "all the same stitch"},
+    {"args": [["k", "p", "sl", "k", "p", "sl", "yo", "k", "p", "sl", "yo"], 5], "expected": ["kpsl", "kpslyo", "kpslyo"]}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function shorthand(stitches, merges) {",
+      "  let tokens = stitches.slice();",
+      "  for (let m = 0; m < merges; m++) {",
+      "    // Count adjacent pairs. A Map keeps keys in first-seen order.",
+      "    const counts = new Map();",
+      "    for (let i = 0; i + 1 < tokens.length; i++) {",
+      "      const key = tokens[i] + ' ' + tokens[i + 1]; // space keeps pairs apart",
+      "      counts.set(key, (counts.get(key) || 0) + 1);",
+      "    }",
+      "    let bestKey = null, bestCount = 1;",
+      "    for (const [key, c] of counts) if (c > bestCount) { bestKey = key; bestCount = c; }",
+      "    if (bestKey === null) break; // no pair appears twice",
+      "    const [a, b] = bestKey.split(' ');",
+      "    // Replace left to right; a merged pair cannot be reused.",
+      "    const next = [];",
+      "    for (let i = 0; i < tokens.length; i++) {",
+      "      if (i + 1 < tokens.length && tokens[i] === a && tokens[i + 1] === b) {",
+      "        next.push(a + b);",
+      "        i++;",
+      "      } else next.push(tokens[i]);",
+      "    }",
+      "    tokens = next;",
+      "  }",
+      "  return tokens;",
+      "}"
+    ],
+    "py": [
+      "def shorthand(stitches, merges):",
+      "    tokens = list(stitches)",
+      "    for _ in range(merges):",
+      "        # Count adjacent pairs. A dict keeps keys in first-seen order.",
+      "        counts = {}",
+      "        for pair in zip(tokens, tokens[1:]):",
+      "            counts[pair] = counts.get(pair, 0) + 1",
+      "        best, best_count = None, 1",
+      "        for pair, c in counts.items():",
+      "            if c > best_count:",
+      "                best, best_count = pair, c",
+      "        if best is None:",
+      "            break  # no pair appears twice",
+      "        a, b = best",
+      "        # Replace left to right; a merged pair cannot be reused.",
+      "        merged = []",
+      "        i = 0",
+      "        while i < len(tokens):",
+      "            if i + 1 < len(tokens) and tokens[i] == a and tokens[i + 1] == b:",
+      "                merged.append(a + b)",
+      "                i += 2",
+      "            else:",
+      "                merged.append(tokens[i])",
+      "                i += 1",
+      "        tokens = merged",
+      "    return tokens"
+    ],
+    "walkthrough": [
+      "<p>Each round is two linear passes: count every neighbouring pair with a hash map, then rebuild the list with the winning pair merged. Most of the difficulty is in following the rules exactly.</p>",
+      "<p>Trace <code>[k, k, k, p, k, k]</code> with 2 merges:</p>",
+      "<ol>",
+      "<li>Count: (k, k) appears at positions 0, 1 and 4, so 3 times. (k, p) and (p, k) appear once each. Best is (k, k).</li>",
+      "<li>Merge: i = 0, tokens 0 and 1 match, push \"kk\", jump to 2. i = 2: \"k\" then \"p\", no match, push \"k\". i = 3: push \"p\". i = 4: match, push \"kk\". Result [kk, k, p, kk].</li>",
+      "<li>Count again: (kk, k), (k, p), (p, kk), each once. Nothing appears twice, so stop.</li>",
+      "</ol>",
+      "<p>Two easy slips: counting with a key like <code>a + b</code> merges different pairs together (<code>a + ab</code> and <code>aa + b</code> both spell <code>aab</code>), and forgetting to recount after each merge, since a merge creates new pairs and destroys old ones.</p>"
+    ],
+    "time": "O(m · n)",
+    "timeWhy": "At most m rounds, each with an O(n) counting pass and an O(n) merging pass (treating token lengths as small).",
+    "space": "O(n)",
+    "spaceWhy": "The pair counts and the rebuilt list each hold at most n entries.",
+    "takeaway": "Byte pair encoding: count neighbouring pairs in a hash map, merge the most frequent one left to right, repeat. Recount every round, key counts by the pair itself, and make tie-breaking explicit. Real tokenizers record the order of merges and replay it to split new text."
+  },
+  "related": ["tokens", "hash-tables", "what-is-an-llm"]
+}
