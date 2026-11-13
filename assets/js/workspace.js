@@ -10,6 +10,7 @@ const data = JSON.parse(document.getElementById('problem-data').textContent);
 const slug = data.slug;
 const meta = { signature: data.signature, compare: data.compare, mutates: data.mutates, checker: data.checker };
 const TIMEOUT = { js: 3000, py: 5000 };
+const PY_LOAD_TIMEOUT = 60000;
 const PYODIDE_BASE = store.getRaw('pyodide-base') || 'https://cdn.jsdelivr.net/npm/pyodide@314.0.7/';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -216,6 +217,8 @@ function ensurePython() {
       else if (e.data.type === 'fatal') reject(new Error(e.data.error));
     };
     worker.onerror = (e) => reject(new Error(e.message || 'Python worker failed to start'));
+    // A CDN that never answers must not leave the page stuck on "Loading Python…".
+    setTimeout(() => reject(new Error(`Python did not finish loading within ${PY_LOAD_TIMEOUT / 1000} s`)), PY_LOAD_TIMEOUT);
   });
   py = { worker, ready, isReady: false };
   const mine = py;
@@ -304,6 +307,14 @@ function lineButton(line) {
   return line ? ` <button type="button" class="btn-text" data-goto-line="${line}">Go to line ${line}</button>` : '';
 }
 
+const SVG = (d) => `<svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${d}</svg>`;
+const MARK = {
+  pass: SVG('<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
+  fail: SVG('<path d="M7 7l10 10M17 7 7 17"/>'),
+  skip: SVG('<path d="M6 12h12"/>'),
+};
+const STATE_WORD = { pass: 'passed', fail: 'failed', skip: 'not run' };
+
 function caseLabel(t, i) {
   if (t.example) return `Example ${i + 1}`;
   const n = i - data.tests.filter((x) => x.example).length + 1;
@@ -334,8 +345,8 @@ function renderResults(kind, tests, out, verdicts, passed, allPass, elapsed) {
   const banner = allPass && kind === 'submit'
     ? `<div class="solved-banner">Solved. Every test passes, including the hidden edge cases. <a href="#solution">Read the walkthrough</a></div>`
     : allPass ? `<p class="rcase__msg">The examples pass. Now <strong>Submit</strong> to check the hidden tests too.</p>` : '';
-  resultsEl.innerHTML = `${banner}<div class="results__summary"><span class="results__verdict ${cls}">${verdict}</span><span class="results__meta">${passed} / ${total} passed · ${Math.round(elapsed)} ms · ${lang === 'py' ? 'Python' : 'JavaScript'}</span></div>
-<div class="results__tabs" role="tablist" aria-label="Test cases">${tests.map((t, i) => `<button type="button" role="tab" class="rtab is-${verdicts[i].state}" aria-selected="${i === sel}" data-case="${i}">${caseLabel(t, i)}</button>`).join('')}</div>
+  resultsEl.innerHTML = `${banner}<div class="results__summary"><span class="results__verdict ${cls}">${allPass ? MARK.pass : MARK.fail}${verdict}</span><span class="results__meta">${passed} / ${total} passed · ${Math.round(elapsed)} ms · ${lang === 'py' ? 'Python' : 'JavaScript'}</span></div>
+<div class="results__tabs" role="tablist" aria-label="Test cases">${tests.map((t, i) => `<button type="button" role="tab" class="rtab is-${verdicts[i].state}" aria-selected="${i === sel}" data-case="${i}">${MARK[verdicts[i].state] || ''}${caseLabel(t, i)}<span class="sr-only">, ${STATE_WORD[verdicts[i].state] || ''}</span></button>`).join('')}</div>
 <div class="rcase" data-case-body></div>`;
   const body = $('[data-case-body]', resultsEl);
   const show = (i) => {
@@ -345,7 +356,7 @@ function renderResults(kind, tests, out, verdicts, passed, allPass, elapsed) {
     html += `<div class="rcase__row"><span>Expected${data.compare === 'checker' ? ' (one valid answer)' : ''}</span><pre class="io">${esc(H.formatValue(t.expected))}</pre></div>`;
     if (v.state === 'skip') html += `<p class="rcase__msg">Not run: an earlier test stopped the run.</p>`;
     else if (!r.ok) html += `<div class="rcase__row rcase__err"><span>Error</span><pre class="io">${esc(r.error)}${r.line ? `\n(line ${r.line})` : ''}</pre></div>${r.line ? `<p class="rcase__msg">${lineButton(r.line)}</p>` : ''}`;
-    else html += `<div class="rcase__row rcase__row--got is-${v.state}"><span>Your output</span><pre class="io">${esc(H.formatValue(r.got))}</pre></div>${v.message ? `<p class="rcase__msg">${esc(v.message)}</p>` : ''}`;
+    else html += `<div class="rcase__row rcase__row--got is-${v.state}"><span>Your output <b class="rcase__tag">${v.state === 'pass' ? MARK.pass + 'matches' : MARK.fail + 'does not match'}</b></span><pre class="io">${esc(H.formatValue(r.got))}</pre></div>${v.message ? `<p class="rcase__msg">${esc(v.message)}</p>` : ''}`;
     if (r.logs) html += `<div class="rcase__row"><span>Console output</span><pre class="io">${esc(r.logs)}</pre></div>`;
     body.innerHTML = html;
   };
@@ -451,3 +462,26 @@ document.addEventListener('keydown', (e) => {
     execute(e.shiftKey ? 'submit' : 'run');
   }
 });
+
+/* ---------------------------------------------------------------------- */
+/* phone: one thumb jump between the statement and the editor              */
+/* ---------------------------------------------------------------------- */
+(() => {
+  const jump = $('[data-ws-jump]');
+  const codeEl = document.getElementById('code');
+  if (!jump || !codeEl || !('IntersectionObserver' in window)) return;
+  const label = $('[data-ws-jump-label]', jump);
+  let inCode = false;
+  new IntersectionObserver(([en]) => {
+    inCode = en.isIntersecting;
+    jump.classList.toggle('is-up', inCode);
+    jump.setAttribute('href', inCode ? '#problem' : '#code');
+    label.textContent = inCode ? 'Read problem' : 'Write code';
+  }, { rootMargin: '0px 0px -50% 0px' }).observe(codeEl);
+  jump.addEventListener('click', (e) => {
+    e.preventDefault();
+    const target = document.getElementById(inCode ? 'problem' : 'code');
+    target.scrollIntoView({ block: 'start' });
+    target.focus({ preventScroll: true });
+  });
+})();

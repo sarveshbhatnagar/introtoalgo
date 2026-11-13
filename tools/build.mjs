@@ -218,6 +218,7 @@ function roadmapPage(track) {
     <div class="progress-block__cta">${firstLive ? `<a class="btn btn--accent" href="${firstLive.url}" data-continue-track="${track.id}">${icon('arrow')}<span>Start with ${esc(firstLive.title)}</span></a>` : ''}<a class="btn btn--ghost" href="/practice/">Practice problems</a></div>
   </div>
   <div class="order-note">${icon('flag')}<p><strong>Recommended order.</strong> ${esc(track.order)}</p></div>
+  <nav class="rm-index" aria-label="Modules"><p class="section-label">Jump to a module</p><ol class="rm-index__list">${track.modules.map((m) => `<li><a class="rm-index__link" href="#${m.id}"><span class="rm-index__n">${String(m.number).padStart(2, '0')}</span><span class="rm-index__name">${esc(m.title)}</span><span class="rm-index__count" data-mod-progress="${m.lessons.filter((ls) => lessons.has(ls.slug)).map((ls) => `${track.id}/${ls.slug}`).join(' ')}" data-mod-total="${m.lessons.length}">${m.lessons.length} lessons</span></a></li>`).join('')}</ol></nav>
 </header>
 <ol class="roadmap">
 ${mods}
@@ -288,7 +289,7 @@ function problemPage(p) {
 </section>`;
 
   const main = `<div class="ws" data-problem="${p.slug}">
-<section class="ws__problem" aria-label="Problem">
+<section class="ws__problem" id="problem" aria-label="Problem" tabindex="-1">
   <div class="ws__scroll">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="/practice/">Practice</a><span aria-hidden="true">/</span><a href="/practice/#${p.topic}">${esc(topic.title)}</a></nav>
     <h1 class="ws__title">${statusDot(p.slug)}${esc(p.title)}</h1>
@@ -311,7 +312,7 @@ function problemPage(p) {
     ${related.length ? `<div class="ws__related"><span class="muted">Learn the idea:</span> ${relatedHtml}</div>` : ''}
   </div>
 </section>
-<section class="ws__code" aria-label="Code">
+<section class="ws__code" id="code" aria-label="Code" tabindex="-1">
   <div class="ws__toolbar">
     <div class="seg" role="group" aria-label="Language">
       <button type="button" class="seg__btn" data-ws-lang="js" aria-pressed="true">JavaScript</button>
@@ -336,6 +337,7 @@ function problemPage(p) {
     <p class="results__empty muted">Run your code to see results here. <strong>Run</strong> checks the examples. <strong>Submit</strong> checks every test, including hidden edge cases.</p>
   </div>
 </section>
+<a class="ws__jump" href="#code" data-ws-jump><span data-ws-jump-label>Write code</span>${icon('next', 'icon ws__jump-icon')}</a>
 </div>
 <script type="application/json" id="problem-data">${JSON.stringify(data).replace(/</g, '\\u003c')}</script>`;
 
@@ -519,7 +521,7 @@ function aboutPage() {
   <p>Your progress, saved code and theme choice live in your browser's local storage. Clearing site data resets them. There are no accounts.</p>
   <h2 id="the-author">The author</h2>
   <div class="about-author">
-    <img src="/images/me.jpg" alt="Sarvesh Bhatnagar" class="about-author__photo" width="120" height="120" loading="lazy">
+    <img src="/images/me-240.jpg" alt="Sarvesh Bhatnagar" class="about-author__photo" width="120" height="120" loading="lazy">
     <ul class="about-author__list">
       <li>I like to <a href="https://www.introtoalgo.com">write</a></li>
       <li>I like to <a href="https://github.com/sarveshbhatnagar" target="_blank" rel="noopener">code</a></li>
@@ -569,6 +571,21 @@ ${items}
   return page({ title: 'Archive: Original Algorithm Posts', description: 'The original 2017 introtoalgo posts on merge sort, minimum spanning trees, linked lists, graph theory and Markov chains.', path: '/archive.html', track: 'other', main });
 }
 
+// Intrinsic size of a PNG or JPEG under the repo, so covers reserve space (no layout shift).
+function imageSize(src) {
+  try {
+    const b = readFileSync(join(ROOT, src));
+    if (b.readUInt32BE(0) === 0x89504e47) return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    let i = 2;
+    while (i < b.length) {
+      const m = b[i + 1], len = b.readUInt16BE(i + 2);
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+      i += 2 + len;
+    }
+  } catch {}
+  return null;
+}
+
 function legacyPage(p) {
   const rel = (p.related || []).map((s) => cur.lessons.get(s)).filter((l) => l && lessons.has(l.slug));
   const main = `<div class="wrap wrap--narrow">
@@ -580,7 +597,7 @@ function legacyPage(p) {
     <div class="lesson__meta"><time datetime="${p.date}">${esc(p.dateLabel)}</time><span class="tag">${esc(p.tag)}</span><span>From the 2017 archive</span></div>
   </header>
   ${rel.length ? `<aside class="callout callout--tip"><div class="callout__head">${icon('tip')}<span>There is a newer lesson on this</span></div><div class="callout__body"><p>${rel.map((l) => `<a href="${l.url}">${esc(l.title)}</a>`).join(' and ')} covers this topic step by step, with code in JavaScript and Python.</p></div></aside>` : ''}
-  ${p.image ? `<figure class="legacy__cover"><img src="${p.image}" alt="${esc(p.imageAlt)}">${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ''}</figure>` : ''}
+  ${p.image ? `<figure class="legacy__cover"><img src="${p.image}" alt="${esc(p.imageAlt)}"${((d) => (d ? ` width="${d.w}" height="${d.h}"` : ''))(imageSize(p.image))}>${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ''}</figure>` : ''}
   <div class="prose legacy__body">
 ${p.body}
   </div>

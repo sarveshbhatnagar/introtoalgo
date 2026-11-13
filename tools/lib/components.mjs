@@ -11,7 +11,8 @@ export const CALLOUT_TYPES = {
   tip: 'Tip',
   'real-world': 'In the real world',
 };
-const COMPONENT_NAMES = ['x-code', 'x-tracer', 'x-quiz', 'x-complexity', 'x-figure', 'x-prompt', 'x-tryit', 'x-callout'];
+// Order matters: inner components first (an <x-tryit> answer may hold code, prompts and callouts).
+const COMPONENT_NAMES = ['x-code', 'x-tracer', 'x-quiz', 'x-complexity', 'x-figure', 'x-prompt', 'x-callout', 'x-tryit'];
 const CHILD_NAMES = ['x-task', 'x-start', 'x-answer', 'x-user', 'x-model', 'x-system'];
 
 /* ---------------------------------------------------------------------- */
@@ -554,14 +555,18 @@ const CHECKED = new Set(['p', 'div', 'section', 'ul', 'ol', 'li', 'table', 'thea
 
 function blank(s) { return s.replace(/[^\n]/g, ' '); }
 
-export function checkBalance(src, rep) {
-  // Hide raw-content regions (code, scripts, svg, comments) but keep offsets.
-  let s = src
+// Hide raw-content regions (code, scripts, svg, comments, prompt turns) but keep offsets.
+function maskRaw(src) {
+  return src
     .replace(/<!--[\s\S]*?-->/g, blank)
     .replace(/(<pre\b[^>]*>)([\s\S]*?)(<\/pre>)/gi, (m, a, b, c) => a + blank(b) + c)
     .replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi, (m, a, b, c) => a + blank(b) + c)
     .replace(/<svg\b[\s\S]*?<\/svg>/gi, blank)
     .replace(/(<(x-user|x-model|x-system|x-start)>)([\s\S]*?)(<\/\2>)/g, (m, a, n, b, c) => a + blank(b) + c);
+}
+
+export function checkBalance(src, rep) {
+  const s = maskRaw(src);
   const stack = [];
   const re = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?(\/?)>/g;
   let m;
@@ -631,6 +636,10 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
   const errors = [], warnings = [];
   const rep = makeReporter(body, lineOffset, errors, warnings);
   checkBalance(body, rep);
+  // components are blocks: one inside an open <p> produces broken HTML
+  for (const m of maskRaw(body).matchAll(/<p\b[^>]*>((?:(?!<\/p>)[\s\S])*?)<(x-(?:code|tracer|quiz|complexity|figure|prompt|tryit|callout))\b/g)) {
+    rep.error(`<${m[2]}> is inside a <p>. Components are blocks: close the paragraph first.`, m.index + m[0].length - m[2].length - 1);
+  }
 
   const stash = [];
   const put = (html) => `\u0000${stash.push(html) - 1}\u0000`;
@@ -655,7 +664,10 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
   }
 
   // anything x-* left over is a typo or a nesting mistake
+  const reported = new Set();
   for (const m of html.matchAll(/<\/?(x-[a-z-]+)/g)) {
+    if (reported.has(m[1])) continue;
+    reported.add(m[1]);
     const off = body.indexOf(m[0]);
     if (COMPONENT_NAMES.includes(m[1]) || CHILD_NAMES.includes(m[1])) rep.error(`<${m[1]}> is misplaced or not closed properly.`, off);
     else rep.error(`Unknown component <${m[1]}>. Components: ${COMPONENT_NAMES.join(', ')}.`, off);

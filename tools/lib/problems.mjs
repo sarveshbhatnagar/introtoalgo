@@ -77,7 +77,7 @@ export function validateProblemSchema(raw, file, cur) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { E('The file must contain one JSON object.'); return { errors, warnings }; }
   for (const k of Object.keys(raw)) if (!TOP_KEYS.includes(k)) E(`Unknown key "${k}". Allowed keys: ${TOP_KEYS.join(', ')}.`);
   for (const k of REQUIRED) if (raw[k] === undefined && !(k === 'compare')) E(`Missing required key "${k}".`);
-  if (errors.length) return { errors, warnings };
+  if (REQUIRED.some((k) => raw[k] === undefined && k !== 'compare')) return { errors, warnings };
 
   if (raw.slug !== slugFromFile) E(`"slug" is "${raw.slug}" but the file is named ${slugFromFile}.json. They must match.`);
   if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(raw.slug)) E('"slug" must be lowercase words joined by hyphens, like "matching-receipts".');
@@ -114,8 +114,11 @@ export function validateProblemSchema(raw, file, cur) {
 
   // signature
   const sig = raw.signature;
+  const design = !!(sig && typeof sig === 'object' && sig.class !== undefined);
   const checkType = (t, where, allowVoid) => {
     if (typeof t !== 'string' || !(TYPE_RE.test(t.replace(/\s/g, '')) || (allowVoid && t === 'void'))) E(`${where}: type "${t}" is not supported. Use int, float, string, bool, any, ListNode, TreeNode, or any of these with [] (like int[][])${allowVoid ? ', or void' : ''}.`);
+    else if (/^(ListNode|TreeNode)\[\]\[\]/.test(t.replace(/\s/g, ''))) E(`${where}: type "${t}" is not supported. ListNode and TreeNode can be nested at most one level (ListNode[], TreeNode[]).`);
+    else if (design && /ListNode|TreeNode/.test(t)) E(`${where}: design problems do not support ListNode/TreeNode. Use plain values.`);
   };
   const checkParams = (params, where) => {
     if (!Array.isArray(params)) { E(`${where} must be a list of {"name": …, "type": …}.`); return; }
@@ -125,7 +128,6 @@ export function validateProblemSchema(raw, file, cur) {
       for (const k of Object.keys(p || {})) if (!['name', 'type'].includes(k)) E(`${where}[${i}]: unknown key "${k}".`);
     });
   };
-  const design = sig && sig.class !== undefined;
   if (!sig || typeof sig !== 'object') E('"signature" must be an object.');
   else if (design) {
     for (const k of Object.keys(sig)) if (!['class', 'init', 'methods'].includes(k)) E(`"signature": unknown key "${k}" for a design problem.`);
@@ -148,6 +150,9 @@ export function validateProblemSchema(raw, file, cur) {
       if (sig.returns !== 'void') E('"mutates" requires "signature.returns": "void".');
       if (!Array.isArray(sig.params) || !sig.params.some((p) => p.name === raw.mutates)) E(`"mutates" must name one of the params.`);
     } else if (sig.returns === 'void') E('"signature.returns" is "void" but "mutates" is not set. Name the param that is changed in place.');
+    const outT = String(raw.mutates && Array.isArray(sig.params) ? (sig.params.find((p) => p.name === raw.mutates) || {}).type : sig.returns).replace(/\s/g, '');
+    if (mode === 'unordered' && !/\[\]$/.test(outT) && outT !== 'any') E(`"compare": "unordered" needs a list result, but the result type is ${outT}.`);
+    if (/float/.test(String(sig.returns)) && (mode === 'exact' || mode === 'unordered')) W(`"signature.returns" is ${sig.returns} but "compare" is "${mode}". Floating-point results usually need "compare": "approx".`);
   }
   if (errors.length) return { errors, warnings };
 
@@ -176,7 +181,8 @@ export function validateProblemSchema(raw, file, cur) {
       if (c.args.length !== sig.params.length) return E(`${where}: "args" has ${c.args.length} value(s) but the function takes ${sig.params.length}.`);
       c.args.forEach((v, j) => { if (!valueMatches(v, sig.params[j].type.replace(/\s/g, ''))) E(`${where}: argument ${j + 1} (${sig.params[j].name}) does not match type ${sig.params[j].type}.`); });
       const outType = raw.mutates ? sig.params.find((p) => p.name === raw.mutates).type : sig.returns;
-      if (!valueMatches(c.expected, outType.replace(/\s/g, ''))) E(`${where}: "expected" does not match type ${outType}.`);
+      if (c.expected === null && /^(ListNode|TreeNode)$/.test(outType.replace(/\s/g, ''))) E(`${where}: "expected" is null, but an empty ${outType} is written [] (returning null / None is converted to []).`);
+      else if (!valueMatches(c.expected, outType.replace(/\s/g, ''))) E(`${where}: "expected" does not match type ${outType}.`);
     }
     const size = JSON.stringify(c).length;
     if (size > 20000) W(`${where} is large (${size} characters). Keep tests small enough to read; the timeout only catches infinite loops.`);
@@ -215,7 +221,10 @@ export function runJs(meta, code, tests, timeout = TIMEOUT_MS) {
     return { prepare: { ok: false, error: H.errorText(e), line: H.errorLine(e) ?? syntaxLine(e) }, results: [] };
   }
   ctx.__problem = JSON.stringify(meta);
+  let stopped = false;
   const results = tests.map((t) => {
+    // After a timeout the rest would only time out too: skip them, like the browser does.
+    if (stopped) return { ok: false, skipped: true, error: 'Not run: an earlier test timed out', line: null, logs: '' };
     logs = [];
     ctx.__test = JSON.stringify(t);
     try {
@@ -223,6 +232,7 @@ export function runJs(meta, code, tests, timeout = TIMEOUT_MS) {
       return { ok: true, got: out === undefined ? null : JSON.parse(out), logs: logs.join('\n') };
     } catch (e) {
       const timedOut = e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT';
+      if (timedOut) stopped = true;
       return { ok: false, error: timedOut ? `Time limit exceeded (${timeout / 1000}s)` : H.errorText(e), line: timedOut ? null : H.errorLine(e), logs: logs.join('\n') };
     }
   });
@@ -296,6 +306,7 @@ export function checkProblemFile(file, cur, { run = true } = {}) {
     else if (ref.failures.length) {
       E(`${L} reference solution fails ${ref.failures.length} of ${ref.total} tests:`);
       ref.failures.slice(0, 5).forEach((f) => E('  ' + describeFailure(f, n)));
+      if (n.compare === 'exact' && ref.failures.some((f) => !f.error && H.compare({ compare: 'approx' }, { expected: f.expected }, f.got).pass)) E(`  The outputs differ only by floating-point rounding. Use "compare": "approx" for float results.`);
     }
     const st = judge(n, lang, n.starter[lang]);
     if (st.prepareError && /SyntaxError|IndentationError/.test(st.prepareError)) E(`${L} starter code does not parse: ${st.prepareError}`);

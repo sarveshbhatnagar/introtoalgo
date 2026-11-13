@@ -118,10 +118,14 @@ def convert_in(value, t):
 
 def convert_out(value, t):
     t = base_type(t)
-    if t == "ListNode":
-        return list_to_array(value) if value is not None else []
-    if t == "TreeNode":
-        return tree_to_array(value) if value is not None else []
+    if t in ("ListNode", "TreeNode"):
+        if value is None:
+            return []
+        if not hasattr(value, "val") or isinstance(value, (list, tuple, dict, str)):
+            raise TypeError("Return a %s (or None), not a value of type %s. Build the result from %s objects." % (t, type(value).__name__, t))
+        return list_to_array(value) if t == "ListNode" else tree_to_array(value)
+    if t in ("ListNode[]", "TreeNode[]") and isinstance(value, (list, tuple)):
+        return [convert_out(x, t[:-2]) for x in value]
     return plain(value)
 
 
@@ -275,17 +279,29 @@ def _batch():
     import signal
     job = json.loads(sys.stdin.read())
     timeout = float(job.get("timeout", 3.0))
-    prep = json.loads(prepare(job["code"], json.dumps(job["problem"])))
+    def on_alarm(signum, frame):
+        raise _Timeout()
+    signal.signal(signal.SIGALRM, on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        prep = json.loads(prepare(job["code"], json.dumps(job["problem"])))
+    except _Timeout:
+        prep = {"ok": False, "error": "Time limit exceeded while loading the code (%.1fs). Is there an infinite loop at the top level?" % timeout, "line": None}
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
     results = []
     if prep["ok"]:
-        def on_alarm(signum, frame):
-            raise _Timeout()
-        signal.signal(signal.SIGALRM, on_alarm)
+        stopped = False
         for test in job["tests"]:
+            if stopped:
+                # after a timeout the rest would only time out too (the browser skips them as well)
+                results.append({"ok": False, "skipped": True, "error": "Not run: an earlier test timed out", "line": None, "logs": ""})
+                continue
             signal.setitimer(signal.ITIMER_REAL, timeout)
             try:
                 results.append(json.loads(run_one(json.dumps(test))))
             except _Timeout:
+                stopped = True
                 results.append({"ok": False, "error": "Time limit exceeded (%.1fs)" % timeout, "line": None, "logs": ""})
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)

@@ -33,6 +33,7 @@ export function checkAll(fileList, { run = true, quiet = false, log = console.lo
   const resolveLink = makeLinkResolver(cur);
   // a directory argument means "every content file inside it"
   fileList = fileList.flatMap((f) => (existsSync(f) && statSync(f).isDirectory() ? [...listFiles(f, '.html'), ...listFiles(f, '.json')].filter((x) => x !== 'curriculum.json').map((x) => join(f, x)) : [f]));
+  fileList = [...new Set(fileList)];
   if (!fileList.length) {
     fileList = [
       ...listFiles(join(CONTENT, 'algorithms'), '.html').map((f) => join(CONTENT, 'algorithms', f)),

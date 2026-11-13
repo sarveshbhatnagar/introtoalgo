@@ -88,11 +88,26 @@
   }
 
   // Turn whatever the user's function returned into plain JSON.
+  // Returning null or undefined (a bare `return;`) for a ListNode/TreeNode
+  // means "empty" and becomes [], the same as None in Python.
   function convertOut(value, type) {
     var t = baseType(type);
-    if (t === 'ListNode' && (value === null || value instanceof Object)) return value ? listToArray(value) : [];
-    if (t === 'TreeNode' && (value === null || value instanceof Object)) return value ? treeToArray(value) : [];
+    if (t === 'ListNode' || t === 'TreeNode') {
+      if (value === null || value === undefined) return [];
+      if (!value || typeof value !== 'object' || !('val' in value) || Array.isArray(value)) throw new TypeError('Return a ' + t + ' (or null), not ' + describe(value) + '. Build the result from ' + t + ' objects.');
+      return t === 'ListNode' ? listToArray(value) : treeToArray(value);
+    }
+    if ((t === 'ListNode[]' || t === 'TreeNode[]') && Array.isArray(value)) {
+      var inner = t.slice(0, -2);
+      return value.map(function (x) { return convertOut(x, inner); });
+    }
     return toPlain(value);
+  }
+
+  function describe(v) {
+    if (Array.isArray(v)) return 'an array';
+    if (typeof v === 'object') return 'an object without a val field';
+    return 'a ' + typeof v + ' (' + String(v).slice(0, 40) + ')';
   }
 
   function isListNode(v) { return v instanceof ListNode || (v && typeof v === 'object' && 'val' in v && 'next' in v && !('left' in v)); }

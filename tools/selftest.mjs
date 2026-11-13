@@ -141,6 +141,30 @@ const lineOk = /line 3/.test(jl.failures[0]?.error) && /line 3/.test(pl.failures
 if (!lineOk) failed++;
 console.log(`${lineOk ? 'ok  ' : 'FAIL'} runtime errors report the user's line number (${jl.failures[0]?.error} | ${pl.failures[0]?.error})`);
 
+// ListNode / TreeNode output conversion agrees between JS and Python
+{
+  const { runJs, runPy } = await import('./lib/problems.mjs');
+  const same = (name, meta, js, py, tests, want) => {
+    const a = runJs(meta, js, tests).results.map((r) => (r.ok ? r.got : r.error));
+    const b = runPy(meta, py, tests).results.map((r) => (r.ok ? r.got : r.error));
+    const ok = JSON.stringify(a) === JSON.stringify(want) && JSON.stringify(b) === JSON.stringify(want);
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` js=${JSON.stringify(a)} py=${JSON.stringify(b)}`}`);
+  };
+  const t = (args) => ({ args, expected: null });
+  const L = { signature: { function: 'f', params: [{ name: 'h', type: 'ListNode' }], returns: 'ListNode' }, compare: 'exact' };
+  same('ListNode empty/single/bare return agree', L, 'function f(h) { if (!h) return; return h; }', 'def f(h):\n    if h is None:\n        return\n    return h', [t([[]]), t([[7]]), t([[1, 2]])], [[], [7], [1, 2]]);
+  const T = { signature: { function: 'f', params: [{ name: 'r', type: 'TreeNode' }], returns: 'TreeNode' }, compare: 'exact' };
+  same('TreeNode empty/single/gaps agree', T, 'function f(r) { return r; }', 'def f(r):\n    return r', [t([[]]), t([[5]]), t([[1, null, 2, 3]])], [[], [5], [1, null, 2, 3]]);
+  const LA = { signature: { function: 'f', params: [{ name: 'hs', type: 'ListNode[]' }], returns: 'ListNode[]' }, compare: 'exact' };
+  same('ListNode[] empty elements stay []', LA, 'function f(hs) { return hs; }', 'def f(hs):\n    return hs', [t([[[], [1, 2]]])], [[[], [1, 2]]]);
+  const bad = runJs(L, 'function f(h) { return [1]; }', [t([[1]])]).results[0];
+  const badPy = runPy(L, 'def f(h):\n    return [1]', [t([[1]])]).results[0];
+  const okBad = !bad.ok && /Return a ListNode/.test(bad.error) && !badPy.ok && /Return a ListNode/.test(badPy.error);
+  if (!okBad) failed++;
+  console.log(`${okBad ? 'ok  ' : 'FAIL'} returning an array for a ListNode is a clear error`);
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(failed ? `\n${failed} self-test(s) failed` : '\nall self-tests passed');
 process.exit(failed ? 1 : 0);

@@ -88,7 +88,7 @@ Body rules:
 - Allowed everyday tags: `p`, `h2`, `h3`, `ul`, `ol`, `li`, `strong`, `em`, `code`, `a`, `table` (with `thead`, `tbody`, `tr`, `th`, `td`), `blockquote`, `br`, `sup`, `sub`, `kbd`.
 - Inside text, escape `<`, `>` and `&` as `&lt;`, `&gt;`, `&amp;` (for example `<code>left &lt; right</code>`). Inside code blocks you do **not** escape anything (see below).
 - Not allowed: `<pre>` outside `<x-code>`, `<script>` (except the JSON block inside a component), `<style>`, `<iframe>`, `style="…"` attributes, images with relative paths.
-- Never put a component inside a `<p>`. Components are block-level, like paragraphs.
+- Never put a component inside a `<p>`. Components are block-level, like paragraphs. The validator reports it.
 - The "Mark lesson complete" button, "Practice this" problem list, archive links and previous/next navigation are added automatically. Do not write them.
 
 ## 4. Lesson components
@@ -368,7 +368,7 @@ Write a short email to my landlord asking them to fix the heating. …
 
 - `<x-task>` (required, HTML): what to do.
 - `<x-start>` (optional, plain text, not escaped): pre-filled into the box, for example the weak prompt. Leave it out for a blank box.
-- `<x-answer>` (required, HTML): a sample answer **and the reasoning**. It may contain `<x-code>`, `<x-prompt>` and callouts.
+- `<x-answer>` (required, HTML): a sample answer **and the reasoning**. It may contain `<x-code>`, `<x-prompt>`, `<x-figure>` and `<x-callout>`. Do not nest a try-it, quiz or tracer inside it.
 - In the algorithms track, use try-its for "trace this by hand" or "predict the output" tasks.
 
 ### 4.8 Prompt and response: `<x-prompt>`
@@ -446,7 +446,7 @@ A problem is one JSON file, `content/practice/<slug>.json`. Unknown keys are err
     "Exactly one pair of different positions adds up to target."
   ],
 
-  "examples": [                         // 1-4. Shown in the statement AND used by "Run".
+  "examples": [                         // 1-3 (4 at most). Shown in the statement AND used by "Run".
     {
       "args": [[40, 25, 75, 15], 100],  // one entry per param, in order
       "expected": [1, 2],
@@ -504,21 +504,23 @@ A problem is one JSON file, `content/practice/<slug>.json`. Unknown keys are err
 
 ### 6.2 Types
 
-Param and return types: `int`, `float`, `string`, `bool`, `any`, `ListNode`, `TreeNode`, and any of these followed by `[]` once or more (`int[]`, `string[][]`, `ListNode[]`). Return type may also be `void` (see in-place). Test values are checked against the declared types. `null` is accepted anywhere (for "return null / None if there is no answer").
+Param and return types: `int`, `float`, `string`, `bool`, `any`, `ListNode`, `TreeNode`, and any of these followed by `[]` once or more (`int[]`, `string[][]`, `ListNode[]`). Return type may also be `void` (see in-place). Test values are checked against the declared types. `null` is accepted anywhere (for "return null / None if there is no answer"), except as the `expected` value of a `ListNode` or `TreeNode` result: an empty list or tree is always written `[]`.
 
-- **`ListNode`**: a singly linked list. In tests you write it as an array: `[3, 8, 1, 9]`; empty list is `[]` (the function receives `null` / `None`). The function receives real nodes with `val` and `next`, and if it returns a `ListNode`, the result is converted back to an array (returning `null` / `None` becomes `[]`). Cycles are detected and reported.
+- **`ListNode`**: a singly linked list. In tests you write it as an array: `[3, 8, 1, 9]`; empty list is `[]` (the function receives `null` / `None`). The function receives real nodes with `val` and `next`, and if it returns a `ListNode`, the result is converted back to an array (returning `null`, `None` or a bare `return;` in JavaScript becomes `[]`). Returning a plain array instead of nodes is reported to the learner as an error. Cycles are detected and reported.
 - **`TreeNode`**: a binary tree. In tests you write it in **level order with `null` for missing children**, the LeetCode format: `[12, 8, 10, 7, 9, null, 15]`. Children of a `null` are not listed. Empty tree is `[]`. Nodes have `val`, `left`, `right`. Returned trees are converted back to level order with trailing `null`s removed.
+- `ListNode[]` and `TreeNode[]` (a list of lists or trees) work the same way for each element, in both directions. Deeper nesting (`ListNode[][]`) is not supported.
 - `ListNode` and `TreeNode` classes are predefined in both languages (`ListNode(val, next)`, `TreeNode(val, left, right)`). Repeat their definition as a comment at the top of the starter, as in `reverse-the-playlist.json` and `generation-averages.json`.
 - Floats that are infinite or NaN are compared as the strings `"Infinity"`, `"-Infinity"`, `"NaN"`. Avoid them.
-- Python tuples come back as lists, sets as sorted lists, dict keys as strings. JS `undefined` becomes `null`.
+- Python tuples come back as lists, sets as sorted lists, dict keys as strings. JavaScript `Set`s come back as arrays in insertion order, `Map`s as objects. JS `undefined` becomes `null`. If the answer is really a set, use `"compare": "unordered"` so either form passes.
+- Integers must stay within ±9,007,199,254,740,991 (JavaScript's safe integer range). Larger values lose precision in tests and in JavaScript answers. If a result can grow past it, ask for it modulo a number in the task.
 
 ### 6.3 Comparison modes
 
 | `compare` | Passes when | Use for |
 |---|---|---|
 | `exact` (default) | deep equality | one correct answer |
-| `unordered` | the returned **top-level** list equals `expected` in any order | "return the items in any order". Inner lists still must match exactly; if inner order is also free, ask for a sorted inner order in the task or use a checker. |
-| `approx` | deep equality, numbers within 1e-6 (absolute or relative) | floating-point results, ML problems |
+| `unordered` | the returned **top-level** list equals `expected` in any order (the result type must be a list, like `int[]`) | "return the items in any order". Inner lists still must match exactly; if inner order is also free, ask for a sorted inner order in the task or use a checker. |
+| `approx` | deep equality, numbers within 1e-6 (absolute or relative) | floating-point results, ML problems. The validator warns if a `float` result uses `exact`, and tells you when a reference "fails" only by rounding. |
 | `checker` | your JavaScript `check` function returns `true` | several valid answers (any valid path, any peak) |
 
 Checker example:
@@ -536,7 +538,7 @@ Checker example:
 ]
 ```
 
-- `args` are the test's args as written in JSON (arrays for ListNode/TreeNode), `got` is the learner's output as plain JSON, `expected` is the test's `expected`. Return `true` to pass. Return `false` or a short string (shown to the learner) to fail.
+- `args` are the test's args as written in JSON (arrays for ListNode/TreeNode), `got` is the learner's output as plain JSON, `expected` is the test's `expected`. Design problems also pass `ops` as a fourth argument. Return `true` to pass. Return `false` or a short string (shown to the learner) to fail.
 - `expected` must still be one valid answer; it is shown as "one valid answer". The validator checks that your checker accepts every `expected`.
 - The checker runs in plain JavaScript for both languages. Keep it simple and deterministic.
 
@@ -580,7 +582,7 @@ Patterns: reuse a label that already exists when it fits so the filter stays use
 ### 6.5 Starter and solution code
 
 - Starter: the signature plus a doc comment with types and a placeholder (`// Your code here` and nothing returned, `pass` in Python). It must parse and must not pass. Do not put hints in the starter.
-- Python names: the function is the snake_case form of `signature.function`. Type hints are welcome (`list[int]`, `ListNode | None`); `List`, `Optional`, `Dict`, `Tuple`, `Set` are also predefined.
+- Python names: the function is the snake_case form of `signature.function`. Arguments are passed by position, so write Python parameter names in snake_case (`max_weight` for a `maxWeight` param). Type hints are welcome (`list[int]`, `ListNode | None`); `List`, `Optional`, `Dict`, `Tuple`, `Set` are also predefined.
 - Reference solutions: the clean, optimal approach from the walkthrough, with short comments. Both must pass every test; the validator runs them (JavaScript in Node, Python with `python3`). Standard library only (`collections`, `heapq`, `math`, `bisect`, `functools` are fine in Python).
 - The JS solution is also used to compute "expected output" when a learner runs custom input, so it must handle any valid input, not just the tests.
 
@@ -608,7 +610,7 @@ node tools/check.mjs                                           # everything
 node tools/check.mjs --no-run content/practice/x.json          # schema only, skip running code
 ```
 
-Output shows `OK`, `WARN` or `FAIL` per file with line numbers for lessons. It exits with code 1 if there is any error. For problems it checks the schema and types, runs both reference solutions against every example and test with the same harness the browser uses, checks that both starters parse and do not pass, and that the checker accepts every expected value. For lessons it checks front matter, tag balance, every component's markup and JSON, links, length and the voice rules.
+Output shows `OK`, `WARN` or `FAIL` per file with line numbers for lessons. It exits with code 1 if there is any error. When a solution hits the time limit, the remaining tests of that run are skipped ("Not run: an earlier test timed out"), so fix the loop first. For problems it checks the schema and types, runs both reference solutions against every example and test with the same harness the browser uses, checks that both starters parse and do not pass, and that the checker accepts every expected value. For lessons it checks front matter, tag balance, every component's markup and JSON, links, length and the voice rules.
 
 To see a page as learners will, the orchestrator runs `node tools/build.mjs` and `node tools/serve.mjs`; writers do not need to.
 
