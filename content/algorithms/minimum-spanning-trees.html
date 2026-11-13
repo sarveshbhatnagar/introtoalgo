@@ -1,0 +1,246 @@
+<!--
+{
+  "title": "Minimum Spanning Trees",
+  "description": "Connect every node at the lowest total cost. Build the cheapest tree with Kruskal's algorithm and union-find, or with Prim's and a heap, in JS and Python.",
+  "minutes": 18,
+  "tags": ["graphs", "greedy", "union-find", "heaps"],
+  "legacy": ["mst"]
+}
+-->
+<p>Six villages, A to F, want fibre internet. A trench can be dug between some pairs of villages, and each one has a price. Every village must be able to reach every other one, directly or through other villages. You want to pay as little as possible in total.</p>
+
+<p>This is not a shortest-path problem. Nobody cares how long the route from A to F is. You care about the total bill for all the trenches together.</p>
+
+<h2>The idea: the answer is a tree</h2>
+
+<p>Look at any plan that contains a loop. Remove the most expensive cable in that loop. Every village is still connected, because the rest of the loop goes around the gap, and the bill went down. So the cheapest plan never has a loop. A connected set of edges with no loop is a tree, and a tree on V nodes always has exactly V − 1 edges. For six villages, you are looking for five cables.</p>
+
+<p>A tree that reaches every node of a graph is a <strong>spanning tree</strong>. The cheapest one is the <strong>minimum spanning tree</strong>, or MST.</p>
+
+<p>Both algorithms in this lesson rest on one rule. Split the villages into any two groups. At least one cable must cross between the groups, or they could not talk. <strong>The cheapest cable crossing the split is always safe to take.</strong> If some plan used a pricier crossing cable instead, you could swap in the cheapest one and the bill would drop or stay the same.</p>
+
+<x-figure caption="Split the villages into {A, B, C} and {D, E, F}. Three cables cross the split. The cheapest, B–D at 5, belongs in a minimum spanning tree.">
+<svg viewBox="0 0 480 250" aria-label="Six villages. A dashed curve separates A, B and C on the left from D, E and F on the right. Three cables cross it: B-D costing 5, highlighted, C-D costing 6, and C-E costing 8.">
+  <line x1="40" y1="125" x2="150" y2="40" class="s-line" stroke-width="2"/>
+  <line x1="40" y1="125" x2="150" y2="210" class="s-line" stroke-width="2"/>
+  <line x1="150" y1="40" x2="150" y2="210" class="s-line" stroke-width="2"/>
+  <line x1="310" y1="105" x2="360" y2="210" class="s-line" stroke-width="2"/>
+  <line x1="310" y1="105" x2="450" y2="115" class="s-line" stroke-width="2"/>
+  <line x1="360" y1="210" x2="450" y2="115" class="s-line" stroke-width="2"/>
+  <line x1="150" y1="40" x2="310" y2="105" class="s-good" stroke-width="4"/>
+  <line x1="150" y1="210" x2="310" y2="105" class="s-accent" stroke-width="2.5"/>
+  <line x1="150" y1="210" x2="360" y2="210" class="s-accent" stroke-width="2.5"/>
+  <path d="M235 8 C200 90 270 160 225 245" class="s-muted s-dash f-none" stroke-width="2"/>
+  <text x="228" y="62" class="t-bold f-good">5</text>
+  <text x="252" y="152" class="t-bold f-accent">6</text>
+  <text x="262" y="230" class="t-bold f-accent">8</text>
+  <text x="84" y="74" class="t-small f-muted">4</text>
+  <text x="84" y="185" class="t-small f-muted">3</text>
+  <text x="158" y="130" class="t-small f-muted">2</text>
+  <text x="322" y="165" class="t-small f-muted">7</text>
+  <text x="380" y="102" class="t-small f-muted">9</text>
+  <text x="410" y="176" class="t-small f-muted">1</text>
+  <circle cx="40" cy="125" r="17" class="f-surface s-line"/><text x="40" y="130" text-anchor="middle" class="t-bold">A</text>
+  <circle cx="150" cy="40" r="17" class="f-surface s-line"/><text x="150" y="45" text-anchor="middle" class="t-bold">B</text>
+  <circle cx="150" cy="210" r="17" class="f-surface s-line"/><text x="150" y="215" text-anchor="middle" class="t-bold">C</text>
+  <circle cx="310" cy="105" r="17" class="f-surface s-line"/><text x="310" y="110" text-anchor="middle" class="t-bold">D</text>
+  <circle cx="360" cy="210" r="17" class="f-surface s-line"/><text x="360" y="215" text-anchor="middle" class="t-bold">E</text>
+  <circle cx="450" cy="115" r="17" class="f-surface s-line"/><text x="450" y="120" text-anchor="middle" class="t-bold">F</text>
+</svg>
+</x-figure>
+
+<p>Here is why the swap always works. Add the cheapest crossing cable to any spanning tree that lacks it. That makes a loop, and the loop must cross the split a second time through another cable that costs at least as much. Remove that one. You still have a spanning tree, and it is no more expensive.</p>
+
+<x-callout type="key">
+<p>A minimum spanning tree uses V − 1 edges and no loops. Taking the cheapest edge that crosses any split is always safe, so you can build the tree greedily, one cheap edge at a time.</p>
+</x-callout>
+
+<h2>Kruskal: cheapest cables first</h2>
+
+<p>Sort every possible cable by price. Walk down the list. Take a cable if its two villages are not connected yet. Skip it if they already are, because it would only close a loop. Stop once you have V − 1 cables.</p>
+
+<p>"Are these two already connected?" while groups keep merging is exactly the question <a href="/algorithms/union-find.html">Union-Find</a> answers. <code>union(u, v)</code> returns false when <code>u</code> and <code>v</code> already share a root, which is your signal to skip.</p>
+
+<x-tracer title="Kruskal on the six villages">
+<script type="application/json">
+{"code": ["sort cables by cost", "for each cable (u, v) in that order:", "  if find(u) == find(v): skip (would close a loop)", "  else: union(u, v), take the cable", "  stop when you have V − 1 cables"], "codeLang": "text", "steps": [
+    {"caption": "Sort the cables by cost. Nothing is built yet, so every village is its own group.", "line": 1, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": []}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"]}, "vars": {"total": 0, "groups": "{A} {B} {C} {D} {E} {F}"}}, 
+    {"caption": "E–F costs 1. E and F are in different groups, so this cable connects something new. Take it.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"]], "highlight": ["E", "F"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [0], "mark": [0]}, "vars": {"total": 1, "groups": "{A} {B} {C} {D} {E,F}"}}, 
+    {"caption": "B–C costs 2. Different groups: take it.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"]], "highlight": ["B", "C"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [1], "mark": [0, 1]}, "vars": {"total": 3, "groups": "{A} {B,C} {D} {E,F}"}}, 
+    {"caption": "A–C costs 3. A is alone and C is with B, so this joins them. Take it. A, B and C are now one group.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"]], "highlight": ["A", "C"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [2], "mark": [0, 1, 2]}, "vars": {"total": 6, "groups": "{A,B,C} {D} {E,F}"}}, 
+    {"caption": "A–B costs 4. But <code>find(A)</code> and <code>find(B)</code> are the same root: A and B are already connected through C. This cable would only close a loop. Skip it.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"]], "highlight": ["A", "B"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [3], "mark": [0, 1, 2], "dim": [3]}, "vars": {"total": 6, "groups": "{A,B,C} {D} {E,F}"}}, 
+    {"caption": "B–D costs 5. D was alone: take it.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"], ["B", "D"]], "highlight": ["B", "D"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [4], "mark": [0, 1, 2, 4], "dim": [3]}, "vars": {"total": 11, "groups": "{A,B,C,D} {E,F}"}}, 
+    {"caption": "C–D costs 6. C and D are already in the same group. Skip it.", "line": 3, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"], ["B", "D"]], "highlight": ["C", "D"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [5], "mark": [0, 1, 2, 4], "dim": [3, 5]}, "vars": {"total": 11, "groups": "{A,B,C,D} {E,F}"}}, 
+    {"caption": "D–E costs 7. It joins the big group with {E,F}. Take it. That is 5 cables for 6 villages, a full tree, so stop.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"], ["B", "D"], ["D", "E"]], "highlight": ["D", "E"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "highlight": [6], "mark": [0, 1, 2, 4, 6], "dim": [3, 5]}, "vars": {"total": 18, "groups": "{A,B,C,D,E,F}"}}, 
+    {"caption": "Done: total cost 1 + 2 + 3 + 5 + 7 = 18. C–E and D–F were never even looked at. Two cables were skipped because each would have closed a loop.", "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "highlightEdges": [["E", "F"], ["B", "C"], ["A", "C"], ["B", "D"], ["D", "E"]], "mark": ["A", "B", "C", "D", "E", "F"]}, "array": {"label": "cables, cheapest first", "values": ["E–F 1", "B–C 2", "A–C 3", "A–B 4", "B–D 5", "C–D 6", "D–E 7", "C–E 8", "D–F 9"], "mark": [0, 1, 2, 4, 6], "dim": [3, 5]}, "vars": {"total": 18, "groups": "{A,B,C,D,E,F}"}}]}
+</script>
+</x-tracer>
+
+<p>Each cable Kruskal takes is safe by the rule above: split the villages into "the group on one end" and "everything else", and the cable is the cheapest crossing that split, since every cheaper one was already looked at.</p>
+
+<x-code>
+<pre lang="js">
+// n villages numbered 0..n-1. edges: list of [cost, u, v].
+// UnionFind: the class from the union-find lesson.
+function kruskal(n, edges) {
+  const sorted = [...edges].sort((a, b) => a[0] - b[0]); // cheapest first
+  const uf = new UnionFind(n);
+  const chosen = [];
+  let total = 0;
+  for (const [cost, u, v] of sorted) {
+    if (uf.union(u, v)) { // false means u and v were already connected
+      chosen.push([u, v, cost]);
+      total += cost;
+      if (chosen.length === n - 1) break; // a spanning tree has n - 1 edges
+    }
+  }
+  return chosen.length === n - 1 ? { total, chosen } : null; // null: not connected
+}
+</pre>
+<pre lang="py">
+# n villages numbered 0..n-1. edges: list of (cost, u, v).
+# UnionFind: the class from the union-find lesson.
+def kruskal(n, edges):
+    uf = UnionFind(n)
+    chosen = []
+    total = 0
+    for cost, u, v in sorted(edges):  # cheapest first
+        if uf.union(u, v):  # False means u and v were already connected
+            chosen.append((u, v, cost))
+            total += cost
+            if len(chosen) == n - 1:  # a spanning tree has n - 1 edges
+                break
+    return (total, chosen) if len(chosen) == n - 1 else None  # None: not connected
+</pre>
+</x-code>
+
+<h2>Prim: grow one tree outward</h2>
+
+<p>Prim's algorithm starts at any village and grows a single tree. At each step it takes the cheapest cable that leaves the tree, which is the cheapest cable crossing the split "in the tree" versus "not yet". A min-heap keeps those cables ready, just as in <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a>. Cables that point back into the tree become stale and get skipped.</p>
+
+<x-tracer title="Prim from A">
+<script type="application/json">
+{"code": ["add start to the tree; push its cables", "while the tree is missing villages:", "  pop the cheapest cable (cost, v)", "  if v is already in the tree: skip", "  add v to the tree; total += cost", "  push v's cables to villages not in the tree"], "codeLang": "text", "steps": [
+    {"caption": "Start at A, any village works. A joins the tree for free. Push both of A's cables: A–C 3 and A–B 4.", "line": 1, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A"], "highlightEdges": [], "highlight": ["A"]}, "array": {"label": "heap (cost, cable)", "values": ["3 A–C", "4 A–B"], "highlight": [0]}, "vars": {"total": 0, "in tree": 1}}, 
+    {"caption": "Pop the cheapest cable leaving the tree: A–C 3. C joins. Push C's cables to villages outside the tree: C–B 2, C–D 6, C–E 8.", "line": 5, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C"], "highlightEdges": [["A", "C"]], "highlight": ["C"]}, "array": {"label": "heap (cost, cable)", "values": ["2 C–B", "4 A–B", "6 C–D", "8 C–E"], "highlight": [0]}, "vars": {"total": 3, "in tree": 2}}, 
+    {"caption": "Pop C–B 2. B joins. Push B–D 5. B–A is not pushed: A is already in the tree.", "line": 5, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B"], "highlightEdges": [["A", "C"], ["B", "C"]], "highlight": ["B"]}, "array": {"label": "heap (cost, cable)", "values": ["4 A–B", "5 B–D", "6 C–D", "8 C–E"], "highlight": [0]}, "vars": {"total": 5, "in tree": 3}}, 
+    {"caption": "Pop A–B 4. B is already in the tree, so this cable would close a loop. Skip it.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B"], "highlightEdges": [["A", "C"], ["B", "C"]], "highlight": ["B"]}, "array": {"label": "heap (cost, cable)", "values": ["5 B–D", "6 C–D", "8 C–E"], "highlight": [0]}, "vars": {"total": 5, "in tree": 3}}, 
+    {"caption": "Pop B–D 5. D joins. Push D–E 7 and D–F 9.", "line": 5, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B", "D"], "highlightEdges": [["A", "C"], ["B", "C"], ["B", "D"]], "highlight": ["D"]}, "array": {"label": "heap (cost, cable)", "values": ["6 C–D", "7 D–E", "8 C–E", "9 D–F"], "highlight": [0]}, "vars": {"total": 10, "in tree": 4}}, 
+    {"caption": "Pop C–D 6. D is already in. Skip.", "line": 4, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B", "D"], "highlightEdges": [["A", "C"], ["B", "C"], ["B", "D"]], "highlight": ["D"]}, "array": {"label": "heap (cost, cable)", "values": ["7 D–E", "8 C–E", "9 D–F"], "highlight": [0]}, "vars": {"total": 10, "in tree": 4}}, 
+    {"caption": "Pop D–E 7. E joins. Push E–F 1, the cheapest cable on the map. It only became useful once E was in the tree.", "line": 5, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B", "D", "E"], "highlightEdges": [["A", "C"], ["B", "C"], ["B", "D"], ["D", "E"]], "highlight": ["E"]}, "array": {"label": "heap (cost, cable)", "values": ["1 E–F", "8 C–E", "9 D–F"], "highlight": [0]}, "vars": {"total": 17, "in tree": 5}}, 
+    {"caption": "Pop E–F 1. F joins. All 6 villages are in, so stop. Total 3 + 2 + 5 + 7 + 1 = 18, the same as Kruskal, with the same five cables.", "line": 5, "graph": {"nodes": [{"id": "A", "x": 5, "y": 50}, {"id": "B", "x": 30, "y": 12}, {"id": "C", "x": 30, "y": 88}, {"id": "D", "x": 62, "y": 40}, {"id": "E", "x": 75, "y": 88}, {"id": "F", "x": 95, "y": 45}], "edges": [["A", "B", 4], ["A", "C", 3], ["B", "C", 2], ["B", "D", 5], ["C", "D", 6], ["C", "E", 8], ["D", "E", 7], ["D", "F", 9], ["E", "F", 1]], "mark": ["A", "C", "B", "D", "E", "F"], "highlightEdges": [["A", "C"], ["B", "C"], ["B", "D"], ["D", "E"], ["E", "F"]], "highlight": ["F"]}, "array": {"label": "heap (cost, cable)", "values": ["8 C–E", "9 D–F"], "highlight": [0]}, "vars": {"total": 18, "in tree": 6}}]}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+// graph: adjacency list, graph[u] = list of [v, cost]. Villages 0..n-1.
+// heapPush / heapPop: the pair heap used in the Dijkstra lesson.
+function prim(graph, start = 0) {
+  const inTree = new Set();
+  const heap = [[0, start]]; // [cost of the cable that reaches node, node]
+  let total = 0;
+  while (heap.length > 0 && inTree.size < graph.length) {
+    const [cost, node] = heapPop(heap);
+    if (inTree.has(node)) continue; // already joined by a cheaper cable
+    inTree.add(node);
+    total += cost;
+    for (const [next, cableCost] of graph[node]) {
+      if (!inTree.has(next)) heapPush(heap, [cableCost, next]);
+    }
+  }
+  return inTree.size === graph.length ? total : null; // null: not connected
+}
+</pre>
+<pre lang="py">
+import heapq
+
+# graph: adjacency list, graph[u] = list of (v, cost). Villages 0..n-1.
+def prim(graph, start=0):
+    in_tree = set()
+    heap = [(0, start)]  # (cost of the cable that reaches node, node)
+    total = 0
+    while heap and len(in_tree) < len(graph):
+        cost, node = heapq.heappop(heap)
+        if node in in_tree:
+            continue  # already joined by a cheaper cable
+        in_tree.add(node)
+        total += cost
+        for nxt, cable_cost in graph[node]:
+            if nxt not in in_tree:
+                heapq.heappush(heap, (cable_cost, nxt))
+    return total if len(in_tree) == len(graph) else None  # None: not connected
+</pre>
+</x-code>
+
+<p>Put the code next to Dijkstra's and only one thing really differs: the number pushed onto the heap. Dijkstra pushes <code>d + cost</code>, the whole trip from the start. Prim pushes just <code>cost</code>, the price of the one cable. Dijkstra asks "how far is this from home?"; Prim asks "how cheap is it to hook this on?".</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Kruskal", "time": "O(E log E)", "space": "O(V + E)", "note": "Sorting the edges dominates. The union-find work is almost O(1) per edge." },
+    { "name": "Prim (binary heap)", "time": "O(E log V)", "space": "O(V + E)", "note": "Each edge can push one heap entry, and each push or pop is O(log E) = O(log V)." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>Both are fast. Pick Kruskal when the input is a plain list of edges, and Prim when you already have an adjacency list or the graph is dense.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Expecting short routes from the tree">
+<p>An MST minimises the total bill, not any one trip. In this tree, the only route from A to F is A–C–B–D–E–F, costing 18. In the full graph, A–C–E–F costs 12. If the question is "cheapest way from X to Y", use <a href="/algorithms/dijkstra.html">Dijkstra</a>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Not checking that everything got connected">
+<p>If the graph is in two pieces, no spanning tree exists. Kruskal will run out of edges with fewer than V − 1 chosen, and Prim will empty its heap with villages left out. Check the count, as both functions do, instead of returning a total that silently ignores part of the map.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Using it on one-way edges">
+<p>Kruskal and Prim assume cables work both ways. On a directed graph, the cheapest set of arrows that lets one root reach everything is a different problem, with a different algorithm.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Laying cable, pipes or power lines is the direct use. MSTs also cluster data: build the tree over points, cut its most expensive edges, and the pieces that fall apart are the clusters.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A connected graph has 10 nodes and 25 edges. How many edges are in its minimum spanning tree?",
+      "options": [
+        { "text": "9", "correct": true, "why": "Any spanning tree on V nodes has exactly V − 1 edges: 10 − 1 = 9." },
+        { "text": "10", "why": "With 10 edges on 10 nodes, there would be a loop, and dropping its priciest edge would be cheaper." },
+        { "text": "It depends on the weights", "why": "The weights decide <em>which</em> 9 edges, not how many." }
+      ]
+    },
+    {
+      "question": "Kruskal reaches the cable D–G. <code>find(D)</code> and <code>find(G)</code> return the same root. What should it do?",
+      "options": [
+        { "text": "Take it if it is cheaper than the cables already chosen", "why": "Every cable already chosen was cheaper, since the list is sorted. And taking it would close a loop either way." },
+        { "text": "Skip it", "correct": true, "why": "D and G are already connected, so this cable adds a loop and no new connection." },
+        { "text": "Take it and remove the most expensive cable on the loop", "why": "That cable would be D–G itself, because all the others were processed earlier and so are cheaper or equal." }
+      ]
+    },
+    {
+      "question": "Prim and Dijkstra both pop from a min-heap. What does Prim push for a neighbour?",
+      "options": [
+        { "text": "The total distance from the start", "why": "That is Dijkstra. It builds shortest routes, not the cheapest network." },
+        { "text": "The cost of the single cable to that neighbour", "correct": true, "why": "Prim only cares how cheap it is to attach the neighbour to the tree." },
+        { "text": "The number of cables from the start", "why": "That would make it a BFS, ignoring the prices completely." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Kruskal and Prim are both greedy: each takes the cheapest safe step and never looks back, and the cut rule proves that never goes wrong. <a href="/algorithms/greedy-algorithms.html">Greedy Algorithms</a> shows when that kind of shortcut works, and how to spot when it does not.</p>

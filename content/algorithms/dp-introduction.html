@@ -1,0 +1,277 @@
+<!--
+{
+  "title": "Introduction to Dynamic Programming",
+  "description": "Turn a slow recursive solution into a fast one: remember answers with memoisation, then fill a table bottom-up. One example, start to finish.",
+  "minutes": 18,
+  "tags": ["dynamic programming", "recursion", "memoisation"]
+}
+-->
+<p>You are building the change dispenser for a ticket machine. It has coins worth 1, 4 and 5, as many of each as it needs. A customer is owed 8. The machine should hand over as few coins as possible.</p>
+
+<p>The obvious rule is "always take the biggest coin that fits". That gives 5, then 1, 1, 1: four coins. But 4 + 4 is only two coins. Taking the biggest coin first looked safe and was wrong. To get the right answer you have to consider every first coin, and that is where this lesson starts.</p>
+
+<h2>Version 1: honest, slow recursion</h2>
+
+<p>Think about the first coin the machine hands over. It is a 1, a 4 or a 5. Whichever it is, what remains is the same problem with a smaller amount. If you owe 8 and hand over a 4, you now owe 4.</p>
+
+<p>So the fewest coins for 8 is one coin plus the best of three smaller answers: the fewest coins for 7, for 4, or for 3. Each of those breaks down the same way, until you reach 0, which needs no coins at all.</p>
+
+<x-code title="Slow: try every first coin">
+<pre lang="js">
+// Fewest coins that add up to amount (Infinity if impossible).
+function fewestCoins(amount, coins) {
+  if (amount === 0) return 0;
+  let best = Infinity;
+  for (const coin of coins) {
+    if (coin <= amount) {
+      best = Math.min(best, 1 + fewestCoins(amount - coin, coins));
+    }
+  }
+  return best;
+}
+
+fewestCoins(8, [1, 4, 5]); // 2
+</pre>
+<pre lang="py">
+import math
+
+# Fewest coins that add up to amount (math.inf if impossible).
+def fewest_coins(amount, coins):
+    if amount == 0:
+        return 0
+    best = math.inf
+    for coin in coins:
+        if coin <= amount:
+            best = min(best, 1 + fewest_coins(amount - coin, coins))
+    return best
+
+fewest_coins(8, [1, 4, 5])  # 2
+</pre>
+</x-code>
+
+<p>This is correct. For 8 it makes 35 calls. For 30 it makes 255,904 calls. There are only 31 different amounts between 0 and 30, so almost all of that work is repeated.</p>
+
+<x-figure caption="The first two levels of calls for fewestCoins(8). Amount 3 is already being solved three separate times, and each of those copies solves 2, 1 and 0 again underneath.">
+<svg viewBox="0 0 480 200" aria-label="A call tree. 8 calls 7, 4 and 3. 7 calls 6, 3 and 2. 4 calls 3 and 0. 3 calls 2. The three boxes for amount 3 are highlighted.">
+  <line x1="240" y1="44" x2="110" y2="86" class="s-line" stroke-width="2"/>
+  <line x1="240" y1="44" x2="295" y2="86" class="s-line" stroke-width="2"/>
+  <line x1="240" y1="44" x2="420" y2="86" class="s-line" stroke-width="2"/>
+  <line x1="110" y1="116" x2="40" y2="156" class="s-line" stroke-width="2"/>
+  <line x1="110" y1="116" x2="110" y2="156" class="s-line" stroke-width="2"/>
+  <line x1="110" y1="116" x2="180" y2="156" class="s-line" stroke-width="2"/>
+  <line x1="295" y1="116" x2="260" y2="156" class="s-line" stroke-width="2"/>
+  <line x1="295" y1="116" x2="330" y2="156" class="s-line" stroke-width="2"/>
+  <line x1="420" y1="116" x2="420" y2="156" class="s-line" stroke-width="2"/>
+  <text x="160" y="62" class="t-small f-muted">−1</text>
+  <text x="272" y="62" class="t-small f-muted">−4</text>
+  <text x="340" y="62" class="t-small f-muted">−5</text>
+  <rect x="210" y="14" width="60" height="30" rx="6" class="f-surface s-line"/><text x="240" y="34" text-anchor="middle">8</text>
+  <rect x="80" y="86" width="60" height="30" rx="6" class="f-surface s-line"/><text x="110" y="106" text-anchor="middle">7</text>
+  <rect x="265" y="86" width="60" height="30" rx="6" class="f-surface s-line"/><text x="295" y="106" text-anchor="middle">4</text>
+  <rect x="390" y="86" width="60" height="30" rx="6" class="f-accent-soft s-accent"/><text x="420" y="106" text-anchor="middle">3</text>
+  <rect x="10" y="156" width="60" height="30" rx="6" class="f-surface s-line"/><text x="40" y="176" text-anchor="middle">6</text>
+  <rect x="80" y="156" width="60" height="30" rx="6" class="f-accent-soft s-accent"/><text x="110" y="176" text-anchor="middle">3</text>
+  <rect x="150" y="156" width="60" height="30" rx="6" class="f-surface s-line"/><text x="180" y="176" text-anchor="middle">2</text>
+  <rect x="230" y="156" width="60" height="30" rx="6" class="f-accent-soft s-accent"/><text x="260" y="176" text-anchor="middle">3</text>
+  <rect x="300" y="156" width="60" height="30" rx="6" class="f-surface s-line"/><text x="330" y="176" text-anchor="middle">0</text>
+  <rect x="390" y="156" width="60" height="30" rx="6" class="f-surface s-line"/><text x="420" y="176" text-anchor="middle">2</text>
+</svg>
+</x-figure>
+
+<p>You saw the same waste with Fibonacci in <a href="/algorithms/recursion.html">Recursion</a>. Two things are true here, and together they are the signal for dynamic programming:</p>
+
+<ul>
+<li><strong>The big answer is built from smaller answers.</strong> The best way to pay 8 is one coin plus the best way to pay what is left.</li>
+<li><strong>The smaller problems repeat.</strong> Different paths through the recursion keep landing on the same amount.</li>
+</ul>
+
+<h2>Version 2: remember answers (memoisation)</h2>
+
+<p>The fix is almost embarrassingly small. Keep a map from amount to answer. Before working anything out, check the map. After working it out, store it. Each amount is now solved once; every later visit is a single lookup.</p>
+
+<x-code title="Memoised: same recursion, plus a map">
+<pre lang="js">
+function fewestCoinsMemo(amount, coins, memo = new Map()) {
+  if (amount === 0) return 0;
+  if (memo.has(amount)) return memo.get(amount); // solved before
+  let best = Infinity;
+  for (const coin of coins) {
+    if (coin <= amount) {
+      best = Math.min(best, 1 + fewestCoinsMemo(amount - coin, coins, memo));
+    }
+  }
+  memo.set(amount, best); // remember for next time
+  return best;
+}
+</pre>
+<pre lang="py">
+def fewest_coins_memo(amount, coins, memo=None):
+    if memo is None:
+        memo = {}
+    if amount == 0:
+        return 0
+    if amount in memo:  # solved before
+        return memo[amount]
+    best = math.inf
+    for coin in coins:
+        if coin <= amount:
+            best = min(best, 1 + fewest_coins_memo(amount - coin, coins, memo))
+    memo[amount] = best  # remember for next time
+    return best
+</pre>
+</x-code>
+
+<p>For 30, the call count drops from 255,904 to 84. The logic did not change at all. You only stopped throwing answers away.</p>
+
+<h2>Version 3: fill a table from the bottom</h2>
+
+<p>Memoisation still works top-down: it starts at 8 and recurses toward 0. Notice which answers it needs, though. Every amount only depends on <em>smaller</em> amounts. So you can skip the recursion and work upward: solve 0, then 1, then 2, and so on. By the time you reach any amount, everything it needs is already in the table. This is called <strong>tabulation</strong>.</p>
+
+<x-tracer title="Fill best[a] for every amount up to 8">
+<script type="application/json">
+{
+  "code": [
+    "best = [∞] * (amount + 1)",
+    "best[0] = 0",
+    "for a from 1 to amount:",
+    "  for coin in coins:",
+    "    if coin <= a:",
+    "      best[a] = min(best[a], 1 + best[a - coin])",
+    "return best[amount]"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Make a slot for every amount from 0 to 8. Fill them all with ∞, which means \"no way found yet\". Paying 0 needs 0 coins, so <code>best[0] = 0</code>.", "line": 2, "array": {"label": "best", "values": [0, "∞", "∞", "∞", "∞", "∞", "∞", "∞", "∞"], "mark": [0]}, "vars": {"coins": "1, 4, 5"}},
+    {"caption": "Amount 1. Only the 1 coin fits. Hand it over and you still owe 0, which takes 0 coins. So <code>best[1] = 1 + 0 = 1</code>.", "line": 6, "array": {"label": "best", "values": [0, 1, "∞", "∞", "∞", "∞", "∞", "∞", "∞"], "pointers": {"a": 1}, "highlight": [0], "mark": [1]}, "vars": {"a": 1, "best[a]": 1}},
+    {"caption": "Amount 2. Only the 1 coin fits. Hand it over and you still owe 1, which takes 1 coin. So <code>best[2] = 1 + 1 = 2</code>.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, "∞", "∞", "∞", "∞", "∞", "∞"], "pointers": {"a": 2}, "highlight": [1], "mark": [2]}, "vars": {"a": 2, "best[a]": 2}},
+    {"caption": "Amount 3. Only the 1 coin fits. Hand it over and you still owe 2, which takes 2 coins. So <code>best[3] = 1 + 2 = 3</code>.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, "∞", "∞", "∞", "∞", "∞"], "pointers": {"a": 3}, "highlight": [2], "mark": [3]}, "vars": {"a": 3, "best[a]": 3}},
+    {"caption": "Amount 4. Try each first coin and look up what is left. Coin 1 leaves 3: 1 + 3 = 4. Coin 4 leaves 0: 1 + 0 = 1. The smallest is 1.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, 1, "∞", "∞", "∞", "∞"], "pointers": {"a": 4}, "highlight": [3, 0], "mark": [4]}, "vars": {"a": 4, "best[a]": 1}},
+    {"caption": "Amount 5. Try each first coin and look up what is left. Coin 1 leaves 4: 1 + 1 = 2. Coin 4 leaves 1: 1 + 1 = 2. Coin 5 leaves 0: 1 + 0 = 1. The smallest is 1.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, 1, 1, "∞", "∞", "∞"], "pointers": {"a": 5}, "highlight": [4, 1, 0], "mark": [5]}, "vars": {"a": 5, "best[a]": 1}},
+    {"caption": "Amount 6. Try each first coin and look up what is left. Coin 1 leaves 5: 1 + 1 = 2. Coin 4 leaves 2: 1 + 2 = 3. Coin 5 leaves 1: 1 + 1 = 2. The smallest is 2.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, 1, 1, 2, "∞", "∞"], "pointers": {"a": 6}, "highlight": [5, 2, 1], "mark": [6]}, "vars": {"a": 6, "best[a]": 2}},
+    {"caption": "Amount 7. Try each first coin and look up what is left. Coin 1 leaves 6: 1 + 2 = 3. Coin 4 leaves 3: 1 + 3 = 4. Coin 5 leaves 2: 1 + 2 = 3. The smallest is 3.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, 1, 1, 2, 3, "∞"], "pointers": {"a": 7}, "highlight": [6, 3, 2], "mark": [7]}, "vars": {"a": 7, "best[a]": 3}},
+    {"caption": "Amount 8. Try each first coin and look up what is left. Coin 1 leaves 7: 1 + 3 = 4. Coin 4 leaves 4: 1 + 1 = 2. Coin 5 leaves 3: 1 + 3 = 4. The smallest is 2.", "line": 6, "array": {"label": "best", "values": [0, 1, 2, 3, 1, 1, 2, 3, 2], "pointers": {"a": 8}, "highlight": [7, 4, 3], "mark": [8]}, "vars": {"a": 8, "best[a]": 2}},
+    {"caption": "Done: <code>best[8] = 2</code>, two 4s. Filling the whole table took 17 lookups. The slow recursion made 35 calls for the same answer, and the gap explodes as the amount grows.", "line": 7, "array": {"label": "best", "values": [0, 1, 2, 3, 1, 1, 2, 3, 2], "mark": [8]}, "vars": {"answer": 2, "lookups": 17}}
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code title="Tabulation: a loop instead of recursion">
+<pre lang="js">
+function fewestCoinsTable(amount, coins) {
+  const best = new Array(amount + 1).fill(Infinity);
+  best[0] = 0;
+  for (let a = 1; a <= amount; a++) {
+    for (const coin of coins) {
+      if (coin <= a) best[a] = Math.min(best[a], 1 + best[a - coin]);
+    }
+  }
+  return best[amount]; // Infinity means "cannot be paid"
+}
+
+fewestCoinsTable(8, [1, 4, 5]); // 2
+</pre>
+<pre lang="py">
+def fewest_coins_table(amount, coins):
+    best = [math.inf] * (amount + 1)
+    best[0] = 0
+    for a in range(1, amount + 1):
+        for coin in coins:
+            if coin <= a:
+                best[a] = min(best[a], 1 + best[a - coin])
+    return best[amount]  # math.inf means "cannot be paid"
+
+fewest_coins_table(8, [1, 4, 5])  # 2
+</pre>
+</x-code>
+
+<p>Memoisation and tabulation do the same work. Memoisation is often easier to write first, because it is your recursion plus three lines. Tabulation has no recursion, so it cannot overflow the call stack on a large amount, and it is usually a little faster.</p>
+
+<h2>The five-step recipe</h2>
+
+<p>Every dynamic programming solution in this module is written the same way. Get these five answers down in words before you write any code:</p>
+
+<ol>
+<li><strong>State.</strong> What does one cell of the table mean? Here: <code>best[a]</code> is the fewest coins that add up to exactly <code>a</code>.</li>
+<li><strong>Recurrence.</strong> How is a cell built from smaller cells? Here: <code>best[a] = 1 + min(best[a − coin])</code> over every coin that fits.</li>
+<li><strong>Base cases.</strong> Which cells do you know without asking anything? Here: <code>best[0] = 0</code>.</li>
+<li><strong>Order.</strong> Which way do you fill the table so each cell's inputs are ready? Here: from 0 upward.</li>
+<li><strong>Answer.</strong> Which cell holds the result? Here: <code>best[amount]</code>.</li>
+</ol>
+
+<x-callout type="key">
+<p>Dynamic programming is recursion that never solves the same subproblem twice. Find the state, write the recurrence, and either remember answers as you recurse or fill the table in an order where every answer you need is already there.</p>
+</x-callout>
+
+<p>Step 1 is where the thinking happens. If you cannot say in one sentence what a cell means, the recurrence will not come. The other four steps usually follow from it.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Plain recursion", "time": "O(kᴬ)", "space": "O(A)", "note": "A is the amount and k the number of coins. Up to k calls per call, and the depth can reach A." },
+    { "name": "Memoisation", "time": "O(A × k)", "space": "O(A)", "note": "Each amount is solved once and tries k coins. The map and the call stack both hold up to A entries." },
+    { "name": "Tabulation", "time": "O(A × k)", "space": "O(A)", "note": "The same A × k steps in two plain loops. No call stack." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>The rule of thumb for any DP: <strong>time = number of cells × work per cell</strong>. Here there are A + 1 cells and each one tries k coins.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Starting the table at 0 instead of ∞">
+<p>If every cell starts at 0, <code>min(best[a], …)</code> keeps the 0 and every answer comes out as 0. Start "fewest" problems at ∞ so any real option beats it. ∞ also handles amounts that cannot be paid: with coins 4 and 5, <code>best[3]</code> stays ∞, and 1 + ∞ is still ∞.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A memo that is created fresh on every call">
+<p>If you write <code>const memo = new Map()</code> inside the function body, each call gets its own empty map and nothing is ever reused. The memo must be shared by every call for the same input: pass it along, as above, or keep it outside. In Python, never write <code>memo={}</code> as a default argument: that one dictionary survives between separate calls, so answers for one set of coins leak into the next.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Filling the table in the wrong order">
+<p>If a cell reads <code>best[a − coin]</code>, that cell must be filled first. Loop over amounts downward and you read ∞ everywhere. When you write the loop, point at one cell and check that every cell it reads has already been computed.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Spreadsheets recalculate formulas in an order where every cell's inputs are ready first, and build tools cache the result of every step they have already done. Both are the same "solve once, reuse" idea at work.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Coins are 1, 3 and 4. Using the table, what is <code>best[6]</code>?",
+      "options": [
+        { "text": "3", "why": "That is the greedy answer, 4 + 1 + 1. The table also tries starting with a 3, which leaves 3, and <code>best[3]</code> is 1." },
+        { "text": "2", "correct": true, "why": "3 + 3 = 6. In the table: coin 3 leaves 3, and <code>best[3] = 1</code>, so 1 + 1 = 2. No single coin is worth 6, so 2 is the minimum." },
+        { "text": "1", "why": "That would need a coin worth 6. Only <code>best[0]</code> plus one coin can give 1." }
+      ]
+    },
+    {
+      "question": "Why is memoised recursion so much faster than plain recursion here?",
+      "options": [
+        { "text": "It tries fewer coins at each step", "why": "It tries exactly the same coins. The saving comes from not repeating whole subproblems." },
+        { "text": "Each amount is worked out once, then looked up", "correct": true, "why": "Plain recursion solves amount 3 many times over. With a memo, the second visit is a single lookup, so the total work is about amounts × coins." },
+        { "text": "It uses a loop instead of recursion", "why": "That is tabulation. Memoisation still recurses; it just stops early when the answer is known." }
+      ]
+    },
+    {
+      "question": "In the five-step recipe, which step decides the direction of the loop?",
+      "options": [
+        { "text": "State", "why": "The state says what a cell means. It does not say which cell to fill first." },
+        { "text": "Base cases", "why": "Base cases are where the filling starts from, but the loop direction comes from what the recurrence reads." },
+        { "text": "Order", "correct": true, "why": "The order makes sure every cell a cell depends on is already filled. Here each amount reads smaller amounts, so you go upward." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The coin table was one row of cells, each looking back at a few earlier cells. That shape covers a whole family of problems, from choosing work shifts to counting ways up a staircase, and it is the subject of <a href="/algorithms/dp-1d.html">1D Dynamic Programming</a>. Use the five steps there on purpose, even when the answer looks obvious.</p>

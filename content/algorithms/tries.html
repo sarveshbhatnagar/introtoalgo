@@ -1,0 +1,274 @@
+<!--
+{
+  "title": "Tries",
+  "description": "Store words letter by letter in a tree so shared prefixes are kept once. Look up and autocomplete in time set by word length, not word count.",
+  "minutes": 14,
+  "tags": ["trees", "strings", "trie"]
+}
+-->
+<p>You type <code>su</code> into a search box and suggestions appear before you finish the word: <code>sun</code>, <code>sum</code>, <code>summer</code>. The app holds a dictionary of thousands of words and answers on every keystroke. Scanning the whole list each time works for a small list and gets slower as the list grows.</p>
+
+<p>Look at the words themselves. Thousands of them start with <code>s</code>. Hundreds start with <code>su</code>. If the words were filed so that everything starting with <code>su</code> sat in one place, a suggestion would be two steps away: go to <code>s</code>, then to <code>u</code>, and read off what is there. That filing system is a trie.</p>
+
+<h2>The idea: one letter per step</h2>
+
+<p>A trie (pronounced "try", from re<em>trie</em>val) is a tree where each edge is a letter. The path from the root to any node spells out a prefix. Words that share a beginning share the same path, so the prefix <code>su</code> is stored once, however many words start with it.</p>
+
+<p>Each node holds two things:</p>
+
+<ul>
+<li><strong>children</strong>: a map from a letter to the next node, one entry for each letter that can follow this prefix;</li>
+<li><strong>isWord</strong>: a flag that says whether a whole word ends here.</li>
+</ul>
+
+<p>The flag matters because a word can be a prefix of another word. Both <code>so</code> and <code>sort</code> pass through the node for <code>so</code>. Only the flag tells you that <code>so</code> is a word on its own and <code>sor</code> is not.</p>
+
+<x-figure caption="One trie node. It does not store its own letter: the letter is on the edge that leads to it.">
+<svg viewBox="0 0 480 170" aria-label="A box labelled node for so. Inside, isWord is true and children maps r to an arrow pointing at another box labelled node for sor, whose isWord is false.">
+  <defs><marker id="trie-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
+  <text x="20" y="22" class="t-sans t-small f-muted">node for "so"</text>
+  <rect x="20" y="32" width="190" height="96" rx="8" class="f-surface s-line"/>
+  <text x="36" y="62">isWord: <tspan class="f-good t-bold">true</tspan></text>
+  <text x="36" y="100">children: { r: ● }</text>
+  <line x1="194" y1="96" x2="268" y2="96" class="s-accent" stroke-width="2" marker-end="url(#trie-arrow)"/>
+  <text x="270" y="22" class="t-sans t-small f-muted">node for "sor"</text>
+  <rect x="270" y="32" width="190" height="96" rx="8" class="f-surface s-line"/>
+  <text x="286" y="62">isWord: <tspan class="f-bad t-bold">false</tspan></text>
+  <text x="286" y="100">children: { t: ● }</text>
+  <text x="240" y="158" text-anchor="middle" class="t-sans t-small f-muted">"sor" is a path to "sort", but not a word itself</text>
+</svg>
+</x-figure>
+
+<h2>Building and searching a trie</h2>
+
+<p>To <strong>insert</strong> a word, start at the root and take one letter at a time. If a child for that letter exists, step into it. If not, create it. After the last letter, set the flag.</p>
+
+<p>To <strong>search</strong>, walk the same way. If a letter has no child, stop: nothing stored starts with that prefix. If you reach the end of the input, you have the node for that prefix. For "is this a word?", check its flag. For "does any word start with this?", reaching the node is enough. For autocomplete, collect every flagged node below it.</p>
+
+<p>Watch five words go in, then three questions. Green nodes have the flag set, with the word they complete written below.</p>
+
+<x-tracer title="Insert so, sort, sun, sum, sky, then search">
+<script type="application/json">
+{"code": ["insert(word):", "  node = root", "  for each letter: go to (or create) that child", "  mark node as the end of a word", "", "find(prefix):", "  node = root", "  for each letter: go to that child, or stop if missing", "  return node"],
+  "codeLang": "text", "steps": [
+    {"caption": "An empty trie is a single root node with no letters. Every word will hang below it.", "line": 2, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}], "edges": [], "directed": true, "labels": {}}}, 
+    {"caption": "Insert <code>so</code>. There is no <code>s</code> child yet, so create it, then create <code>o</code> below it. Mark <code>o</code> green: a word ends there.", "line": 4, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}], "edges": [["•", "s"], ["s", "o"]], "directed": true, "highlight": ["s", "o"], "mark": [], "labels": {"o": "so"}}}, 
+    {"caption": "Insert <code>sort</code>. <code>s</code> and <code>o</code> already exist, so walk down them for free. Only <code>r</code> and <code>t</code> are new. <code>o</code> stays green: <code>so</code> is still a word.", "line": 3, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["o", "r"], ["r", "t"]], "directed": true, "highlight": ["r", "t"], "mark": ["o"], "highlightEdges": [["•", "s"], ["s", "o"]], "labels": {"o": "so", "t": "sort"}}}, 
+    {"caption": "Insert <code>sun</code>. It shares only the <code>s</code>. A new branch starts below it.", "line": 3, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["o", "r"], ["u", "n"], ["r", "t"]], "directed": true, "highlight": ["u", "n"], "mark": ["o", "t"], "highlightEdges": [["•", "s"]], "labels": {"o": "so", "t": "sort", "n": "sun"}}}, 
+    {"caption": "Insert <code>sum</code>. <code>s</code> and <code>u</code> are shared with <code>sun</code>, so only one node is new.", "line": 3, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["o", "r"], ["u", "n"], ["u", "m"], ["r", "t"]], "directed": true, "highlight": ["m"], "mark": ["o", "t", "n"], "highlightEdges": [["•", "s"], ["s", "u"]], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum"}}}, 
+    {"caption": "Insert <code>sky</code>. The five words have 15 letters, but shared prefixes mean the trie needs only 9 letter nodes.", "line": 3, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "highlight": ["k", "y"], "mark": ["o", "t", "n", "m"], "highlightEdges": [["•", "s"]], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}, "vars": {"words": 5, "letters": 15, "nodes": 9}}, 
+    {"caption": "Autocomplete <code>su</code>. Start at the root and follow <code>s</code>.", "line": 8, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "highlight": ["s"], "mark": ["o", "t", "n", "m", "y"], "highlightEdges": [["•", "s"]], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}}, 
+    {"caption": "Then follow <code>u</code>. Two steps, one per letter, no matter how many words are stored. Everything below this node starts with <code>su</code>; the other branches are irrelevant.", "line": 9, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "highlight": ["u"], "mark": ["o", "t", "n", "m", "y"], "highlightEdges": [["•", "s"], ["s", "u"]], "dim": ["o", "r", "t", "k", "y"], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}}, 
+    {"caption": "Collect every green node below <code>u</code>: <code>sun</code> and <code>sum</code>. Those are the suggestions.", "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "mark": ["o", "t", "n", "m", "y"], "highlightEdges": [["•", "s"], ["s", "u"], ["u", "n"], ["u", "m"]], "dim": ["o", "r", "t", "k", "y"], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}, "vars": {"suggestions": "sun, sum"}}, 
+    {"caption": "Is <code>sor</code> a word? Follow <code>s</code>, <code>o</code>, <code>r</code>. The path exists, but <code>r</code> is not green, so no word ends there. The answer is no, even though <code>sor</code> is a valid prefix.", "line": 9, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "highlight": ["r"], "mark": ["o", "t", "n", "m", "y"], "highlightEdges": [["•", "s"], ["s", "o"], ["o", "r"]], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}, "vars": {"has(sor)": "false", "startsWith(sor)": "true"}}, 
+    {"caption": "Is <code>sea</code> a word? After <code>s</code> there is no <code>e</code> child, so the search stops after 2 letters. Missing words are often rejected faster than found ones.", "line": 8, "graph": {"nodes": [{"id": "•", "x": 50, "y": 0}, {"id": "s", "x": 50, "y": 18}, {"id": "o", "x": 20, "y": 36}, {"id": "u", "x": 50, "y": 36}, {"id": "k", "x": 80, "y": 36}, {"id": "r", "x": 20, "y": 54}, {"id": "n", "x": 42, "y": 54}, {"id": "m", "x": 58, "y": 54}, {"id": "y", "x": 80, "y": 54}, {"id": "t", "x": 20, "y": 72}], "edges": [["•", "s"], ["s", "o"], ["s", "u"], ["s", "k"], ["o", "r"], ["u", "n"], ["u", "m"], ["k", "y"], ["r", "t"]], "directed": true, "highlight": ["s"], "mark": ["o", "t", "n", "m", "y"], "highlightEdges": [["•", "s"]], "labels": {"o": "so", "t": "sort", "n": "sun", "m": "sum", "y": "sky"}}, "vars": {"has(sea)": "false"}}]}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>A map of children works for any alphabet, including capital letters, digits and accented characters.</p>
+
+<x-code>
+<pre lang="js">
+class TrieNode {
+  constructor() {
+    this.children = new Map(); // letter -> TrieNode
+    this.isWord = false;       // does a word end here?
+  }
+}
+
+class Trie {
+  constructor() { this.root = new TrieNode(); }
+
+  insert(word) {
+    let node = this.root;
+    for (const ch of word) {
+      if (!node.children.has(ch)) node.children.set(ch, new TrieNode());
+      node = node.children.get(ch);
+    }
+    node.isWord = true; // mark the end of the word
+  }
+
+  // Follow prefix letter by letter. null if the path breaks.
+  find(prefix) {
+    let node = this.root;
+    for (const ch of prefix) {
+      node = node.children.get(ch);
+      if (node === undefined) return null;
+    }
+    return node;
+  }
+
+  has(word) {
+    const node = this.find(word);
+    return node !== null && node.isWord;
+  }
+
+  startsWith(prefix) { return this.find(prefix) !== null; }
+}
+</pre>
+<pre lang="py">
+class TrieNode:
+    def __init__(self):
+        self.children = {}    # letter -> TrieNode
+        self.is_word = False  # does a word end here?
+
+class Trie:
+    def __init__(self):
+        self.root = TrieNode()
+
+    def insert(self, word):
+        node = self.root
+        for ch in word:
+            if ch not in node.children:
+                node.children[ch] = TrieNode()
+            node = node.children[ch]
+        node.is_word = True  # mark the end of the word
+
+    # Follow prefix letter by letter. None if the path breaks.
+    def find(self, prefix):
+        node = self.root
+        for ch in prefix:
+            node = node.children.get(ch)
+            if node is None:
+                return None
+        return node
+
+    def has(self, word):
+        node = self.find(word)
+        return node is not None and node.is_word
+
+    def starts_with(self, prefix):
+        return self.find(prefix) is not None
+</pre>
+</x-code>
+
+<p>Autocomplete is <code>find</code> followed by a <a href="/algorithms/tree-traversals.html">preorder traversal</a> of the subtree, building each word as it goes down:</p>
+
+<x-code>
+<pre lang="js">
+// Every stored word that begins with prefix.
+function complete(trie, prefix) {
+  const out = [];
+  const start = trie.find(prefix);
+  if (start === null) return out;
+  const walk = (node, word) => {
+    if (node.isWord) out.push(word);
+    for (const [ch, child] of node.children) walk(child, word + ch);
+  };
+  walk(start, prefix);
+  return out;
+}
+
+const trie = new Trie();
+for (const w of ["so", "sort", "sun", "sum", "sky"]) trie.insert(w);
+complete(trie, "su"); // ["sun", "sum"]
+trie.has("sor");      // false
+trie.startsWith("sor"); // true
+</pre>
+<pre lang="py">
+# Every stored word that begins with prefix.
+def complete(trie, prefix):
+    out = []
+    start = trie.find(prefix)
+    if start is None:
+        return out
+
+    def walk(node, word):
+        if node.is_word:
+            out.append(word)
+        for ch, child in node.children.items():
+            walk(child, word + ch)
+
+    walk(start, prefix)
+    return out
+
+trie = Trie()
+for w in ["so", "sort", "sun", "sum", "sky"]:
+    trie.insert(w)
+complete(trie, "su")      # ['sun', 'sum']
+trie.has("sor")           # False
+trie.starts_with("sor")   # True
+</pre>
+</x-code>
+
+<h2>Cost</h2>
+
+<p>Every operation walks one node per letter of its input. If the word has length <code>L</code>, insert, <code>has</code> and <code>startsWith</code> each take O(L) steps, whether the trie holds 5 words or 5 million. Autocomplete adds the size of the subtree it reads, which is the price of listing the answers.</p>
+
+<p>Memory is at most one node per letter inserted, and less when words share prefixes. Each node carries a map, though, so a trie usually uses more memory than a plain list of the same words.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Hash set of words", "time": "O(L) lookup", "space": "O(total letters)", "note": "Great for \"is this a word?\". A prefix question has to check every word: O(n · L)." },
+    { "name": "Trie", "time": "O(L) per operation", "space": "O(total letters)", "note": "Insert, lookup and prefix check walk one node per letter. Autocomplete adds the size of the answer." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>A trie turns "which words start with this?" into a walk of one step per letter, because all words with the same prefix share one path.</p>
+</x-callout>
+
+<p>If you only ever ask "is this exact word stored?", a hash set from <a href="/algorithms/hash-tables.html">Hash Tables</a> is simpler and smaller. Reach for a trie when the questions are about prefixes. A sorted array with binary search can also find the range of words with a given prefix, which is a good choice when the word list never changes.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Forgetting the end-of-word flag">
+<p>Without <code>isWord</code>, every prefix looks like a word: after inserting <code>sort</code>, <code>has("so")</code> and <code>has("sor")</code> would both say yes. Set the flag at the end of <code>insert</code>, and check it in <code>has</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Mixing up has and startsWith">
+<p><code>has("sor")</code> is false and <code>startsWith("sor")</code> is true. They share the walk and differ only in the last check. Problems that ask "can this still become a word?" want <code>startsWith</code>. That is how word-search puzzles stop exploring a dead path early.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A fixed array of 26 children everywhere">
+<p>Many examples give each node an array of 26 slots, one per lowercase letter. That is fast, but most slots are empty, and it breaks on capitals, digits or accented letters. Use a map unless you know the alphabet is small and fixed.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Search boxes, phone keyboards and spell checkers use tries or compressed versions of them. Network routers use a binary trie on the bits of IP addresses to find the longest matching prefix for every packet they forward.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "The trie holds <code>so</code>, <code>sort</code>, <code>sun</code>, <code>sum</code> and <code>sky</code>. How many new nodes does inserting <code>sold</code> create?",
+      "options": [
+        { "text": "4", "why": "<code>s</code> and <code>o</code> already exist from <code>so</code>, so you walk down them without creating anything." },
+        { "text": "2", "correct": true, "why": "Walk <code>s</code> and <code>o</code>, then create <code>l</code> and <code>d</code>, and set the flag on <code>d</code>." },
+        { "text": "1", "why": "Only the prefix <code>so</code> is shared. <code>l</code> does not exist yet, and neither does <code>d</code>." }
+      ]
+    },
+    {
+      "question": "In the same trie, what does <code>has(\"su\")</code> return?",
+      "options": [
+        { "text": "true, because the path s, u exists", "why": "The path exists, but that only means some word starts with <code>su</code>. That is <code>startsWith</code>." },
+        { "text": "false, because the node for su is not flagged as a word", "correct": true, "why": "No word ends at <code>su</code>. Its flag is still false." },
+        { "text": "It throws an error", "why": "The walk succeeds; it just ends on a node without the flag." }
+      ]
+    },
+    {
+      "question": "A trie holds 1 million words. How many steps does <code>has(\"summer\")</code> take, roughly?",
+      "options": [
+        { "text": "About 6", "correct": true, "why": "One step per letter. The number of stored words does not matter." },
+        { "text": "About 20", "why": "That is log₂ of a million, the cost of binary search over a sorted list. A trie does not depend on the word count." },
+        { "text": "About 1 million", "why": "That would be scanning a list. The trie never looks at words that do not share the prefix." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Tries, heaps and search trees all lean on one thing: a short tree. <a href="/algorithms/balanced-trees.html">Balanced Trees</a> shows how search trees keep themselves short, whatever order the data arrives in.</p>

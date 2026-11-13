@@ -1,0 +1,255 @@
+<!--
+{
+  "title": "Longest Increasing Subsequence",
+  "description": "Find the longest rising sequence hidden in a list: an O(n²) table where each cell ends at one element, then an O(n log n) method with binary search.",
+  "minutes": 18,
+  "tags": ["dynamic programming", "binary search"]
+}
+-->
+<p>Eight books stand on a shelf, with heights 5, 2, 8, 6, 3, 6, 9, 7. You want the books that stay to rise from left to right, strictly taller each time, and you are only allowed to take books off, never to reorder them. What is the fewest you can remove?</p>
+
+<p>Turn it around: find the most books you can keep. Those form the <strong>longest increasing subsequence</strong> (LIS): the longest list of values, in their original order but not necessarily side by side, where each one is bigger than the one before. Here it has length 4, for example 2, 3, 6, 9, so you remove 4 books.</p>
+
+<x-figure caption="The heights as bars. The highlighted books, 2, 3, 6 and 9, rise from left to right. No 5 books do.">
+<svg viewBox="0 0 500 220" aria-label="Eight bars with heights 5, 2, 8, 6, 3, 6, 9, 7. The bars at positions 1, 4, 5 and 6, with heights 2, 3, 6 and 9, are highlighted and joined by a dashed rising line.">
+  <rect x="40" y="100" width="40" height="90" rx="4" class="f-surface s-line"/>
+  <text x="60" y="92" text-anchor="middle">5</text>
+  <rect x="96" y="154" width="40" height="36" rx="4" class="f-accent-soft s-accent"/>
+  <text x="116" y="146" text-anchor="middle" class="t-bold">2</text>
+  <rect x="152" y="46" width="40" height="144" rx="4" class="f-surface s-line"/>
+  <text x="172" y="38" text-anchor="middle">8</text>
+  <rect x="208" y="82" width="40" height="108" rx="4" class="f-surface s-line"/>
+  <text x="228" y="74" text-anchor="middle">6</text>
+  <rect x="264" y="136" width="40" height="54" rx="4" class="f-accent-soft s-accent"/>
+  <text x="284" y="128" text-anchor="middle" class="t-bold">3</text>
+  <rect x="320" y="82" width="40" height="108" rx="4" class="f-accent-soft s-accent"/>
+  <text x="340" y="74" text-anchor="middle" class="t-bold">6</text>
+  <rect x="376" y="28" width="40" height="162" rx="4" class="f-accent-soft s-accent"/>
+  <text x="396" y="20" text-anchor="middle" class="t-bold">9</text>
+  <rect x="432" y="64" width="40" height="126" rx="4" class="f-surface s-line"/>
+  <text x="452" y="56" text-anchor="middle">7</text>
+  <polyline points="116,168 284,150 340,96 396,42" class="s-accent f-none s-dash" stroke-width="2"/>
+  <line x1="30" y1="190" x2="488" y2="190" class="s-line" stroke-width="2"/>
+  <text x="60" y="210" text-anchor="middle" class="t-small f-muted">0</text>
+  <text x="116" y="210" text-anchor="middle" class="t-small f-muted">1</text>
+  <text x="172" y="210" text-anchor="middle" class="t-small f-muted">2</text>
+  <text x="228" y="210" text-anchor="middle" class="t-small f-muted">3</text>
+  <text x="284" y="210" text-anchor="middle" class="t-small f-muted">4</text>
+  <text x="340" y="210" text-anchor="middle" class="t-small f-muted">5</text>
+  <text x="396" y="210" text-anchor="middle" class="t-small f-muted">6</text>
+  <text x="452" y="210" text-anchor="middle" class="t-small f-muted">7</text>
+</svg>
+</x-figure>
+
+<h2>Pick the state carefully</h2>
+
+<p>The <a href="/algorithms/dp-1d.html">1D DP</a> habit says: let <code>best[i]</code> be the answer for the first <code>i</code> books. Try it. To decide whether book <code>i</code> can join, you need to know the <em>last height</em> of the sequence you are extending, and "the best for the first <code>i</code> books" does not tell you that.</p>
+
+<p>So pin the end down. Make each cell about sequences that <em>end exactly at</em> book <code>i</code>. Then the last height is simply <code>h[i]</code>, and extending is easy to check.</p>
+
+<ol>
+<li><strong>State.</strong> <code>len[i]</code> is the length of the longest increasing subsequence that ends at index <code>i</code>, using <code>h[i]</code> as its last value.</li>
+<li><strong>Recurrence.</strong> The value before <code>h[i]</code> is some earlier, smaller <code>h[j]</code>. Take the best of those: <code>len[i] = 1 + max(len[j])</code> over all <code>j &lt; i</code> with <code>h[j] &lt; h[i]</code>.</li>
+<li><strong>Base case.</strong> If no earlier value is smaller, <code>len[i] = 1</code>: the book on its own.</li>
+<li><strong>Order.</strong> Each cell reads cells to its left. Fill left to right.</li>
+<li><strong>Answer.</strong> The <em>largest</em> value anywhere in <code>len</code>, because the longest sequence can end at any book.</li>
+</ol>
+
+<p>Unlike the shifts in the 1D lesson, each cell here looks back at <em>every</em> earlier cell, not just two.</p>
+
+<x-tracer title="Fill len[i] for heights 5, 2, 8, 6, 3, 6, 9, 7">
+<script type="application/json">
+{
+  "code": [
+    "for i from 0 to n - 1:",
+    "  len[i] = 1                     # just h[i] on its own",
+    "  for j from 0 to i - 1:",
+    "    if h[j] < h[i]:",
+    "      len[i] = max(len[i], len[j] + 1)",
+    "return max(len)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Height 5. Nothing comes before it, so the only sequence ending here is the 5 itself: <code>len[0] = 1</code>.", "line": 2, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 0}, "highlight": []}, {"label": "len", "values": [1, null, null, null, null, null, null, null], "pointers": {"i": 0}}]},
+    {"caption": "Height 2. No earlier book is shorter, so nothing can come before it: <code>len[1] = 1</code>.", "line": 2, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 1}, "highlight": []}, {"label": "len", "values": [1, 1, null, null, null, null, null, null], "pointers": {"i": 1}}]},
+    {"caption": "Height 8. Both earlier books are shorter, so 8 can extend a sequence ending at either. The best of those has length 1, so <code>len[2] = 1 + 1 = 2</code>.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 2}, "highlight": [0, 1]}, {"label": "len", "values": [1, 1, 2, null, null, null, null, null], "pointers": {"i": 2}, "highlight": [0, 1]}]},
+    {"caption": "Height 6. Shorter books before it: 5, 2. The longest sequence ending at one of them has length 1, so <code>len[3] = 1 + 1 = 2</code>.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 3}, "highlight": [0, 1]}, {"label": "len", "values": [1, 1, 2, 2, null, null, null, null], "pointers": {"i": 3}, "highlight": [0, 1]}]},
+    {"caption": "Height 3. Shorter books before it: 2. The longest sequence ending at one of them has length 1, so <code>len[4] = 1 + 1 = 2</code>. That ties with the 8 and the 6, but ends lower, which matters next.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 4}, "highlight": [1]}, {"label": "len", "values": [1, 1, 2, 2, 2, null, null, null], "pointers": {"i": 4}, "highlight": [1]}]},
+    {"caption": "Height 6. Shorter books before it: 5, 2, 3. The longest sequence ending at one of them has length 2, so <code>len[5] = 2 + 1 = 3</code>.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 5}, "highlight": [0, 1, 4]}, {"label": "len", "values": [1, 1, 2, 2, 2, 3, null, null], "pointers": {"i": 5}, "highlight": [0, 1, 4]}]},
+    {"caption": "Height 9. Shorter books before it: 5, 2, 8, 6, 3, 6. The longest sequence ending at one of them has length 3, so <code>len[6] = 3 + 1 = 4</code>.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 6}, "highlight": [0, 1, 2, 3, 4, 5]}, {"label": "len", "values": [1, 1, 2, 2, 2, 3, 4, null], "pointers": {"i": 6}, "highlight": [0, 1, 2, 3, 4, 5]}]},
+    {"caption": "Height 7. Shorter books before it: 5, 2, 6, 3, 6. The longest sequence ending at one of them has length 3, so <code>len[7] = 3 + 1 = 4</code>.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 7}, "highlight": [0, 1, 3, 4, 5]}, {"label": "len", "values": [1, 1, 2, 2, 2, 3, 4, 4], "pointers": {"i": 7}, "highlight": [0, 1, 3, 4, 5]}]},
+    {"caption": "The answer is the largest value in <code>len</code>, which is 4, here at index 6. Walking back through shorter books with length one less gives 2, 3, 6, 9. Keep those 4 books and pull the other 4. This took 28 comparisons, one for every pair of books.", "line": 6, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "mark": [1, 4, 5, 6]}, {"label": "len", "values": [1, 1, 2, 2, 2, 3, 4, 4], "mark": [6]}], "vars": {"answer": 4, "comparisons": 28}}
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code title="O(n²): one cell per position">
+<pre lang="js">
+function lisLength(heights) {
+  const n = heights.length;
+  const len = new Array(n).fill(1); // each value alone has length 1
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < i; j++) {
+      if (heights[j] < heights[i]) {
+        len[i] = Math.max(len[i], len[j] + 1); // extend the run ending at j
+      }
+    }
+  }
+  return len.reduce((a, b) => Math.max(a, b), 0); // best over every end
+}
+
+lisLength([5, 2, 8, 6, 3, 6, 9, 7]); // 4
+</pre>
+<pre lang="py">
+def lis_length(heights):
+    n = len(heights)
+    length = [1] * n  # each value alone has length 1
+    for i in range(n):
+        for j in range(i):
+            if heights[j] < heights[i]:
+                length[i] = max(length[i], length[j] + 1)  # extend the run ending at j
+    return max(length, default=0)  # best over every end
+
+lis_length([5, 2, 8, 6, 3, 6, 9, 7])  # 4
+</pre>
+</x-code>
+
+<h2>Faster: keep the lowest ending for each length</h2>
+
+<p>The table compares every pair, which is about 50 million comparisons for 10,000 values. A cleverer record cuts that down. Keep a list called <code>tails</code>, where <code>tails[k]</code> is the <em>smallest last value</em> of any increasing subsequence of length <code>k + 1</code> seen so far.</p>
+
+<p>Why the smallest? If two sequences have the same length, the one that ends lower is easier to extend: anything that fits after the higher one also fits after the lower one. So for each length, you only need to remember the lowest ending.</p>
+
+<p>For each new value <code>x</code>, find the first tail that is <code>&gt;= x</code>. If there is none, <code>x</code> is bigger than every tail and makes a longer sequence: append it. Otherwise replace that tail with <code>x</code>: a sequence of that length can now end lower. <code>tails</code> stays sorted the whole time, so the search is a <a href="/algorithms/binary-search.html">binary search</a>.</p>
+
+<x-tracer title="The tails method on the same shelf">
+<script type="application/json">
+{
+  "code": [
+    "tails = []",
+    "for x in heights:",
+    "  k = first index with tails[k] >= x   # binary search",
+    "  if k == len(tails): append x",
+    "  else: tails[k] = x",
+    "return len(tails)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption": "Height 5. <code>tails</code> is empty, so 5 starts a sequence of length 1.", "line": 4, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 0}, "highlight": [0]}, {"label": "tails", "values": [5], "mark": [0]}]},
+    {"caption": "Height 2. The first tail that is not shorter is 5, at index 0. Replace it: a sequence of length 1 can now end at 2 instead of 5, which leaves more room to grow.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 1}, "highlight": [1]}, {"label": "tails", "values": [2], "mark": [0]}]},
+    {"caption": "Height 8 is taller than every tail, so it extends the longest sequence. Append it: there is now an increasing sequence of length 2.", "line": 4, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 2}, "highlight": [2]}, {"label": "tails", "values": [2, 8], "mark": [1]}]},
+    {"caption": "Height 6. The first tail that is not shorter is 8, at index 1. Replace it: a sequence of length 2 can now end at 6 instead of 8, which leaves more room to grow.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 3}, "highlight": [3]}, {"label": "tails", "values": [2, 6], "mark": [1]}]},
+    {"caption": "Height 3. The first tail that is not shorter is 6, at index 1. Replace it: a sequence of length 2 can now end at 3 instead of 6, which leaves more room to grow.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 4}, "highlight": [4]}, {"label": "tails", "values": [2, 3], "mark": [1]}]},
+    {"caption": "Height 6 is taller than every tail, so it extends the longest sequence. Append it: there is now an increasing sequence of length 3.", "line": 4, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 5}, "highlight": [5]}, {"label": "tails", "values": [2, 3, 6], "mark": [2]}]},
+    {"caption": "Height 9 is taller than every tail, so it extends the longest sequence. Append it: there is now an increasing sequence of length 4.", "line": 4, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 6}, "highlight": [6]}, {"label": "tails", "values": [2, 3, 6, 9], "mark": [3]}]},
+    {"caption": "Height 7. The first tail that is not shorter is 9, at index 3. Replace it: a sequence of length 4 can now end at 7 instead of 9, which leaves more room to grow.", "line": 5, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7], "pointers": {"i": 7}, "highlight": [7]}, {"label": "tails", "values": [2, 3, 6, 7], "mark": [3]}]},
+    {"caption": "Four tails, so the answer is 4, the same as the table. Each height cost one binary search instead of a scan of every earlier book. Only the length of <code>tails</code> matters, as the mistakes below explain.", "line": 6, "arrays": [{"label": "heights", "values": [5, 2, 8, 6, 3, 6, 9, 7]}, {"label": "tails", "values": [2, 3, 6, 7]}], "vars": {"answer": 4}}
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code title="O(n log n) with binary search">
+<pre lang="js">
+function lisLengthFast(heights) {
+  const tails = [];
+  for (const x of heights) {
+    let lo = 0;
+    let hi = tails.length; // find the first tail >= x
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (tails[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    tails[lo] = x; // replaces a tail, or appends when lo === tails.length
+  }
+  return tails.length;
+}
+
+lisLengthFast([5, 2, 8, 6, 3, 6, 9, 7]); // 4
+</pre>
+<pre lang="py">
+from bisect import bisect_left
+
+def lis_length_fast(heights):
+    tails = []
+    for x in heights:
+        k = bisect_left(tails, x)  # first tail >= x
+        if k == len(tails):
+            tails.append(x)  # longer than anything so far
+        else:
+            tails[k] = x  # same length, lower ending
+    return len(tails)
+
+lis_length_fast([5, 2, 8, 6, 3, 6, 9, 7])  # 4
+</pre>
+</x-code>
+
+<x-callout type="key">
+<p>When the answer depends on where a sequence ends, put the end into the state: "the best sequence that ends here". Then take the best over all the ends.</p>
+</x-callout>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Table of len[i]", "time": "O(n²)", "space": "O(n)", "note": "Each of n cells looks back at up to n earlier cells. Easy to walk back and list the sequence." },
+    { "name": "Tails + binary search", "time": "O(n log n)", "space": "O(n)", "note": "One binary search over at most n tails per value. Gives the length directly." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Returning the last cell">
+<p><code>len[n − 1]</code> is only the best sequence that ends at the last value. On 1, 2, 3, 0 it is 1, but the answer is 3. Take the maximum over the whole table.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Reading tails as the answer">
+<p><code>tails</code> holds the right <em>length</em>, but it is not always a sequence you could keep. On 3, 4, 5, 1 it ends as 1, 4, 5, and the 1 comes last in the list, so 1, 4, 5 is not in order. If you need the actual values, use the table and walk back.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Strict or not strict">
+<p>"Increasing" here means strictly bigger, so equal heights cannot both stay. That is why the search looks for the first tail <code>&gt;= x</code> (<code>bisect_left</code>). If equal values are allowed, look for the first tail <code>&gt; x</code> instead (<code>bisect_right</code>), and use <code>&lt;=</code> in the table version.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "For heights <code>[3, 1, 4, 1, 5]</code>, what is <code>len</code> in the O(n²) table?",
+      "options": [
+        { "text": "[1, 1, 2, 1, 3]", "correct": true, "why": "4 can follow 3 or 1 (length 2). The second 1 has nothing smaller before it (length 1). 5 can follow the 4 (length 3)." },
+        { "text": "[1, 1, 2, 2, 3]", "why": "The second 1 cannot follow the first: the sequence must be strictly increasing." },
+        { "text": "[1, 2, 3, 4, 5]", "why": "That assumes every value extends the previous one. 1 is smaller than 3, so it cannot follow it." }
+      ]
+    },
+    {
+      "question": "<code>tails</code> is <code>[2, 5, 9]</code> and the next value is 6. What happens?",
+      "options": [
+        { "text": "Append 6, giving length 4", "why": "6 is not bigger than every tail: 9 is bigger. Only a value above 9 makes a longer sequence." },
+        { "text": "Replace 9 with 6", "correct": true, "why": "9 is the first tail that is not smaller than 6. A sequence of length 3 can now end at 6, which is easier to extend later." },
+        { "text": "Replace 5 with 6", "why": "That would raise the ending for length 2, which only makes it harder to extend. Replace the first tail that is at least 6." }
+      ]
+    },
+    {
+      "question": "Why does <code>len[i]</code> mean \"the longest sequence that <em>ends at</em> i\" rather than \"the longest within the first i values\"?",
+      "options": [
+        { "text": "So you know the last value when you try to extend it", "correct": true, "why": "To add <code>h[i]</code>, the previous value must be smaller. Fixing the end at <code>j</code> means that value is exactly <code>h[j]</code>." },
+        { "text": "Because it uses less memory", "why": "Both definitions need one cell per position. The difference is whether the recurrence can be written at all." },
+        { "text": "Because the answer is always in the last cell", "why": "With this definition the answer is the maximum over all cells, not the last one." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>That completes the dynamic programming module. If the tails method felt like magic, rework <a href="/algorithms/binary-search.html">Binary Search</a> with the "first position where the condition holds" version in mind. Then try a problem from the practice list below and write the five steps in words before you write any code.</p>

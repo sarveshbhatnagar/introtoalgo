@@ -1,0 +1,207 @@
+<!--
+{
+  "title": "Recursion",
+  "description": "Solve a problem by solving smaller copies of it. Base cases, the call stack, and when recursion is the right tool, traced step by step in JS and Python.",
+  "minutes": 15,
+  "tags": ["recursion", "fundamentals"]
+}
+-->
+<p>You want to know how many files are in your Photos folder. Inside it are some photos, but also folders: "2023", "2024", "Holidays". Inside "Holidays" are more folders, one per trip. Inside those, maybe more. You do not know how deep it goes.</p>
+
+<p>A plain loop struggles here, because you would need one loop per level and you do not know how many levels there are. But there is a very natural way to describe the job: "The number of files in a folder is the files directly in it, plus the number of files in each of its subfolders." That sentence uses the job to describe itself. That is recursion.</p>
+
+<h2>The idea: solve a smaller copy</h2>
+
+<p>A recursive function is a function that calls itself on a smaller piece of the problem. Every recursive function has two parts:</p>
+
+<ul>
+<li><strong>Base case.</strong> A piece so small you can answer it directly, without calling yourself. For the folders: a single file counts as 1.</li>
+<li><strong>Recursive case.</strong> Break the problem into smaller pieces, call yourself on each, and combine the answers. For the folders: add up the counts of everything inside.</li>
+</ul>
+
+<p>The base case is what stops the calls. Each recursive call must move closer to it. A subfolder always has fewer things inside than the folder around it, so the calls keep shrinking until they hit single files.</p>
+
+<p>Here a folder is a list, and each item in it is either a file (a string) or another folder (a list). The Photos example might look like <code>["a", ["b", "c"], "d"]</code>: two files at the top, plus a subfolder holding two more.</p>
+
+<x-code>
+<pre lang="js">
+function countFiles(item) {
+  if (typeof item === "string") return 1; // base case: one file
+  let total = 0;                          // recursive case: a folder
+  for (const child of item) {
+    total += countFiles(child);           // trust the smaller call
+  }
+  return total;
+}
+
+countFiles(["a", ["b", "c"], "d"]);                 // 4
+countFiles(["a.jpg", ["b.jpg", ["c.jpg", []]], []]); // 3
+</pre>
+<pre lang="py">
+def count_files(item):
+    if isinstance(item, str):
+        return 1  # base case: one file
+    total = 0     # recursive case: a folder
+    for child in item:
+        total += count_files(child)  # trust the smaller call
+    return total
+
+count_files(["a", ["b", "c"], "d"])                  # 4
+count_files(["a.jpg", ["b.jpg", ["c.jpg", []]], []])  # 3
+</pre>
+</x-code>
+
+<p>Look at how little the function does. It never tries to handle grandchildren or great-grandchildren. It only says "ask each child for its count and add them up". Any depth works, including empty folders: the loop does not run and the count is 0.</p>
+
+<x-callout type="key">
+<p>When you write a recursive call, assume it already works for the smaller input. Your only jobs are to handle the base case and to combine the smaller answers correctly.</p>
+</x-callout>
+
+<h2>Trace it: the call stack</h2>
+
+<p>"Trust the smaller call" can feel like magic. It is not. When a function calls another function, the computer pauses the first one, remembers exactly where it was and what its variables held, and runs the new call. When that call returns, the paused one carries on. The paused calls wait in a pile called the <strong>call stack</strong>: newest on top, and only the top one is running.</p>
+
+<p>Step through <code>countFiles(["a", ["b", "c"], "d"])</code>. The top row is the call stack, oldest call on the left.</p>
+
+<x-tracer title="Counting files in nested folders">
+<script type="application/json">
+{
+  "code": [
+    "countFiles(item):",
+    "  if item is a file: return 1",
+    "  total = 0",
+    "  for each child in item:",
+    "    total += countFiles(child)",
+    "  return total"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Call <code>countFiles</code> on the whole folder, called root here. It is a folder, not a file, so set its total to 0.", "line": 3, "arrays": [ { "label": "call stack", "values": ["root"], "highlight": [0] }, { "label": "root", "values": ["a", "[b, c]", "d"] } ], "vars": { "root total": 0, "calls so far": 1 } },
+    { "caption": "The first child is <code>\"a\"</code>. Root pauses and calls <code>countFiles(\"a\")</code>. A new call goes on top of the stack.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root", "a"], "highlight": [1] }, { "label": "root", "values": ["a", "[b, c]", "d"], "pointers": { "child": 0 } } ], "vars": { "root total": 0, "calls so far": 2 } },
+    { "caption": "<code>\"a\"</code> is a file. Base case: return 1 straight away. No more calls needed.", "line": 2, "arrays": [ { "label": "call stack", "values": ["root", "a"], "mark": [1] }, { "label": "root", "values": ["a", "[b, c]", "d"], "pointers": { "child": 0 } } ], "vars": { "root total": 0, "returned": 1 } },
+    { "caption": "The call for <code>\"a\"</code> is finished and leaves the stack. Root wakes up where it paused and adds the 1.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root"], "highlight": [0] }, { "label": "root", "values": ["a", "[b, c]", "d"], "pointers": { "child": 0 }, "dim": [0] } ], "vars": { "root total": 1 } },
+    { "caption": "The next child is a folder, <code>[b, c]</code>. Root pauses again and calls <code>countFiles([b, c])</code>. That call starts its own total at 0.", "line": 3, "arrays": [ { "label": "call stack", "values": ["root", "[b, c]"], "highlight": [1] }, { "label": "[b, c]", "values": ["b", "c"] } ], "vars": { "root total": 1, "[b, c] total": 0, "calls so far": 3 } },
+    { "caption": "Its first child is <code>\"b\"</code>, a file. Three calls are now waiting on the stack. <code>\"b\"</code> returns 1.", "line": 2, "arrays": [ { "label": "call stack", "values": ["root", "[b, c]", "b"], "mark": [2] }, { "label": "[b, c]", "values": ["b", "c"], "pointers": { "child": 0 } } ], "vars": { "root total": 1, "[b, c] total": 0, "calls so far": 4 } },
+    { "caption": "Back in <code>[b, c]</code>: its total becomes 1. Each call has its own <code>total</code>, so root's total is untouched.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root", "[b, c]"], "highlight": [1] }, { "label": "[b, c]", "values": ["b", "c"], "pointers": { "child": 0 }, "dim": [0] } ], "vars": { "root total": 1, "[b, c] total": 1 } },
+    { "caption": "Next child <code>\"c\"</code> is a file and returns 1. <code>[b, c]</code> adds it: its total is 2.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root", "[b, c]"], "highlight": [1] }, { "label": "[b, c]", "values": ["b", "c"], "pointers": { "child": 1 }, "dim": [0, 1] } ], "vars": { "root total": 1, "[b, c] total": 2, "calls so far": 5 } },
+    { "caption": "<code>[b, c]</code> has no children left. It returns 2 and leaves the stack. Root adds it: 1 + 2 = 3.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root"], "highlight": [0] }, { "label": "root", "values": ["a", "[b, c]", "d"], "pointers": { "child": 1 }, "dim": [0, 1] } ], "vars": { "root total": 3, "returned": 2 } },
+    { "caption": "Last child <code>\"d\"</code> is a file. It returns 1 and root's total becomes 4.", "line": 5, "arrays": [ { "label": "call stack", "values": ["root"], "highlight": [0] }, { "label": "root", "values": ["a", "[b, c]", "d"], "pointers": { "child": 2 }, "dim": [0, 1, 2] } ], "vars": { "root total": 4, "calls so far": 6 } },
+    { "caption": "Root has no children left and returns 4. The stack is empty again. 6 calls in all: one per file or folder. The stack was never more than 3 calls tall.", "line": 6, "arrays": [ { "label": "call stack", "values": [] }, { "label": "root", "values": ["a", "[b, c]", "d"], "mark": [0, 1, 2] } ], "vars": { "answer": 4, "calls": 6, "tallest stack": 3 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Every waiting call costs a little memory, because the computer has to remember where it paused. So recursion uses memory in proportion to how <em>deep</em> the calls go, even if you never create a list yourself.</p>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(n)", "space": "O(d)", "note": "<code>n</code> is the number of files and folders: one call each. <code>d</code> is the deepest nesting: that many calls wait on the stack at once." } ] }
+</script>
+</x-complexity>
+
+<h2>When recursion repeats itself</h2>
+
+<p>Some problems split into pieces that overlap. A classic is the Fibonacci sequence, 0, 1, 1, 2, 3, 5, 8, where each number is the sum of the two before it. The recursive version is one line: <code>fib(n) = fib(n − 1) + fib(n − 2)</code>, with <code>fib(0) = 0</code> and <code>fib(1) = 1</code> as base cases. It is correct. It is also very slow.</p>
+
+<x-figure caption="The calls made by fib(4). fib(2) is worked out twice from scratch, and the waste doubles with each level.">
+<svg viewBox="0 0 480 230" aria-label="A tree of calls. fib(4) calls fib(3) and fib(2). fib(3) calls fib(2) and fib(1). Each fib(2) calls fib(1) and fib(0). Both fib(2) boxes are highlighted as repeated work.">
+  <line x1="240" y1="40" x2="130" y2="90" class="s-line" stroke-width="2"/>
+  <line x1="240" y1="40" x2="370" y2="90" class="s-line" stroke-width="2"/>
+  <line x1="130" y1="100" x2="70" y2="150" class="s-line" stroke-width="2"/>
+  <line x1="130" y1="100" x2="190" y2="150" class="s-line" stroke-width="2"/>
+  <line x1="370" y1="100" x2="320" y2="150" class="s-line" stroke-width="2"/>
+  <line x1="370" y1="100" x2="420" y2="150" class="s-line" stroke-width="2"/>
+  <line x1="70" y1="160" x2="35" y2="200" class="s-line" stroke-width="2"/>
+  <line x1="70" y1="160" x2="105" y2="200" class="s-line" stroke-width="2"/>
+  <rect x="200" y="14" width="80" height="30" rx="6" class="f-surface s-line"/><text x="240" y="34" text-anchor="middle">fib(4)</text>
+  <rect x="90" y="82" width="80" height="30" rx="6" class="f-surface s-line"/><text x="130" y="102" text-anchor="middle">fib(3)</text>
+  <rect x="330" y="82" width="80" height="30" rx="6" class="f-accent-soft s-accent"/><text x="370" y="102" text-anchor="middle">fib(2)</text>
+  <rect x="30" y="142" width="80" height="30" rx="6" class="f-accent-soft s-accent"/><text x="70" y="162" text-anchor="middle">fib(2)</text>
+  <rect x="150" y="142" width="80" height="30" rx="6" class="f-surface s-line"/><text x="190" y="162" text-anchor="middle">fib(1)</text>
+  <rect x="280" y="142" width="80" height="30" rx="6" class="f-surface s-line"/><text x="320" y="162" text-anchor="middle">fib(1)</text>
+  <rect x="380" y="142" width="80" height="30" rx="6" class="f-surface s-line"/><text x="420" y="162" text-anchor="middle">fib(0)</text>
+  <rect x="0" y="194" width="70" height="30" rx="6" class="f-surface s-line"/><text x="35" y="214" text-anchor="middle">fib(1)</text>
+  <rect x="75" y="194" width="70" height="30" rx="6" class="f-surface s-line"/><text x="110" y="214" text-anchor="middle">fib(0)</text>
+</svg>
+</x-figure>
+
+<p>Each call makes two more calls, so the number of calls roughly doubles every time <code>n</code> goes up by 1. <code>fib(4)</code> makes 9 calls. <code>fib(30)</code> makes 2,692,537, almost all of them repeats. The fix is to remember answers you already worked out, which is the starting point of <a href="/algorithms/dp-introduction.html">dynamic programming</a>.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Count files", "time": "O(n)", "space": "O(d)", "note": "Each item is visited once. The pieces never overlap." },
+    { "name": "Naive Fibonacci", "time": "O(2ⁿ)", "space": "O(n)", "note": "Two calls per call, and the same values are recomputed many times." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Recursion or a loop</h2>
+
+<p>Anything recursive can be rewritten with a loop and a list you manage yourself as a stack. So when is recursion the better choice?</p>
+
+<ul>
+<li><strong>Use recursion when the data is nested</strong>: folders, <a href="/algorithms/tree-traversals.html">trees</a>, menus inside menus, JSON inside JSON. The code mirrors the shape of the data.</li>
+<li><strong>Use recursion when the problem splits into smaller copies</strong>, as in <a href="/algorithms/merge-sort.html">merge sort</a> and <a href="/algorithms/divide-and-conquer.html">divide and conquer</a>, or when you try choices one at a time, as in <a href="/algorithms/backtracking.html">backtracking</a>.</li>
+<li><strong>Use a loop for a flat walk</strong> over a list. Summing 100,000 numbers recursively, one call per number, means 100,000 waiting calls. Python refuses at about 1,000 by default.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="No base case, or one you never reach">
+<p>If a call never reaches the base case, it calls itself forever, the stack fills up, and the program crashes with "Maximum call stack size exceeded" in JavaScript or <code>RecursionError</code> in Python. Check two things: there is a case that returns without calling, and every call works on something strictly smaller.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Throwing away the answer from the smaller call">
+<p>Writing <code>countFiles(child);</code> on its own line runs the call and discards what it returns. The function then reports 0 for every folder. A recursive call is an ordinary function call: you have to use its result, here with <code>total += countFiles(child)</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting the stack costs memory">
+<p>Recursion has no visible list, so it is easy to call it O(1) space. It is not. Each waiting call takes memory, so the space is the depth of the calls: O(d) for folders, O(n) for a chain of <code>n</code> calls.</p>
+</x-callout>
+
+<x-callout type="tip">
+<p>To design a recursive function, write the base case first. Then pretend the function already works on smaller inputs and ask one question: "Given the answers for the smaller pieces, how do I build the answer for this one?"</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "How many calls does <code>countFiles([[\"x\"], \"y\"])</code> make in total, including the first one?",
+      "options": [
+        { "text": "2", "why": "That counts only the files. The outer folder and the inner folder <code>[\"x\"]</code> each get a call too." },
+        { "text": "3", "why": "Close, but there are 4 things: the outer folder, <code>[\"x\"]</code>, <code>\"x\"</code> and <code>\"y\"</code>. Each gets its own call." },
+        { "text": "4", "correct": true, "why": "One call per file or folder: the outer folder, the inner folder <code>[\"x\"]</code>, <code>\"x\"</code> and <code>\"y\"</code>. It returns 2." }
+      ]
+    },
+    {
+      "question": "A recursive <code>sum(nums, i)</code> returns <code>nums[i] + sum(nums, i + 1)</code> and has no base case. What happens on <code>[1, 2, 3]</code>?",
+      "options": [
+        { "text": "It returns 6", "why": "Nothing tells it to stop at the end of the list. It needs a base case such as \"if <code>i</code> equals the length, return 0\"." },
+        { "text": "It never reaches a stopping point and crashes", "correct": true, "why": "Without a base case, the calls run past the end of the list. In Python, reading <code>nums[3]</code> raises an error. In JavaScript it reads <code>undefined</code> and keeps calling until the stack overflows." },
+        { "text": "It returns 0", "why": "No call ever returns a plain value, so it cannot return 0." }
+      ]
+    },
+    {
+      "question": "A folder structure is 10 levels deep and holds 5,000 files in total. Roughly how many calls of <code>countFiles</code> are waiting on the stack at the busiest moment?",
+      "options": [
+        { "text": "About 5,000", "why": "Calls finish and leave the stack as soon as each file is counted. They do not all wait at once." },
+        { "text": "About 10", "correct": true, "why": "Only the chain from the top folder down to the current item is waiting. That chain is as long as the nesting is deep." },
+        { "text": "1", "why": "Every folder above the current item is paused, waiting for its child to return." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Recursion powers most of what comes later. <a href="/algorithms/tree-traversals.html">Tree Traversals</a> uses exactly the folder pattern, and <a href="/algorithms/backtracking.html">Backtracking</a> uses it to try every combination. First, <a href="/algorithms/math-for-algorithms.html">Math for Algorithms</a> covers the few formulas, like why the Fibonacci calls double, that make costs easy to estimate.</p>

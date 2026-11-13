@@ -1,0 +1,292 @@
+<!--
+{
+  "title": "Bit Manipulation",
+  "description": "Treat a number as a row of on/off switches. Test, set and clear single bits, count them fast, find the odd one out with XOR, and list subsets as masks.",
+  "minutes": 16,
+  "tags": ["bits", "math", "patterns"]
+}
+-->
+<p>A photo app has six on/off settings: grid lines, flash, timer, HDR, location tags and sound. You could store six separate true/false values. Or you could store one small number, where each binary digit is one switch. Flash and timer on, everything else off, is the number 6. Saving, copying and comparing all six settings becomes one operation on that number.</p>
+
+<p>Programs do this all the time: file permissions, feature flags, game states, chess engines. To work this way you need a handful of operators that act on the individual bits, and a few tricks built from them.</p>
+
+<h2>A number is a row of switches</h2>
+
+<p>In binary, each position is worth double the one to its right: 1, 2, 4, 8, 16, 32 and so on. A number is the sum of the positions that are on. So 44 is 32 + 8 + 4, written <code>101100</code>. Positions are counted from the right, starting at 0: in 44, bits 2, 3 and 5 are on.</p>
+
+<x-figure caption="44 in binary. Bit i is worth 2 to the power i, and 44 is the sum of the bits that are on.">
+<svg viewBox="0 0 480 150" aria-label="Six boxes holding 1, 0, 1, 1, 0, 0. Above them the values 32, 16, 8, 4, 2, 1. Below them bit numbers 5 down to 0. The boxes holding 1 are highlighted.">
+  <text x="20" y="24" class="t-sans t-small f-muted">worth</text>
+  <text x="125" y="24" text-anchor="middle" class="f-muted">32</text>
+  <text x="185" y="24" text-anchor="middle" class="f-muted">16</text>
+  <text x="245" y="24" text-anchor="middle" class="f-muted">8</text>
+  <text x="305" y="24" text-anchor="middle" class="f-muted">4</text>
+  <text x="365" y="24" text-anchor="middle" class="f-muted">2</text>
+  <text x="425" y="24" text-anchor="middle" class="f-muted">1</text>
+  <rect x="100" y="36" width="50" height="44" rx="6" class="f-accent-soft s-accent"/><text x="125" y="64" text-anchor="middle" class="t-big">1</text>
+  <rect x="160" y="36" width="50" height="44" rx="6" class="f-surface s-line"/><text x="185" y="64" text-anchor="middle" class="t-big f-muted">0</text>
+  <rect x="220" y="36" width="50" height="44" rx="6" class="f-accent-soft s-accent"/><text x="245" y="64" text-anchor="middle" class="t-big">1</text>
+  <rect x="280" y="36" width="50" height="44" rx="6" class="f-accent-soft s-accent"/><text x="305" y="64" text-anchor="middle" class="t-big">1</text>
+  <rect x="340" y="36" width="50" height="44" rx="6" class="f-surface s-line"/><text x="365" y="64" text-anchor="middle" class="t-big f-muted">0</text>
+  <rect x="400" y="36" width="50" height="44" rx="6" class="f-surface s-line"/><text x="425" y="64" text-anchor="middle" class="t-big f-muted">0</text>
+  <text x="20" y="102" class="t-sans t-small f-muted">bit</text>
+  <text x="125" y="102" text-anchor="middle" class="t-small f-muted">5</text>
+  <text x="185" y="102" text-anchor="middle" class="t-small f-muted">4</text>
+  <text x="245" y="102" text-anchor="middle" class="t-small f-muted">3</text>
+  <text x="305" y="102" text-anchor="middle" class="t-small f-muted">2</text>
+  <text x="365" y="102" text-anchor="middle" class="t-small f-muted">1</text>
+  <text x="425" y="102" text-anchor="middle" class="t-small f-muted">0</text>
+  <text x="275" y="136" text-anchor="middle" class="t-sans t-bold">32 + 8 + 4 = 44</text>
+</svg>
+</x-figure>
+
+<p>Six operators work on all the bits at once. Here they are applied to 12 (<code>1100</code>) and 10 (<code>1010</code>):</p>
+
+<table>
+<thead><tr><th>Operator</th><th>Rule, bit by bit</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><code>a &amp; b</code> (AND)</td><td>1 only if both are 1</td><td><code>1100 &amp; 1010 = 1000</code>, which is 8</td></tr>
+<tr><td><code>a | b</code> (OR)</td><td>1 if either is 1</td><td><code>1100 | 1010 = 1110</code>, which is 14</td></tr>
+<tr><td><code>a ^ b</code> (XOR)</td><td>1 if they differ</td><td><code>1100 ^ 1010 = 0110</code>, which is 6</td></tr>
+<tr><td><code>~a</code> (NOT)</td><td>flips every bit</td><td><code>~5</code> is −6 (see the mistakes below)</td></tr>
+<tr><td><code>a &lt;&lt; k</code></td><td>moves bits k places left, times 2ᵏ</td><td><code>12 &lt;&lt; 1</code> is 24</td></tr>
+<tr><td><code>a &gt;&gt; k</code></td><td>moves bits k places right, drops the last k</td><td><code>12 &gt;&gt; 2</code> is 3</td></tr>
+</tbody>
+</table>
+
+<h2>The idea: masks</h2>
+
+<p>To touch one switch, build a <strong>mask</strong>: a number with only that bit on. <code>1 &lt;&lt; i</code> is exactly that, because it moves a single 1 into position <code>i</code>. Then combine the mask with your number:</p>
+
+<ul>
+<li><strong>Check</strong> bit i: <code>(x &gt;&gt; i) &amp; 1</code> is 1 if it is on.</li>
+<li><strong>Set</strong> it: <code>x | (1 &lt;&lt; i)</code>. OR with 1 forces a 1 and leaves the other bits alone.</li>
+<li><strong>Clear</strong> it: <code>x &amp; ~(1 &lt;&lt; i)</code>. The flipped mask has a 0 only at bit i, and AND with 0 forces a 0.</li>
+<li><strong>Toggle</strong> it: <code>x ^ (1 &lt;&lt; i)</code>. XOR with 1 flips a bit.</li>
+</ul>
+
+<x-code>
+<pre lang="js">
+const isOn = (x, i) => ((x >> i) & 1) === 1;
+const turnOn = (x, i) => x | (1 << i);
+const turnOff = (x, i) => x & ~(1 << i);
+const flip = (x, i) => x ^ (1 << i);
+
+let settings = 0;                // all six off
+settings = turnOn(settings, 1);  // flash: 000010
+settings = turnOn(settings, 2);  // timer: 000110, which is 6
+isOn(settings, 2);               // true
+settings = flip(settings, 1);    // flash off again: 000100, which is 4
+</pre>
+<pre lang="py">
+def is_on(x, i): return ((x >> i) & 1) == 1
+def turn_on(x, i): return x | (1 << i)
+def turn_off(x, i): return x & ~(1 << i)
+def flip(x, i): return x ^ (1 << i)
+
+settings = 0                     # all six off
+settings = turn_on(settings, 1)  # flash: 000010
+settings = turn_on(settings, 2)  # timer: 000110, which is 6
+is_on(settings, 2)               # True
+settings = flip(settings, 1)     # flash off again: 000100, which is 4
+</pre>
+</x-code>
+
+<x-callout type="key">
+<p>OR with a mask turns bits on, AND with a flipped mask turns them off, XOR with a mask flips them. Build the mask with <code>1 &lt;&lt; i</code>.</p>
+</x-callout>
+
+<h2>Drop the lowest 1 bit</h2>
+
+<p>One expression shows up again and again: <code>x &amp; (x - 1)</code>. It turns off the lowest bit that is on and keeps the rest. Subtracting 1 borrows from the lowest 1: that bit becomes 0 and every 0 below it becomes 1. AND with the original then wipes out exactly those positions. Repeat until nothing is left and you have counted the 1 bits.</p>
+
+<x-tracer title="Count the 1 bits in 44">
+<script type="application/json">
+{
+  "code": [
+    "count = 0",
+    "while x != 0:",
+    "  x = x & (x - 1)    # drop the lowest 1",
+    "  count += 1"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption":"x = 44. In binary that is 101100: 32 + 8 + 4. Three bits are on. The goal is to count them without checking every position.","line":1,"grid":{"rows":[[1,0,1,1,0,0]],"rowLabels":["x = 44"],"colLabels":["32","16","8","4","2","1"],"highlight":[[0,0],[0,2],[0,3]]},"vars":{"x":44,"count":0}},
+    {"caption":"Subtract 1: 43 is 101011. The lowest 1, worth 4, turned into 0, and the zeros below it turned into 1s. Nothing above it changed.","line":3,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1]],"rowLabels":["x = 44","x − 1 = 43"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,3],[1,4],[1,5]]},"vars":{"x":44,"count":0}},
+    {"caption":"AND keeps a bit only where both rows have a 1. The rows agree everywhere above the lowest 1 and disagree at and below it, so exactly that one bit disappears. x is now 40.","line":4,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1],[1,0,1,0,0,0]],"rowLabels":["x = 44","x − 1 = 43","x & (x − 1) = 40"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0],[2,2]],"dim":[[2,3]]},"vars":{"x":40,"count":1}},
+    {"caption":"Subtract 1 again: 39 is 100111. Same pattern: the lowest 1, worth 8, flips to 0 and everything below it flips to 1.","line":3,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1]],"rowLabels":["x = 40","x − 1 = 39"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":40,"count":1}},
+    {"caption":"AND them: 32 is left. Another bit gone, count is 2.","line":4,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1],[1,0,0,0,0,0]],"rowLabels":["x = 40","x − 1 = 39","x & (x − 1) = 32"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0]],"dim":[[2,2]]},"vars":{"x":32,"count":2}},
+    {"caption":"x = 32 has a single 1. Subtract 1: 31 is 011111.","line":3,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1]],"rowLabels":["x = 32","x − 1 = 31"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,0],[1,1],[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":32,"count":2}},
+    {"caption":"AND gives 0, so the loop stops. 3 rounds: one per 1 bit, not one per bit position.","line":4,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1],[0,0,0,0,0,0]],"rowLabels":["x = 32","x − 1 = 31","x & (x − 1) = 0"],"colLabels":["32","16","8","4","2","1"],"dim":[[2,0]]},"vars":{"x":0,"count":3}}
+
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The same expression answers "is x a power of two?" A power of two has exactly one 1 bit, so dropping it leaves 0: <code>x &gt; 0 &amp;&amp; (x &amp; (x - 1)) === 0</code>.</p>
+
+<x-code>
+<pre lang="js">
+function countOnes(x) {
+  let count = 0;
+  while (x !== 0) {
+    x &= x - 1; // drop the lowest 1
+    count++;
+  }
+  return count;
+}
+
+const isPowerOfTwo = (x) => x > 0 && (x & (x - 1)) === 0;
+
+countOnes(44);    // 3
+isPowerOfTwo(32); // true
+isPowerOfTwo(44); // false
+</pre>
+<pre lang="py">
+def count_ones(x):
+    count = 0
+    while x != 0:
+        x &= x - 1  # drop the lowest 1
+        count += 1
+    return count
+
+def is_power_of_two(x):
+    return x > 0 and (x & (x - 1)) == 0
+
+count_ones(44)        # 3
+is_power_of_two(32)   # True
+is_power_of_two(44)   # False
+</pre>
+</x-code>
+
+<p>In real Python code, <code>x.bit_count()</code> (Python 3.10 and later) does the counting for you. The trick still matters because the same "drop the lowest 1" step is used inside other algorithms, such as <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick trees</a>.</p>
+
+<h2>XOR finds the odd one out</h2>
+
+<p>A drawer holds socks with ID numbers. Every ID appears twice, except one sock that lost its partner: <code>[4, 7, 2, 7, 4]</code>. XOR has two properties that solve this with no extra memory. A number XOR itself is 0, and a number XOR 0 is itself. Order does not matter either. So XOR everything: each pair cancels, and only the lonely sock is left.</p>
+
+<p>Step by step: 4 ^ 7 = 3, then 3 ^ 2 = 1, then 1 ^ 7 = 6, then 6 ^ 4 = 2. The middle values look random, but the pairs still cancel in the end.</p>
+
+<x-code>
+<pre lang="js">
+function unpaired(ids) {
+  let result = 0;
+  for (const id of ids) result ^= id; // pairs cancel out
+  return result;
+}
+
+unpaired([4, 7, 2, 7, 4]); // 2
+</pre>
+<pre lang="py">
+def unpaired(ids):
+    result = 0
+    for sock_id in ids:
+        result ^= sock_id  # pairs cancel out
+    return result
+
+unpaired([4, 7, 2, 7, 4])  # 2
+</pre>
+</x-code>
+
+<h2>Subsets as numbers</h2>
+
+<p>Back to the sandwich extras from <a href="/algorithms/backtracking.html">Backtracking</a>: C, E and T. Any sandwich is a choice of on or off for each extra, which is exactly a 3-bit number. Mask 5 is <code>101</code>: bits 0 and 2, so C and T. Counting from 0 to 2³ − 1 = 7 visits every sandwich once, with no recursion at all.</p>
+
+<x-code>
+<pre lang="js">
+function subsetsByMask(items) {
+  const result = [];
+  for (let mask = 0; mask < (1 << items.length); mask++) {
+    const subset = [];
+    for (let i = 0; i < items.length; i++) {
+      if ((mask >> i) & 1) subset.push(items[i]); // bit i on: take item i
+    }
+    result.push(subset);
+  }
+  return result;
+}
+
+subsetsByMask(["C", "E", "T"])[5]; // ["C", "T"]
+</pre>
+<pre lang="py">
+def subsets_by_mask(items):
+    result = []
+    for mask in range(1 << len(items)):
+        subset = [items[i] for i in range(len(items)) if (mask >> i) & 1]
+        result.append(subset)
+    return result
+
+subsets_by_mask(["C", "E", "T"])[5]  # ['C', 'T']
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Check, set, clear, flip", "time": "O(1)", "space": "O(1)", "note": "One operation on a machine word." },
+    { "name": "Count 1 bits with x & (x − 1)", "time": "O(k)", "space": "O(1)", "note": "k is the number of 1 bits, at most the number of bits in x." },
+    { "name": "Odd one out with XOR", "time": "O(n)", "space": "O(1)", "note": "One pass, no hash map needed." },
+    { "name": "All subsets by mask", "time": "O(n · 2ⁿ)", "space": "O(n)", "note": "2ⁿ masks, n bit checks each. Space excludes the output." }
+  ]
+}
+</script>
+</x-complexity>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Operator precedence in JavaScript">
+<p>In JavaScript, <code>x &amp; 1 === 0</code> means <code>x &amp; (1 === 0)</code>, which is always 0. Comparison binds tighter than <code>&amp;</code>, <code>|</code> and <code>^</code>. Python orders these the other way, which makes the bug easy to carry across. Always add brackets: <code>(x &amp; 1) === 0</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="JavaScript bit operators use 32 bits">
+<p>JavaScript converts numbers to 32-bit signed integers before any bit operation. <code>1 &lt;&lt; 31</code> is −2147483648, and <code>2 ** 32 | 0</code> is 0. Keep masks under 31 bits, use <code>&gt;&gt;&gt;</code> when you want an unsigned right shift, or switch to <code>BigInt</code> for wider values.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Negative numbers in Python">
+<p>Python integers have no fixed width. A negative number behaves as if it had infinitely many 1 bits on the left, so <code>~5</code> is −6 and the counting loop above never reaches 0 for a negative input. Mask to a width first, for example <code>x &amp; 0xFFFFFFFF</code> for 32 bits.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Unix file permissions use three bits, read, write and execute, for each kind of user. That is why a mode digit of 7 means all three (4 + 2 + 1). Databases, compilers and network code use bit masks for flags because they are small and fast to compare.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "What is <code>13 &amp; 6</code>?",
+      "options": [
+        { "text": "4", "correct": true, "why": "13 is 1101 and 6 is 0110. Only the bit worth 4 is on in both, so the result is 0100, which is 4." },
+        { "text": "15", "why": "That is <code>13 | 6</code>: bits on in either number." },
+        { "text": "11", "why": "That is <code>13 ^ 6</code>: bits that differ." }
+      ]
+    },
+    {
+      "question": "Why does <code>isPowerOfTwo</code> check <code>x &gt; 0</code> as well as <code>(x &amp; (x - 1)) === 0</code>?",
+      "options": [
+        { "text": "Because 0 &amp; (0 − 1) is 0, and 0 is not a power of two", "correct": true, "why": "Right. 0 has no 1 bit to drop, so the AND is 0 and the test would wrongly say yes." },
+        { "text": "Because 1 would fail without it", "why": "1 &amp; 0 is 0 and 1 is 2⁰, so 1 passes either way." },
+        { "text": "For speed", "why": "It is there for correctness: without it, 0 is reported as a power of two." }
+      ]
+    },
+    {
+      "question": "XOR all of <code>[9, 3, 9, 5, 3]</code>. What do you get?",
+      "options": [
+        { "text": "0", "why": "Only pairs cancel. 5 appears once, so it survives." },
+        { "text": "5", "correct": true, "why": "The two 9s cancel and the two 3s cancel, in any order, leaving 5." },
+        { "text": "29", "why": "That is the sum. XOR cancels pairs instead of adding them." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Bit masks come back in <a href="/algorithms/dp-introduction.html">dynamic programming</a>, where a mask can record which items are already used. The lowest-bit trick powers <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick trees</a>.</p>

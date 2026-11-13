@@ -1,0 +1,184 @@
+<!--
+{
+  "title": "Arrays",
+  "description": "Why reading arr[i] is instant but inserting at the front is slow. How arrays sit in memory, how they grow, and what each operation really costs.",
+  "minutes": 13,
+  "tags": ["arrays", "fundamentals"]
+}
+-->
+<p>Picture a long row of school lockers, numbered from 0. Someone asks you for locker 412. You do not open lockers 0 to 411 on the way. You know where 412 is, so you walk straight to it.</p>
+
+<p>Now the school wants to squeeze a new student in at locker 3 and keep everyone in number order. Every student from locker 3 onwards has to move their things one locker to the right. Reading is instant. Inserting in the middle is a chore. That is an array, and those two facts explain most of what you need to know about it.</p>
+
+<h2>One block of memory, numbered from 0</h2>
+
+<p>An array stores its items side by side in one unbroken block of memory. Every slot is the same size. The computer remembers only one thing: where the block starts.</p>
+
+<p>That is enough to find any item. If the block starts at address 1000 and each slot takes 4 bytes, item 3 lives at 1000 + 3 × 4 = 1012. One multiplication and one addition, whether the array holds 5 items or 5 million. This is why reading or writing <code>arr[i]</code> is O(1), and it is also why indexes start at 0: the index is the number of slots to skip from the start.</p>
+
+<x-figure caption="Five numbers stored side by side. The address of any slot comes from one multiplication and one addition.">
+<svg viewBox="0 0 480 170" aria-label="Five boxes in a row holding 7, 3, 9, 4, 6, with indexes 0 to 4 above and memory addresses 1000, 1004, 1008, 1012, 1016 below. Box 3 is highlighted, with the formula 1000 + 3 × 4 = 1012.">
+  <text x="20" y="22" class="t-sans t-small f-muted">index</text>
+  <text x="105" y="22" text-anchor="middle" class="f-muted">0</text>
+  <text x="175" y="22" text-anchor="middle" class="f-muted">1</text>
+  <text x="245" y="22" text-anchor="middle" class="f-muted">2</text>
+  <text x="315" y="22" text-anchor="middle" class="f-accent t-bold">3</text>
+  <text x="385" y="22" text-anchor="middle" class="f-muted">4</text>
+  <rect x="72" y="34" width="66" height="40" rx="6" class="f-surface s-line"/><text x="105" y="59" text-anchor="middle">7</text>
+  <rect x="142" y="34" width="66" height="40" rx="6" class="f-surface s-line"/><text x="175" y="59" text-anchor="middle">3</text>
+  <rect x="212" y="34" width="66" height="40" rx="6" class="f-surface s-line"/><text x="245" y="59" text-anchor="middle">9</text>
+  <rect x="282" y="34" width="66" height="40" rx="6" class="f-accent-soft s-accent"/><text x="315" y="59" text-anchor="middle" class="t-bold">4</text>
+  <rect x="352" y="34" width="66" height="40" rx="6" class="f-surface s-line"/><text x="385" y="59" text-anchor="middle">6</text>
+  <text x="20" y="96" class="t-sans t-small f-muted">address</text>
+  <text x="105" y="96" text-anchor="middle" class="t-small f-muted">1000</text>
+  <text x="175" y="96" text-anchor="middle" class="t-small f-muted">1004</text>
+  <text x="245" y="96" text-anchor="middle" class="t-small f-muted">1008</text>
+  <text x="315" y="96" text-anchor="middle" class="t-small f-accent t-bold">1012</text>
+  <text x="385" y="96" text-anchor="middle" class="t-small f-muted">1016</text>
+  <text x="240" y="140" text-anchor="middle" class="t-sans">arr[3] lives at 1000 + 3 × 4 = 1012</text>
+</svg>
+</x-figure>
+
+<p>JavaScript arrays and Python lists hold a reference in each slot rather than the value itself, so a slot can point to a number, a string or another list. The slots themselves are still side by side, so the same arithmetic finds them.</p>
+
+<h2>Inserting means shifting</h2>
+
+<p>The flip side of "everything side by side" is that there are no gaps. To put a new item at index 1, every item from index 1 onwards must move one slot right first. Start from the end, so you never overwrite a value before you have copied it.</p>
+
+<x-tracer title="Insert 9 at index 1">
+<script type="application/json">
+{
+  "code": [
+    "add one empty slot at the end",
+    "for i from last index down to index + 1:",
+    "  arr[i] = arr[i - 1]",
+    "arr[index] = value"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The array holds 3, 8, 5, 2. We want 9 at index 1. First, grow by one slot at the end.", "line": 1, "array": { "label": "arr", "values": [3, 8, 5, 2, null], "highlight": [1] }, "vars": { "index": 1, "value": 9 } },
+    { "caption": "Start at the end. Copy 2 from slot 3 into the empty slot 4.", "line": 3, "array": { "label": "arr", "values": [3, 8, 5, 2, 2], "pointers": { "i": 4 }, "highlight": [4] }, "vars": { "index": 1, "value": 9, "moves": 1 } },
+    { "caption": "Copy 5 into slot 3. The old 2 there is safe, because we already copied it to slot 4.", "line": 3, "array": { "label": "arr", "values": [3, 8, 5, 5, 2], "pointers": { "i": 3 }, "highlight": [3] }, "vars": { "index": 1, "value": 9, "moves": 2 } },
+    { "caption": "Copy 8 into slot 2. Now slot 1 can be overwritten without losing anything.", "line": 3, "array": { "label": "arr", "values": [3, 8, 8, 5, 2], "pointers": { "i": 2 }, "highlight": [2] }, "vars": { "index": 1, "value": 9, "moves": 3 } },
+    { "caption": "The loop stops at <code>i = index + 1</code>. Write 9 into slot 1.", "line": 4, "array": { "label": "arr", "values": [3, 9, 8, 5, 2], "mark": [1] }, "vars": { "index": 1, "value": 9, "moves": 3 } },
+    { "caption": "Inserting near the front of 4 items cost 3 moves. At index 0 of a million items, it would cost a million moves. The cost is the number of items after the insert point.", "array": { "label": "arr", "values": [3, 9, 8, 5, 2], "mark": [1] }, "vars": { "moves": 3, "worst case": "n" } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Deleting works the same way in reverse: every item after the gap moves one slot left to close it. So inserting or deleting at position <code>i</code> costs about <code>n − i</code> moves. At the end it is cheap. At the front it is O(n).</p>
+
+<x-code>
+<pre lang="js">
+// What arr.splice(index, 0, value) does for you.
+function insertAt(arr, index, value) {
+  arr.push(undefined); // make room at the end
+  for (let i = arr.length - 1; i > index; i--) {
+    arr[i] = arr[i - 1]; // shift one slot right
+  }
+  arr[index] = value;
+}
+
+const nums = [3, 8, 5, 2];
+insertAt(nums, 1, 9); // nums is now [3, 9, 8, 5, 2]
+</pre>
+<pre lang="py">
+# What arr.insert(index, value) does for you.
+def insert_at(arr, index, value):
+    arr.append(None)  # make room at the end
+    for i in range(len(arr) - 1, index, -1):
+        arr[i] = arr[i - 1]  # shift one slot right
+    arr[index] = value
+
+nums = [3, 8, 5, 2]
+insert_at(nums, 1, 9)  # nums is now [3, 9, 8, 5, 2]
+</pre>
+</x-code>
+
+<p>You will rarely write this loop yourself. The point is to know it is there. <code>splice</code>, <code>unshift</code> and <code>shift</code> in JavaScript, and <code>insert</code> and <code>pop(0)</code> in Python, all run a loop like this one behind a single friendly name.</p>
+
+<h2>How an array grows</h2>
+
+<p>A block of memory has a fixed size. So how does <code>push</code> or <code>append</code> keep working forever? The language keeps some spare slots at the end. The number of slots in use is the <strong>length</strong>; the number reserved is the <strong>capacity</strong>.</p>
+
+<p>When the spare slots run out, the language reserves a new block, often about twice as big, copies every item across, and frees the old one. That one append costs O(n). But it happens rarely: when a full block of 8 grows to 16, the next 7 appends need no copying at all.</p>
+
+<p>Add it up. Filling an array to 16 items by doubling from 1 copies 1 + 2 + 4 + 8 = 15 items in total, fewer than one copy per append. That is why appending to the end is called <strong>amortized O(1)</strong>: an occasional append is slow, but the average over many appends is constant.</p>
+
+<x-callout type="key">
+<p>An array is fast at the end and slow at the front. Reading any index is O(1), appending is O(1) on average, and anything that makes items shift is O(n).</p>
+</x-callout>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Read or write arr[i]", "time": "O(1)", "note": "Start address plus i × slot size." },
+    { "name": "Append to the end", "time": "O(1) amortized", "note": "Occasional O(n) copy when the array doubles." },
+    { "name": "Remove from the end", "time": "O(1)", "note": "Nothing has to move." },
+    { "name": "Insert or delete at index i", "time": "O(n)", "note": "Every item after i shifts by one slot." },
+    { "name": "Search for a value", "time": "O(n)", "note": "Without order, you must look at every item." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>Searching is the other slow one. Knowing an item's index is instant, but knowing which index holds the value 42 means checking items one by one. If you need that question answered often, keep a <a href="/algorithms/hash-tables.html">hash table</a> next to the array, or keep the array sorted and use <a href="/algorithms/binary-search.html">binary search</a>.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Reading one past the end">
+<p>An array of length 5 has indexes 0 to 4. <code>arr[arr.length]</code> is not the last item. JavaScript quietly gives you <code>undefined</code>, Python raises <code>IndexError</code>. The last item is <code>arr[arr.length - 1]</code>, and loops should run while <code>i &lt; arr.length</code>, not <code>i &lt;= arr.length</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Taking from the front in a loop">
+<p>Processing a list with <code>while (queue.length) queue.shift()</code> or <code>queue.pop(0)</code> looks like one pass. Each removal shifts every remaining item, so the whole loop is O(n²). Walk an index forward instead, or use a real queue, as in <a href="/algorithms/queues-and-deques.html">Queues and Deques</a>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Deleting while looping forward">
+<p>On <code>[4, 6, 6, 1]</code>, a loop that deletes every 6 deletes the one at index 1, then moves on to index 2. But the second 6 just slid into index 1, so it is skipped. Loop backwards when you delete, or build a new array with only the items you keep.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Images are arrays of pixels, audio is an array of samples, and a spreadsheet column is an array of cells. They use arrays because jumping straight to pixel number 2,073,600 has to be instant.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An array holds 1,000,000 numbers. How much work is it to read <code>arr[734512]</code>?",
+      "options": [
+        { "text": "O(1)", "correct": true, "why": "The address is the start plus 734512 × slot size. One calculation, no matter how big the array is." },
+        { "text": "O(n)", "why": "That would be true if the computer walked from slot 0. It does not need to: every slot has the same size, so it computes the address directly." },
+        { "text": "O(log n)", "why": "Nothing is halved here. Binary search is O(log n), but that is for finding a value, not reading a known index." }
+      ]
+    },
+    {
+      "question": "You call <code>arr.unshift(x)</code> in JavaScript, or <code>arr.insert(0, x)</code> in Python, on a list of n items. What does it cost?",
+      "options": [
+        { "text": "O(1), because it is one line", "why": "One line can hide a loop. Every existing item has to move one slot right to make room at index 0." },
+        { "text": "O(n)", "correct": true, "why": "All n items shift by one slot. That is the same loop you traced above, starting at index 0." },
+        { "text": "O(1) amortized, like append", "why": "Spare capacity sits at the end of the array, not the front, so it does not help here." }
+      ]
+    },
+    {
+      "question": "Why is appending to a growing array called O(1) amortized rather than plain O(1)?",
+      "options": [
+        { "text": "Because some appends copy the whole array, but rarely enough that the average stays constant", "correct": true, "why": "When capacity runs out, everything is copied into a block about twice as big. The copies add up to less than one per append over time." },
+        { "text": "Because it is O(1) only on fast computers", "why": "Big-O does not depend on the machine. Amortized describes an average over many operations." },
+        { "text": "Because append is actually O(log n)", "why": "No single append takes log n steps. Most take one step and a rare one takes n." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Strings are arrays of characters with one important twist: you cannot change them in place. That twist, and how to work around it, is the subject of <a href="/algorithms/strings.html">Strings</a>.</p>

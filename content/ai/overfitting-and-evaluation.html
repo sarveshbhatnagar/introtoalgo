@@ -1,0 +1,221 @@
+<!--
+{
+  "title": "Overfitting and Evaluation",
+  "description": "Why a model can ace its training data and still fail on new cases, how to test it honestly, and what accuracy, precision and recall each tell you.",
+  "minutes": 15,
+  "tags": ["machine learning", "evaluation", "overfitting"]
+}
+-->
+<p>A student gets hold of last year's exam and memorizes every answer. On a practice run with those same questions, they score 100%. On the real exam, with new questions on the same topics, they fail. They learned the answers, not the subject.</p>
+
+<p>Models do exactly the same thing, and it is the most common way machine learning goes wrong. A model that scores brilliantly on the examples it trained on can be useless on the next one. This lesson is about catching that before your users do.</p>
+
+<h2>Memorizing versus learning</h2>
+
+<p>Go back to the delivery data from <a href="/ai/what-is-machine-learning.html">What Is Machine Learning</a>. The rule "late if at least 6 km" got 6 of 7 past deliveries right. The odd one out was a 10 km trip that arrived on time.</p>
+
+<p>Now consider a fussier rule: "late if 6 to 9 km, or 11 km and over". It gets all 7 right. It is also nonsense. It says a 10 km delivery will be on time while 9 km and 11 km ones will be late, all because of one lucky day. The fussier rule fits the training data better and will predict new deliveries worse.</p>
+
+<p>This is <strong>overfitting</strong>: the model has learned the noise in its examples along with the pattern. The opposite problem, <strong>underfitting</strong>, is a model too simple to capture the pattern at all, like predicting "on time" for every delivery.</p>
+
+<x-figure caption="As a model gets more flexible, its error on training data keeps falling. Its error on new data falls, then rises again once it starts memorizing noise.">
+<svg viewBox="0 0 480 260" aria-label="Two curves against model flexibility. The training error curve falls steadily from left to right. The new-data error curve falls to a lowest point in the middle, then rises again. The left region is labelled underfitting, the right overfitting, and the middle low point the sweet spot.">
+  <line x1="50" y1="220" x2="450" y2="220" class="s-line"/>
+  <line x1="50" y1="20" x2="50" y2="220" class="s-line"/>
+  <text x="20" y="120" class="t-sans t-small f-muted" transform="rotate(-90 20 120)" text-anchor="middle">error</text>
+  <text x="250" y="244" text-anchor="middle" class="t-sans t-small f-muted">model flexibility: simple → complex</text>
+  <path d="M60 50 C 150 150, 280 195, 440 205" class="f-none s-info" stroke-width="2.5"/>
+  <path d="M60 40 C 140 160, 300 170, 440 70" class="f-none s-bad" stroke-width="2.5"/>
+  <line x1="228" y1="40" x2="228" y2="210" class="s-muted s-dash"/>
+  <circle cx="228" cy="138" r="6" class="f-good"/>
+  <text x="236" y="36" class="t-sans t-small f-good">sweet spot</text>
+  <text x="70" y="196" class="t-sans t-small f-muted">underfitting</text>
+  <text x="440" y="36" text-anchor="end" class="t-sans t-small f-muted">overfitting</text>
+  <text x="440" y="198" text-anchor="end" class="t-sans t-small">training error</text>
+  <text x="440" y="56" text-anchor="end" class="t-sans t-small">error on new data</text>
+</svg>
+</x-figure>
+
+<h2>Test on data the model has never seen</h2>
+
+<p>The fix is simple and strict. Before training, split your labelled examples into separate piles:</p>
+
+<ul>
+<li><strong>Training set</strong> (often around 70 to 80%). The model learns from these.</li>
+<li><strong>Validation set</strong>. You use these to compare settings: which features, how flexible a model, which learning rate.</li>
+<li><strong>Test set</strong>. Locked away until the very end. You score the final model on it once, and that score is your honest estimate of real-world performance.</li>
+</ul>
+
+<p>Why three piles and not two? Every time you look at a score and change something, you are fitting a little to that data. Try twenty settings on the validation set and keep the best, and that best score is a bit flattering. The test set has not been part of any choice, so its score is not.</p>
+
+<p>When data is scarce, <strong>cross-validation</strong> makes better use of it: split the training data into, say, 5 parts, train 5 times, each time holding out a different part for scoring, and average the 5 scores.</p>
+
+<x-callout type="key">
+<p>A model's score only means something on data it did not learn from and you did not tune on. A training score tells you almost nothing about how it will do in use.</p>
+</x-callout>
+
+<h2>Accuracy can lie</h2>
+
+<p>Now that you have a fair test set, what do you measure? The obvious number is <strong>accuracy</strong>: the share of predictions that were right. It hides a trap.</p>
+
+<p>Picture a fraud detector checking 10 card payments, of which 3 are fraud. A lazy model that always says "fine" is right 7 times out of 10: 70% accuracy, while catching zero fraud. In real data, fraud is far rarer than 3 in 10, so the lazy model can score 99.9%.</p>
+
+<p>To see what a classifier really does, sort every prediction into one of four boxes. This table is called a <strong>confusion matrix</strong>:</p>
+
+<ul>
+<li><strong>True positive</strong>: fraud, and flagged. Good.</li>
+<li><strong>False negative</strong>: fraud, but not flagged. A missed case.</li>
+<li><strong>False positive</strong>: fine, but flagged. A false alarm.</li>
+<li><strong>True negative</strong>: fine, and not flagged. Good.</li>
+</ul>
+
+<x-tracer title="Filling a confusion matrix for 10 payments">
+<script type="application/json">
+{
+  "steps": [
+    { "caption": "Payment 0 is fraud and the model flagged it. True positive.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 0 }, "highlight": [0] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [0] } ], "grid": { "rows": [[1, 0], [0, 0]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[0, 0]] } },
+    { "caption": "Payment 1 is fine and was not flagged. True negative.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 1 }, "highlight": [1] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [1] } ], "grid": { "rows": [[1, 0], [0, 1]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[1, 1]] } },
+    { "caption": "Payment 2 is fine, but the model flagged it. False positive: a customer gets an annoying call from the bank.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 2 }, "highlight": [2] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [2] } ], "grid": { "rows": [[1, 0], [1, 1]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[1, 0]] } },
+    { "caption": "Payment 3 is fraud, and the model let it through. False negative: real money is lost.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 3 }, "highlight": [3] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [3] } ], "grid": { "rows": [[1, 1], [1, 1]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[0, 1]] } },
+    { "caption": "Payments 4, 5 and 6 are fine and pass. Three more true negatives.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 6 }, "highlight": [4, 5, 6] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [4, 5, 6] } ], "grid": { "rows": [[1, 1], [1, 4]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[1, 1]] } },
+    { "caption": "Payment 7 is fraud and flagged. Second true positive.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 7 }, "highlight": [7] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [7] } ], "grid": { "rows": [[2, 1], [1, 4]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[0, 0]] } },
+    { "caption": "Payments 8 and 9 are fine and pass. The matrix is complete: every payment is in exactly one box.", "arrays": [ { "label": "actual", "values": ["F", "ok", "ok", "F", "ok", "ok", "ok", "F", "ok", "ok"], "pointers": { "i": 9 }, "highlight": [8, 9] }, { "label": "flagged", "values": ["yes", "no", "yes", "no", "no", "no", "no", "yes", "no", "no"], "highlight": [8, 9] } ], "grid": { "rows": [[2, 1], [1, 6]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[1, 1]] } },
+    { "caption": "Accuracy: the diagonal boxes are correct, 2 + 6 = 8 out of 10, so 80%.", "grid": { "rows": [[2, 1], [1, 6]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "mark": [[0, 0], [1, 1]] }, "vars": { "accuracy": "8/10" } },
+    { "caption": "Precision: of the 3 payments flagged, 2 were fraud (2/3). Recall: of the 3 frauds, 2 were caught (2/3).", "grid": { "rows": [[2, 1], [1, 6]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "mark": [[0, 0]], "highlight": [[0, 1], [1, 0]] }, "vars": { "accuracy": "8/10", "precision": "2/3", "recall": "2/3" } },
+    { "caption": "Compare the lazy model that never flags anything: 70% accuracy, only 10 points lower, but recall is 0/3. It catches nothing. Accuracy alone hid that.", "grid": { "rows": [[0, 3], [0, 7]], "rowLabels": ["fraud", "fine"], "colLabels": ["flagged", "not flagged"], "highlight": [[0, 1]] }, "vars": { "accuracy": "7/10", "recall": "0/3" } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Precision and recall</h2>
+
+<p>Two questions matter for almost every classifier, and each has its own number.</p>
+
+<ul>
+<li><strong>Precision</strong>: when the model raises a flag, how often is it right? It is true positives ÷ everything flagged. Low precision means many false alarms.</li>
+<li><strong>Recall</strong>: of all the real cases, how many did the model catch? It is true positives ÷ all real positives. Low recall means many misses.</li>
+</ul>
+
+<p>They pull against each other. In <a href="/ai/regression-and-classification.html">Regression and Classification</a> you saw that raising the threshold flags fewer messages. That raises precision (the flags you do raise are surer) and lowers recall (you miss more). Which matters more depends on the cost of each mistake. A cancer screening wants high recall. A system that blocks customer accounts automatically wants high precision.</p>
+
+<x-code>
+<pre lang="js">
+// actual and predicted are lists of 1 (fraud) and 0 (fine).
+function evaluate(actual, predicted) {
+  let tp = 0, fp = 0, fn = 0, tn = 0;
+  for (let i = 0; i < actual.length; i++) {
+    if (predicted[i] === 1 && actual[i] === 1) tp++;
+    else if (predicted[i] === 1) fp++; // flagged a fine payment
+    else if (actual[i] === 1) fn++;    // missed a fraud
+    else tn++;
+  }
+  return {
+    accuracy: (tp + tn) / actual.length,
+    precision: tp + fp ? tp / (tp + fp) : 0, // of the flags, how many were right
+    recall: tp + fn ? tp / (tp + fn) : 0,    // of the frauds, how many we caught
+  };
+}
+
+evaluate([1, 0, 0, 1, 0, 0, 0, 1, 0, 0],
+         [1, 0, 1, 0, 0, 0, 0, 1, 0, 0]);
+// { accuracy: 0.8, precision: 0.666..., recall: 0.666... }
+</pre>
+<pre lang="py">
+def evaluate(actual, predicted):
+    """actual and predicted are lists of 1 (fraud) and 0 (fine)."""
+    tp = fp = fn = tn = 0
+    for a, p in zip(actual, predicted):
+        if p == 1 and a == 1:
+            tp += 1
+        elif p == 1:
+            fp += 1   # flagged a fine payment
+        elif a == 1:
+            fn += 1   # missed a fraud
+        else:
+            tn += 1
+    return {
+        "accuracy": (tp + tn) / len(actual),
+        "precision": tp / (tp + fp) if tp + fp else 0,
+        "recall": tp / (tp + fn) if tp + fn else 0,
+    }
+
+evaluate([1, 0, 0, 1, 0, 0, 0, 1, 0, 0],
+         [1, 0, 1, 0, 0, 0, 0, 1, 0, 0])
+# {'accuracy': 0.8, 'precision': 0.666..., 'recall': 0.666...}
+</pre>
+</x-code>
+
+<p>For regression, the usual test number is the average error on the test set, for example the mean squared error from <a href="/ai/how-models-learn.html">How Models Learn</a>, or the average absolute error, which is easier to explain: "off by 40 a month on average".</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Leaking the answer into the features">
+<p>A model predicting whether a patient will be readmitted scores 98% on the test set. One feature turns out to be "number of follow-up visits booked", which is only filled in after the readmission. The model is reading the answer. Before trusting a high score, ask of every feature: would I really know this at prediction time?</p>
+</x-callout>
+
+<x-callout type="mistake" title="Splitting time-ordered data at random">
+<p>If you predict next week's sales, a random split puts some later weeks in training and earlier weeks in the test set, so the model gets to peek at the future. Train on the past and test on the most recent period instead.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Tuning on the test set">
+<p>Checking the test score after every change, and keeping the changes that raise it, quietly turns the test set into a second validation set. The final number is then too optimistic. Use the validation set for decisions and the test set once.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Find the flaws in this evaluation">
+<x-task>
+<p>A team reports on a model that predicts whether a customer will cancel their subscription next month. List everything that makes you doubt the result, and what you would ask for instead.</p>
+</x-task>
+<x-start>
+"We trained on all 50,000 customers from the last three years and measured 96% accuracy on the same data. Only 4% of customers cancel in a typical month. Our strongest feature is 'days since the customer last logged in', measured on the day we pulled the data."
+</x-start>
+<x-answer>
+<ul>
+<li><strong>Scored on training data.</strong> 96% on the examples it learned from says little. Ask for a score on a held-out test set, ideally the most recent months, since this is a prediction about the future.</li>
+<li><strong>Accuracy with rare positives.</strong> With 4% cancelling, a model that predicts "stays" for everyone scores 96%. That is exactly the number reported. Ask for precision and recall on the customers who cancel.</li>
+<li><strong>Possible leakage.</strong> "Days since last login", measured today, is huge for customers who already cancelled, because they stopped logging in after leaving. Ask for each feature to be measured as of the date the prediction would have been made.</li>
+</ul>
+<p>Any one of these could make the model look good while being useless. Together, they almost guarantee it.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A model scores 99% on its training data and 71% on the test set. What is the most likely problem?",
+      "options": [
+        { "text": "Underfitting", "why": "An underfit model does badly on both sets. This one does very well on training data." },
+        { "text": "Overfitting", "correct": true, "why": "The big gap means it learned details of the training examples that do not carry over to new ones." },
+        { "text": "The test set is too easy", "why": "An easy test set would push the test score up, not down." }
+      ]
+    },
+    {
+      "question": "A disease affects 1 in 200 people. A test that always says \"healthy\" has what accuracy?",
+      "options": [
+        { "text": "50%", "why": "It is right for everyone who is healthy, which is almost everyone." },
+        { "text": "99.5%", "correct": true, "why": "It is right for 199 of every 200 people, and it catches nobody who is sick. Its recall is 0." },
+        { "text": "0%", "why": "It is wrong only for the sick people, who are a tiny share." }
+      ]
+    },
+    {
+      "question": "A spam filter has high precision and low recall. What do users notice?",
+      "options": [
+        { "text": "Lots of real emails land in the spam folder", "why": "That would be low precision: many flags that are wrong." },
+        { "text": "Lots of spam still reaches the inbox", "correct": true, "why": "Low recall means many real spam messages are missed. The ones it does flag are almost always spam." },
+        { "text": "Nothing, both numbers are fine", "why": "Low recall is a real problem: most spam gets through." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The models so far were weighted sums. <a href="/ai/decision-trees-and-ensembles.html">Decision Trees and Ensembles</a> learns a different kind of rule, a chain of yes-or-no questions, and shows how combining many trees fights overfitting.</p>

@@ -1,0 +1,261 @@
+<!--
+{
+  "title": "Guardrails",
+  "description": "Limit what an agent can break: least-privilege permissions, tools that check their inputs, human approval for risky actions, and wary use of tool results.",
+  "minutes": 15,
+  "tags": ["agents", "security"]
+}
+-->
+<p>A developer asks a coding agent to clear out the project's temporary folder. The instructions say, in capitals, "BE CAREFUL. ONLY DELETE FILES IN tmp/." The agent builds the path from two pieces, one of them is empty, and the delete command runs on the project folder itself. A week of uncommitted work is gone.</p>
+
+<p>The instruction was clear. The model even agreed with it. But an instruction is a request, and the delete tool accepted any path it was given. A guardrail would have been a delete tool that refuses any path outside <code>tmp/</code>, no matter who asks or why.</p>
+
+<h2>The idea: limits the model cannot talk its way past</h2>
+
+<p>Everything a model writes, including tool requests, comes from predicting text. It can misread, be tricked by text in a tool result, or follow a plausible but wrong chain of reasoning. You cannot make that chance zero by writing better instructions.</p>
+
+<p>So put the limits in code, outside the model, where they hold no matter what the model writes. Think of them in four layers, from the outside in:</p>
+
+<ol>
+<li><strong>Permissions.</strong> Which tools exist at all, and what the credentials behind them can reach.</li>
+<li><strong>Tool limits.</strong> What each tool accepts: which paths, which amounts, which recipients.</li>
+<li><strong>Human approval.</strong> Which actions wait for a person to say yes.</li>
+<li><strong>Untrusted input.</strong> How much you let text from tool results steer later actions.</li>
+</ol>
+
+<x-callout type="key">
+<p>A guardrail is a check in code that runs before an action, whatever the model says. If it lives only in the prompt, it is a suggestion.</p>
+</x-callout>
+
+<h2>Permissions: give the least that works</h2>
+
+<p>The safest tool is the one the agent does not have. An agent that answers questions about orders needs to read orders. It does not need to delete customers, so that tool should not be on its list, and the database account behind it should be read-only. Then even a perfect attack has nothing to call.</p>
+
+<p>The same goes for credentials. If the agent's API key can do everything your admin account can, every bug is an admin bug. Give the agent its own key, scoped to the few things its tools need, so you can also see in the logs which actions came from it.</p>
+
+<h2>Tool limits: check the arguments, not just the name</h2>
+
+<p>Allowing a tool is not all or nothing. <a href="/ai/tool-use.html">Tool Use</a> showed tools that reject bad input so the model can fix it. Guardrails use the same place to reject dangerous input:</p>
+
+<ul>
+<li>A file tool only accepts paths inside the project's <code>tmp/</code> folder, after resolving <code>..</code> and links.</li>
+<li>A refund tool accepts amounts up to the order's value, never more.</li>
+<li>An email tool only sends to addresses already on the customer's record.</li>
+<li>A code-running tool runs inside a sandbox with no network and no access to your files.</li>
+</ul>
+
+<p>Add rate limits too: no more than 10 refunds an hour, say. A rate limit does not stop one bad action, but it stops a confused agent from repeating it a hundred times.</p>
+
+<h2>Human approval for risky actions</h2>
+
+<p>Sort every tool by what happens if it is used wrongly:</p>
+
+<table>
+<thead><tr><th>Risk</th><th>Examples</th><th>Default</th></tr></thead>
+<tbody>
+<tr><td>Read only</td><td>look up an order, search docs</td><td>run automatically</td></tr>
+<tr><td>Small and reversible</td><td>a refund under 50, a draft reply</td><td>run, and log it</td></tr>
+<tr><td>Costly, external or permanent</td><td>large refunds, sending email, deleting, publishing</td><td>ask a person first</td></tr>
+<tr><td>Not needed for this job</td><td>delete a customer</td><td>no tool at all</td></tr>
+</tbody>
+</table>
+
+<p>Here is a policy gate doing that sorting for a support agent. Every tool request passes through it before anything runs.</p>
+
+<x-tracer title="A policy gate checks each action">
+<script type="application/json">
+{
+  "code": [
+    "rule = policy[call.tool]",
+    "if no rule: block",
+    "if rule is read: allow",
+    "if money and amount <= autoLimit: allow",
+    "otherwise: ask a person"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {
+      "caption": "The agent wants to look up order 1042. Reading changes nothing, so the gate lets it run without asking anyone.",
+      "line": 3,
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"]], "mark": [[0, 2]] },
+      "vars": { "ran": 1, "asked a person": 0, "blocked": 0 }
+    },
+    {
+      "caption": "A refund of 30 for a damaged item. It is money, but under the automatic limit of 50, so it runs and is logged.",
+      "line": 4,
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"], ["refundOrder(1042, 30)", "money, 30 ≤ 50", "allowed"]], "mark": [[0, 2], [1, 2]], "highlight": [[1, 1]] },
+      "vars": { "ran": 2, "asked a person": 0, "blocked": 0 }
+    },
+    {
+      "caption": "A refund of 400 for a double charge. Over the limit, so the gate pauses and shows a person the order and the amount. They check the payment records and approve.",
+      "line": 5,
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"], ["refundOrder(1042, 30)", "money, 30 ≤ 50", "allowed"], ["refundOrder(2210, 400)", "money, 400 > 50", "approved"]], "mark": [[0, 2], [1, 2], [2, 2]], "highlight": [[2, 1]] },
+      "vars": { "ran": 3, "asked a person": 1, "blocked": 0 }
+    },
+    {
+      "caption": "A customer asked to close their account, and the agent tries <code>deleteCustomer</code>. That tool is not in the policy, so it is blocked. The error goes back to the agent, which tells the customer a person will handle it.",
+      "line": 2,
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"], ["refundOrder(1042, 30)", "money, 30 ≤ 50", "allowed"], ["refundOrder(2210, 400)", "money, 400 > 50", "approved"], ["deleteCustomer(sam@…)", "none", "blocked"]], "mark": [[0, 2], [1, 2], [2, 2]], "highlight": [[3, 2]] },
+      "vars": { "ran": 3, "asked a person": 1, "blocked": 1 }
+    },
+    {
+      "caption": "One customer message hid a line telling the assistant to email the customer list to an outside address, and the agent tries. Sending is external, so a person sees the recipient, does not recognise it, and declines.",
+      "line": 5,
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"], ["refundOrder(1042, 30)", "money, 30 ≤ 50", "allowed"], ["refundOrder(2210, 400)", "money, 400 > 50", "approved"], ["deleteCustomer(sam@…)", "none", "blocked"], ["sendEmail(backup@example.net)", "external", "declined"]], "mark": [[0, 2], [1, 2], [2, 2]], "highlight": [[4, 2]] },
+      "vars": { "ran": 3, "asked a person": 2, "blocked": 1 }
+    },
+    {
+      "caption": "Five requests: three ran, one was blocked, one was declined. The person was asked only twice, both times about something worth a look. Asking about every lookup would have trained them to click yes.",
+      "grid": { "label": "actions", "colLabels": ["request", "rule", "outcome"], "rows": [["getOrder(1042)", "read", "allowed"], ["refundOrder(1042, 30)", "money, 30 ≤ 50", "allowed"], ["refundOrder(2210, 400)", "money, 400 > 50", "approved"], ["deleteCustomer(sam@…)", "none", "blocked"], ["sendEmail(backup@example.net)", "external", "declined"]], "mark": [[0, 2], [1, 2], [2, 2]], "dim": [[3, 0], [4, 0]] },
+      "vars": { "ran": 3, "asked a person": 2, "blocked": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The gate in code</h2>
+
+<p>The gate sits in the <a href="/ai/the-agent-loop.html">agent loop</a> where the tool used to run directly. <code>askHuman</code> shows the request to a person and returns their yes or no.</p>
+
+<x-code>
+<pre lang="js">
+const policy = {
+  getOrder: { risk: "read" },
+  refundOrder: { risk: "money", autoLimit: 50 },
+  sendEmail: { risk: "external" },
+};
+
+function checkAction(call) {
+  const rule = policy[call.tool];
+  if (!rule) return { decision: "block", reason: `${call.tool} is not on the allowed list` };
+  if (rule.risk === "read") return { decision: "allow" };
+  if (rule.risk === "money" && call.input.amount <= rule.autoLimit) {
+    return { decision: "allow" };
+  }
+  return { decision: "ask" };
+}
+
+function guardedRun(call, runTool, askHuman) {
+  const { decision, reason } = checkAction(call);
+  if (decision === "block") return { error: `Blocked: ${reason}.` };
+  if (decision === "ask" && !askHuman(call)) {
+    return { error: "A person declined this action. Do not retry it." };
+  }
+  return runTool(call);
+}
+</pre>
+<pre lang="py">
+policy = {
+    "get_order": {"risk": "read"},
+    "refund_order": {"risk": "money", "auto_limit": 50},
+    "send_email": {"risk": "external"},
+}
+
+def check_action(call):
+    rule = policy.get(call["tool"])
+    if rule is None:
+        return {"decision": "block", "reason": f"{call['tool']} is not on the allowed list"}
+    if rule["risk"] == "read":
+        return {"decision": "allow"}
+    if rule["risk"] == "money" and call["input"]["amount"] <= rule["auto_limit"]:
+        return {"decision": "allow"}
+    return {"decision": "ask"}
+
+def guarded_run(call, run_tool, ask_human):
+    check = check_action(call)
+    if check["decision"] == "block":
+        return {"error": f"Blocked: {check['reason']}."}
+    if check["decision"] == "ask" and not ask_human(call):
+        return {"error": "A person declined this action. Do not retry it."}
+    return run_tool(call)
+</pre>
+</x-code>
+
+<p>Two details matter. Unknown tools are blocked by default: the policy lists what is allowed, not what is forbidden, so a new tool is denied until someone decides. And a block or a refusal goes back to the model as an error it can read, so it can tell the user instead of retrying.</p>
+
+<h2>Text from tools is untrusted</h2>
+
+<p>The <code>sendEmail</code> request in the tracer did not come from the user. It came from text inside a customer message the agent had read with a tool. <a href="/ai/prompt-injection.html">Prompt Injection</a> covers how this works. For guardrails, the lesson is this: once an agent has read text you do not control, such as web pages, emails, documents or another system's output, treat its next actions as possibly steered by whoever wrote that text.</p>
+
+<p>In practice, that means you tighten the gate after untrusted reads. An agent that has just read a web page should not send messages or touch private data without approval, even if those tools run freely at other times.</p>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Set the policy for an assistant">
+<x-task>
+<p>An assistant manages a person's calendar and email. It has these tools. For each, choose: run automatically, run and log, ask first, or remove. Give one reason each.</p>
+</x-task>
+<x-start>
+readCalendar
+createEvent (only on the user's own calendar)
+sendEmail
+deleteEmail
+readWebPage
+forwardAllEmail (set up automatic forwarding to any address)
+</x-start>
+<x-answer>
+<ul>
+<li><strong>readCalendar: run automatically.</strong> Reading changes nothing.</li>
+<li><strong>createEvent: run and log.</strong> It only touches the user's own calendar and is easy to undo.</li>
+<li><strong>sendEmail: ask first.</strong> It reaches other people and cannot be unsent. Show the recipients and the full text.</li>
+<li><strong>deleteEmail: ask first</strong>, or limit it to moving mail to a trash folder that empties after 30 days, which makes it reversible.</li>
+<li><strong>readWebPage: run automatically</strong>, but after it runs, treat the rest of the session as untrusted and require approval for any send.</li>
+<li><strong>forwardAllEmail: remove.</strong> No everyday task needs it, and it is exactly what an attacker would want: a silent, permanent copy of everything.</li>
+</ul>
+<p>The pattern: decide by what a wrong call would cost, not by how often the tool is useful.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Guardrails written only in the prompt">
+<p>"Never delete files outside tmp/" in the instructions makes mistakes rarer. It does not make them impossible, and an injected instruction can argue against it. Enforce the rule in the tool.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Asking for approval on everything">
+<p>If a person must approve every lookup, they stop reading after the tenth and approve the dangerous one too. Ask only for risky actions, show the exact details (recipient, amount, file list), and make "no" the default.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Checking the tool, not its arguments">
+<p>Allowing <code>sendEmail</code> without checking the recipient is allowing email to anyone. Most real limits are about arguments: which path, how much, to whom.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An agent only answers questions about orders. Which change protects best against it ever deleting data?",
+      "options": [
+        { "text": "Add \"never delete anything\" to the instructions", "why": "That helps, but it is a request the model can misread or be talked out of." },
+        { "text": "Give it read-only tools and a read-only database account", "correct": true, "why": "Right. With no way to delete, no prompt, bug or attack can make it delete." },
+        { "text": "Ask a person to approve every action", "why": "That protects, but at a large cost, and approval fatigue sets in. Removing the ability is simpler and stronger." }
+      ]
+    },
+    {
+      "question": "Why should the policy list allowed tools rather than forbidden ones?",
+      "options": [
+        { "text": "Lists of allowed tools are shorter", "why": "Sometimes, but length is not the reason." },
+        { "text": "A new or unexpected tool is then blocked until someone decides", "correct": true, "why": "Blocking by default means forgetting to add a rule fails safe instead of failing open." },
+        { "text": "Models read allowed lists more accurately", "why": "The model never sees this list. It is checked in code." }
+      ]
+    },
+    {
+      "question": "An agent reads a web page, then asks to send an email. What is the safest default?",
+      "options": [
+        { "text": "Send it: the user asked for help with email", "why": "The page may contain instructions written to make the agent send something. The request may not be the user's." },
+        { "text": "Ask the user to approve it, showing the recipient and text", "correct": true, "why": "After reading untrusted text, outgoing actions need a person's check." },
+        { "text": "Block all email forever", "why": "Too strong. Sending is useful; it just needs approval when untrusted text may be steering it." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Take an agent or AI feature you use and list its tools with the worst thing each could do. Then add those worst cases to your <a href="/ai/evals.html">evals</a>, and read <a href="/ai/privacy-and-security.html">Privacy and Security</a> for what to keep out of AI tools in the first place.</p>

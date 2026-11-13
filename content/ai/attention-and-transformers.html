@@ -1,0 +1,245 @@
+<!--
+{
+  "title": "Attention and Transformers",
+  "description": "How each word in a sentence gathers meaning from the words before it. Attention traced with small numbers, then stacked into a transformer.",
+  "minutes": 16,
+  "tags": ["llm", "attention", "transformers"]
+}
+-->
+<p>Read this: "Sam made soup and ate it." You know instantly that "it" is the soup, not Sam. You looked back at the other words, decided which ones mattered, and borrowed their meaning.</p>
+
+<p>A language model has to do the same thing. After <a href="/ai/tokens.html">tokenization</a>, every token becomes a vector, a list of numbers that stands for its meaning. But the vector for "it" on its own says almost nothing: "it" could be anything. To predict the next token well, "it" needs to pick up information from "soup". The mechanism that does this is called <strong>attention</strong>, and it is the core of the <strong>transformer</strong>, the design behind today's LLMs.</p>
+
+<h2>The idea: ask, match, borrow</h2>
+
+<p>Picture each word in the sentence as a person at a table. Each person holds up three things:</p>
+
+<ul>
+<li>A <strong>query</strong>: what am I looking for? For "it", roughly "a thing that was mentioned earlier".</li>
+<li>A <strong>key</strong>: what do I offer? For "soup", roughly "I am a thing, a food".</li>
+<li>A <strong>value</strong>: the information I will hand over if someone picks me.</li>
+</ul>
+
+<p>Each word compares its query with every key it can see. A good match earns a high score. The scores are turned into shares that add up to 1, and the word collects a blend of everyone's values, weighted by those shares. After this step, the vector for "it" contains mostly the meaning of "soup".</p>
+
+<x-figure caption="Attention from &quot;it&quot; to the words it can see. Thicker lines mean bigger shares. The numbers come from the worked example below.">
+<svg viewBox="0 0 520 190" aria-label="The words Sam, made, soup, and, ate, it in a row. Curved lines go from it to each earlier word. The line to soup is thickest, labelled 0.80. The line to ate is medium, 0.11. The others are thin.">
+  <path d="M470,130 Q260,-20 40,120" class="s-muted f-none" stroke-width="1"/>
+  <path d="M470,130 Q330,30 130,120" class="s-muted f-none" stroke-width="1.5"/>
+  <path d="M470,130 Q360,40 220,120" class="s-accent f-none" stroke-width="9"/>
+  <path d="M470,130 Q390,70 300,120" class="s-muted f-none" stroke-width="1"/>
+  <path d="M470,130 Q430,90 385,120" class="s-accent f-none" stroke-width="3"/>
+  <text x="40" y="150" text-anchor="middle" class="t-big">Sam</text>
+  <text x="130" y="150" text-anchor="middle" class="t-big">made</text>
+  <text x="220" y="150" text-anchor="middle" class="t-big f-accent">soup</text>
+  <text x="300" y="150" text-anchor="middle" class="t-big">and</text>
+  <text x="385" y="150" text-anchor="middle" class="t-big">ate</text>
+  <text x="470" y="150" text-anchor="middle" class="t-big">it</text>
+  <text x="40" y="176" text-anchor="middle" class="t-small f-muted">0.00</text>
+  <text x="130" y="176" text-anchor="middle" class="t-small f-muted">0.04</text>
+  <text x="220" y="176" text-anchor="middle" class="t-small f-accent t-bold">0.80</text>
+  <text x="300" y="176" text-anchor="middle" class="t-small f-muted">0.01</text>
+  <text x="385" y="176" text-anchor="middle" class="t-small f-muted">0.11</text>
+  <text x="470" y="176" text-anchor="middle" class="t-small f-muted">0.04</text>
+</svg>
+</x-figure>
+
+<h2>Work it through with small numbers</h2>
+
+<p>Real vectors have hundreds or thousands of numbers. Here each one has just two, and we pretend the first number means "is a thing" and the second means "is a person". In a real model nobody chooses what the numbers mean; training finds whatever is useful.</p>
+
+<p>Matching uses the <strong>dot product</strong>: multiply the numbers in the same positions and add. The query for "it" is <code>[2, -1]</code>: it wants a thing and is put off by a person.</p>
+
+<x-tracer title="Attention for the word &quot;it&quot;">
+<script type="application/json">
+{
+  "code": [
+    "for each visible word w:",
+    "  score[w] = dot(query, key[w])",
+    "weights = softmax(scores)",
+    "output = sum of weights[w] * value[w]"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Each word has a key. \"Sam\" has a big person number. \"soup\" has a big thing number. The query for \"it\" is <code>[2, -1]</code>.", "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [5] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"] } ], "vars": { "query": "[2, -1]" } },
+    { "caption": "Score for Sam: 2 × 0 + (−1) × 2 = −2. A person is the opposite of what \"it\" wants, so the score is negative.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [0] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"], "highlight": [0] }, { "label": "score", "values": [-2, null, null, null, null, null], "highlight": [0] } ], "vars": { "query": "[2, -1]" } },
+    { "caption": "Score for soup: 2 × 2 + (−1) × 0 = 4. A strong match.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "highlight": [2] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"], "highlight": [2] }, { "label": "score", "values": [-2, null, 4, null, null, null], "highlight": [2] } ], "vars": { "query": "[2, -1]" } },
+    { "caption": "The rest the same way: made 1, and 0, ate 2, it 1.", "line": 2, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "key", "values": ["0, 2", "0.5, 0", "2, 0", "0, 0", "1, 0", "0.5, 0"] }, { "label": "score", "values": [-2, 1, 4, 0, 2, 1], "highlight": [1, 3, 4, 5] } ], "vars": { "query": "[2, -1]" } },
+    { "caption": "Softmax, part 1: raise e to each score. This makes every number positive and stretches the gaps, so the best match pulls ahead. The total is 68.56.", "line": 3, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "score", "values": [-2, 1, 4, 0, 2, 1] }, { "label": "e^score", "values": [0.14, 2.72, 54.6, 1, 7.39, 2.72], "highlight": [0, 1, 2, 3, 4, 5] } ], "vars": { "total": 68.56 } },
+    { "caption": "Softmax, part 2: divide each by the total. Now the shares add up to 1, and soup gets 54.6 ÷ 68.56 = 0.80 of the attention.", "line": 3, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "weight", "values": [0.00, 0.04, 0.80, 0.01, 0.11, 0.04], "highlight": [2] } ], "vars": { "total": 68.56 } },
+    { "caption": "Blend the values. Only soup <code>[1, 0]</code>, ate <code>[0.5, 0]</code> and Sam <code>[0, 1]</code> carry anything here. Thing: 0.80 × 1 + 0.11 × 0.5 = 0.85. Person: 0.00 × 1 = 0.00.", "line": 4, "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"] }, { "label": "weight", "values": [0.00, 0.04, 0.80, 0.01, 0.11, 0.04], "highlight": [0, 2, 4] }, { "label": "value", "values": ["0, 1", "0, 0", "1, 0", "0, 0", "0.5, 0", "0, 0"], "highlight": [0, 2, 4] } ] },
+    { "caption": "The new vector for \"it\" is <code>[0.85, 0.00]</code>: very much a thing, not a person. It now carries the meaning it borrowed from soup, which later layers can use.", "arrays": [ { "label": "word", "values": ["Sam", "made", "soup", "and", "ate", "it"], "mark": [5] }, { "label": "weight", "values": [0.00, 0.04, 0.80, 0.01, 0.11, 0.04], "mark": [2] } ], "vars": { "output for it": "[0.85, 0.00]" } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>This is one attention step for one word, exactly as traced. Real models also divide each score by a fixed number (the square root of the vector length) before the softmax, to keep scores in a sensible range. With two numbers per vector it would not change the lesson, so it is left out.</p>
+
+<x-code>
+<pre lang="js">
+const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
+
+function softmax(scores) {
+  const biggest = Math.max(...scores); // subtract the max so exp() cannot overflow
+  const exps = scores.map((s) => Math.exp(s - biggest));
+  const total = exps.reduce((a, b) => a + b, 0);
+  return exps.map((e) => e / total);
+}
+
+function attend(query, keys, values) {
+  const weights = softmax(keys.map((k) => dot(query, k))); // match, then share
+  const out = new Array(values[0].length).fill(0);
+  weights.forEach((w, j) => {
+    values[j].forEach((v, i) => { out[i] += w * v; }); // blend the values
+  });
+  return { weights, out };
+}
+
+const keys = [[0, 2], [0.5, 0], [2, 0], [0, 0], [1, 0], [0.5, 0]];
+const values = [[0, 1], [0, 0], [1, 0], [0, 0], [0.5, 0], [0, 0]];
+attend([2, -1], keys, values).out; // about [0.85, 0.00]
+</pre>
+<pre lang="py">
+import math
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def softmax(scores):
+    biggest = max(scores)  # subtract the max so exp() cannot overflow
+    exps = [math.exp(s - biggest) for s in scores]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+def attend(query, keys, values):
+    weights = softmax([dot(query, k) for k in keys])  # match, then share
+    out = [0.0] * len(values[0])
+    for w, value in zip(weights, values):
+        for i, v in enumerate(value):
+            out[i] += w * v  # blend the values
+    return weights, out
+
+keys = [[0, 2], [0.5, 0], [2, 0], [0, 0], [1, 0], [0.5, 0]]
+values = [[0, 1], [0, 0], [1, 0], [0, 0], [0.5, 0], [0, 0]]
+attend([2, -1], keys, values)[1]  # about [0.85, 0.00]
+</pre>
+</x-code>
+
+<p>Where do the query, key and value come from? Each is made from the word's current vector by multiplying it with a grid of numbers the model learned in training. The same word gets a different query, key and value depending on those learned numbers, not on rules anyone wrote.</p>
+
+<h2>From one attention step to a transformer</h2>
+
+<p>A transformer repeats one block many times. Each block does two things to every token's vector:</p>
+
+<ol>
+<li><strong>Attention</strong>: gather information from the visible tokens, as above.</li>
+<li><strong>Feed-forward</strong>: a small neural network that works on each token's vector by itself, transforming what was gathered.</li>
+</ol>
+
+<p>Each block adds its result to the vector instead of replacing it, so information from earlier blocks is kept. After the last block, the vector at the final position is turned into chances for the next token, and the loop from <a href="/ai/what-is-an-llm.html">What Is an LLM</a> picks one.</p>
+
+<p>Three more details complete the picture:</p>
+
+<ul>
+<li><strong>Many heads.</strong> Each block runs several attention steps side by side, called heads, each with its own learned query, key and value numbers. Some heads end up with a describable job, like linking a pronoun to its noun. Most do not; what they track is learned and often hard to name.</li>
+<li><strong>Looking back only.</strong> When generating, a token can attend to itself and the tokens before it, never after. Training uses the same rule, so the model never learns to rely on the future.</li>
+<li><strong>Word order.</strong> Attention on its own treats the text like a bag of words: "dog bites man" and "man bites dog" would match the same way. So position information is mixed into the vectors, letting the model tell first from last.</li>
+</ul>
+
+<x-callout type="key">
+<p>Attention lets every token build its meaning from the tokens it can see, weighted by how relevant each one is. A transformer stacks many rounds of attention and processing, so meaning gets richer layer by layer.</p>
+</x-callout>
+
+<h2>Cost: every token looks at every other</h2>
+
+<p>For a text of <code>n</code> tokens, each token compares itself with up to <code>n</code> others, so one attention step does about n²/2 comparisons. Double the text and that work roughly quadruples. When generating, models keep the keys and values of earlier tokens in memory, so each new token costs about <code>n</code> comparisons rather than redoing everything.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Read a whole text", "time": "O(n²)", "space": "O(n²)", "note": "Every token scores every earlier token. Clever implementations avoid storing all scores at once." },
+    { "name": "Add one new token", "time": "O(n)", "space": "O(n)", "note": "Reuses the stored keys and values of the <code>n</code> tokens before it." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>This growth is one of the reasons models have a limit on how much text they can take in. <a href="/ai/the-context-window.html">The Context Window</a> covers that limit.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Reading attention as &quot;what the model is thinking about&quot;">
+<p>Attention weights show where one step gathered information from. They do not explain why the model produced an answer: many other heads, layers and feed-forward networks play a part. Treat attention pictures as a hint, not proof.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Thinking the toy numbers are how it really looks">
+<p>In this lesson the two numbers had human labels, "thing" and "person". Real vectors are long, and their numbers rarely line up with single human ideas. The mechanism is exactly as shown; the meanings are learned, spread out, and only partly understood.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Assuming the model reads ahead">
+<p>While generating, a token cannot see what comes after it. If the clue that settles an ambiguous word comes later in the sentence, only the later tokens can use it. This is one reason the order of information in your prompt can matter.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Be the attention head">
+<x-task>
+<p>For each sentence, look at the last word. Which earlier word should it attend to most, and which second? Write down rough shares that add up to about 1. Then say what clue in the sentence decides it.</p>
+</x-task>
+<x-start>
+1. "The keys were on the table, so Ana grabbed them"
+2. "Ana told Ben the joke and he laughed"
+3. "The glass fell off the shelf because it was slippery"
+</x-start>
+<x-answer>
+<ol>
+<li><strong>them</strong>: keys about 0.7, grabbed about 0.15, the rest small. "them" is plural, and "keys" is the only plural thing; "grabbed" confirms it is something you can pick up.</li>
+<li><strong>laughed</strong>: he about 0.5, Ben about 0.3, joke about 0.1. "laughed" needs to know who did it. "he" points to Ben, and an earlier layer may already have moved Ben's meaning into "he".</li>
+<li><strong>slippery</strong>: glass and shelf both plausible, around 0.4 each. Either could be slippery. A model has the same real ambiguity you do, and may spread its attention, or rely on what is more common in text it has seen.</li>
+</ol>
+<p>Attention answers "which earlier words help me here?" using grammar, meaning and world knowledge at once. Sentence 3 shows its limit: when the text does not decide, no attention pattern can make it certain.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A query is <code>[1, 3]</code> and a key is <code>[2, 1]</code>. What is the attention score?",
+      "options": [
+        { "text": "5", "correct": true, "why": "1 × 2 + 3 × 1 = 5. Multiply matching positions and add." },
+        { "text": "7", "why": "That adds all four numbers. The dot product multiplies matching positions first." },
+        { "text": "[2, 3]", "why": "That multiplies the positions but forgets to add them. A score is a single number." }
+      ]
+    },
+    {
+      "question": "Why does attention apply softmax to the scores?",
+      "options": [
+        { "text": "To turn scores into positive shares that add up to 1", "correct": true, "why": "Right. The shares say how much of each value to blend in, and the biggest score gets the biggest share." },
+        { "text": "To pick exactly one word and ignore the rest", "why": "Softmax gives every word some share. That is why \"it\" still took 0.11 from \"ate\"." },
+        { "text": "To sort the words by importance", "why": "Nothing is sorted. Each word keeps its place; only the weights change." }
+      ]
+    },
+    {
+      "question": "Text A has 1,000 tokens and text B has 2,000. Roughly how much more work is one attention step on B?",
+      "options": [
+        { "text": "Twice as much", "why": "Each token has twice as many to compare with, and there are twice as many tokens." },
+        { "text": "About four times as much", "correct": true, "why": "Comparisons grow with n², so doubling n multiplies the work by about 4." },
+        { "text": "The same, because the model size is the same", "why": "The model size is fixed, but the number of token pairs grows with the text." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>You have seen what the model computes. <a href="/ai/training-and-fine-tuning.html">Training and Fine-Tuning</a> shows how the learned numbers behind queries, keys and values get their values in the first place.</p>

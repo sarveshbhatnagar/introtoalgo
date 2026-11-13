@@ -1,0 +1,243 @@
+<!--
+{
+  "title": "Counting and Radix Sort",
+  "description": "Sort small whole numbers in O(n) by counting instead of comparing, then extend it digit by digit with radix sort. Ends with a table of every sort.",
+  "minutes": 17,
+  "tags": ["sorting"]
+}
+-->
+<p>You have 300 quiz papers, each scored from 0 to 10, and you need them in order. You could merge sort them. Or you could put 11 empty trays on the desk, labelled 0 to 10, drop each paper into the tray for its score, and then stack the trays in order. One look per paper, and no paper is ever compared with another.</p>
+
+<p>That is counting sort. It beats every sort from the earlier lessons, but only because the scores are small whole numbers in a known range.</p>
+
+<h2>The O(n log n) wall</h2>
+
+<p><a href="/algorithms/merge-sort.html">Merge sort</a>, <a href="/algorithms/quicksort.html">quicksort</a> and <a href="/algorithms/heap-sort.html">heap sort</a> all learn about the order by asking one question: is this item smaller than that one? Sorts that only ask that question can never do better than O(n log n) in the worst case.</p>
+
+<p>Here is why. <code>n</code> items can be arranged in n × (n − 1) × … × 1 different orders, and the sort has to tell them all apart. Each comparison has two answers, so at best it cuts the possible orders in half. Halving that many orders down to one takes about n log₂ n comparisons. For 10 items there are 3,628,800 orders, and halving down to 1 takes at least 22 comparisons.</p>
+
+<p>Counting sort steps around this wall. It never compares two items. It uses each key as an array index instead.</p>
+
+<h2>The idea: count, then place</h2>
+
+<p>Say every key is a whole number from 0 to <code>k − 1</code>.</p>
+
+<ol>
+<li><strong>Count</strong> how many items have each key.</li>
+<li><strong>Work out where each key starts</strong> in the output. Keys of 0 start at position 0. Keys of 1 start right after all the 0s, keys of 2 right after all the 0s and 1s, and so on. That is a running total of the counts, a <a href="/algorithms/prefix-sums.html">prefix sum</a>.</li>
+<li><strong>Place</strong> each item, in input order, at its key's start position, and move that start position one step forward.</li>
+</ol>
+
+<p>Step 3 walks the input from front to back, so items with equal keys land in the order they came in. Counting sort is <a href="/algorithms/simple-sorts.html">stable</a>. That matters as soon as the items carry data, and it is exactly what radix sort will need.</p>
+
+<p>In the trace below, the keys are 0 to 3, and the letter tells equal keys apart: <code>3a</code> and <code>3b</code> both have key 3, and <code>3a</code> came first.</p>
+
+<x-tracer title="Counting sort with keys 0 to 3">
+<script type="application/json">
+{
+  "code": [
+    "for each item: count[key] += 1",
+    "start[0] = 0",
+    "for v from 1 to k - 1: start[v] = start[v - 1] + count[v - 1]",
+    "for each item, in input order:",
+    "  out[start[key]] = item",
+    "  start[key] += 1"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Six items with keys between 0 and 3, so <code>k = 4</code>. Start with four counters at zero.", "line": 1, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"] }, { "label": "count", "values": [0, 0, 0, 0] } ] },
+    { "caption": "One pass over the input. One item has key 0, two have key 1, one has key 2, two have key 3.", "line": 1, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"] }, { "label": "count", "values": [1, 2, 1, 2], "highlight": [0, 1, 2, 3] } ] },
+    { "caption": "Running totals give the start of each key. Nothing is smaller than 0, so 0s start at 0. One item is smaller than 1, so 1s start at 1. Three items have keys below 2, so 2s start at 3. Four are below 3, so 3s start at 4.", "line": 3, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"] }, { "label": "start", "values": [0, 1, 3, 4], "highlight": [0, 1, 2, 3] }, { "label": "out", "values": [null, null, null, null, null, null] } ] },
+    { "caption": "<code>3a</code> has key 3, which starts at 4. Put it at <code>out[4]</code>, and move the start for 3 to 5.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 0 }, "highlight": [0] }, { "label": "start", "values": [0, 1, 3, 5], "highlight": [3] }, { "label": "out", "values": [null, null, null, null, "3a", null], "mark": [4] } ] },
+    { "caption": "<code>1a</code> goes to <code>out[1]</code>. The start for 1 moves to 2.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 1 }, "highlight": [1], "dim": [0] }, { "label": "start", "values": [0, 2, 3, 5], "highlight": [1] }, { "label": "out", "values": [null, "1a", null, null, "3a", null], "mark": [1, 4] } ] },
+    { "caption": "<code>3b</code> goes to <code>out[5]</code>, right after <code>3a</code>, because the start for 3 already moved past it.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 2 }, "highlight": [2], "dim": [0, 1] }, { "label": "start", "values": [0, 2, 3, 6], "highlight": [3] }, { "label": "out", "values": [null, "1a", null, null, "3a", "3b"], "mark": [1, 4, 5] } ] },
+    { "caption": "<code>0a</code> goes to <code>out[0]</code>.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 3 }, "highlight": [3], "dim": [0, 1, 2] }, { "label": "start", "values": [1, 2, 3, 6], "highlight": [0] }, { "label": "out", "values": ["0a", "1a", null, null, "3a", "3b"], "mark": [0, 1, 4, 5] } ] },
+    { "caption": "<code>2a</code> goes to <code>out[3]</code>.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 4 }, "highlight": [4], "dim": [0, 1, 2, 3] }, { "label": "start", "values": [1, 2, 4, 6], "highlight": [2] }, { "label": "out", "values": ["0a", "1a", null, "2a", "3a", "3b"], "mark": [0, 1, 3, 4, 5] } ] },
+    { "caption": "<code>1b</code> goes to <code>out[2]</code>, right after <code>1a</code>.", "line": 6, "arrays": [ { "label": "input", "values": ["3a", "1a", "3b", "0a", "2a", "1b"], "pointers": { "x": 5 }, "highlight": [5], "dim": [0, 1, 2, 3, 4] }, { "label": "start", "values": [1, 3, 4, 6], "highlight": [1] }, { "label": "out", "values": ["0a", "1a", "1b", "2a", "3a", "3b"], "mark": [0, 1, 2, 3, 4, 5] } ] },
+    { "caption": "Sorted, with <code>1a</code> still before <code>1b</code> and <code>3a</code> before <code>3b</code>. Two passes over 6 items and one over 4 counters. Zero comparisons between items.", "arrays": [ { "label": "out", "values": ["0a", "1a", "1b", "2a", "3a", "3b"], "mark": [0, 1, 2, 3, 4, 5] } ], "vars": { "comparisons": 0 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The <code>key</code> parameter lets it sort any items, not only bare numbers. Radix sort reuses it below.</p>
+
+<x-code title="Counting sort">
+<pre lang="js">
+// key(item) must be a whole number from 0 to k - 1
+function countingSortBy(items, key, k) {
+  const count = new Array(k).fill(0);
+  for (const item of items) count[key(item)]++;
+  const start = new Array(k).fill(0); // start[v] = items with key < v
+  for (let v = 1; v < k; v++) start[v] = start[v - 1] + count[v - 1];
+  const out = new Array(items.length);
+  for (const item of items) {
+    out[start[key(item)]++] = item; // input order: stable
+  }
+  return out;
+}
+
+countingSortBy([3, 1, 3, 0, 2, 1], (x) => x, 4); // [0, 1, 1, 2, 3, 3]
+</pre>
+<pre lang="py">
+# key(item) must be a whole number from 0 to k - 1
+def counting_sort_by(items, key, k):
+    count = [0] * k
+    for item in items:
+        count[key(item)] += 1
+    start = [0] * k  # start[v] = items with key < v
+    for v in range(1, k):
+        start[v] = start[v - 1] + count[v - 1]
+    out = [None] * len(items)
+    for item in items:  # input order: stable
+        out[start[key(item)]] = item
+        start[key(item)] += 1
+    return out
+
+counting_sort_by([3, 1, 3, 0, 2, 1], lambda x: x, 4)  # [0, 1, 1, 2, 3, 3]
+</pre>
+</x-code>
+
+<h2>Radix sort: one digit at a time</h2>
+
+<p>Counting sort needs one counter per possible key. For quiz scores that is 11 counters. For order numbers up to a billion, it would be a billion counters, which is hopeless.</p>
+
+<p>Radix sort fixes that by sorting on one digit at a time. Each digit is 0 to 9, so each pass is a counting sort with just 10 counters. The surprising part is the order: start with the <strong>last</strong> digit (the ones), then the tens, then the hundreds.</p>
+
+<x-tracer title="Radix sort, ones digit first">
+<script type="application/json">
+{
+  "steps": [
+    { "caption": "Seven numbers, padded to three digits so every digit position is visible. The largest is 512, so three passes are enough.", "array": { "label": "nums", "values": ["512", "038", "407", "223", "095", "340", "018"] } },
+    { "caption": "Pass 1: stable sort by the <strong>ones</strong> digit. 340 ends in 0, so it goes first. 038 and 018 both end in 8 and keep their input order.", "array": { "label": "by ones", "values": ["340", "512", "223", "095", "407", "038", "018"], "highlight": [5, 6] } },
+    { "caption": "Pass 2: stable sort by the <strong>tens</strong> digit. 512 and 018 both have a 1 there. 512 stays first because pass 1 put it first, and its ones digit, 2, is smaller than 8.", "array": { "label": "by tens", "values": ["407", "512", "018", "223", "038", "340", "095"], "highlight": [1, 2] } },
+    { "caption": "Look at the last two digits now: 07, 12, 18, 23, 38, 40, 95. They are in order. After pass <code>p</code>, the numbers are sorted by their last <code>p</code> digits.", "array": { "label": "by tens", "values": ["407", "512", "018", "223", "038", "340", "095"] } },
+    { "caption": "Pass 3: stable sort by the <strong>hundreds</strong> digit. 018, 038 and 095 all have 0 there, so stability keeps the order the earlier passes gave them.", "array": { "label": "by hundreds", "values": ["018", "038", "095", "223", "340", "407", "512"], "highlight": [0, 1, 2] } },
+    { "caption": "Fully sorted after 3 passes of 7 items each, and every pass used only 10 counters.", "array": { "label": "sorted", "values": ["018", "038", "095", "223", "340", "407", "512"], "mark": [0, 1, 2, 3, 4, 5, 6] }, "vars": { "passes": 3, "counters per pass": 10 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Why does this work? The last pass decides by the most important digit. When two numbers tie on that digit, stability leaves them in the order the earlier passes chose, and that order was already correct for the lower digits. Each pass keeps all the work of the passes before it.</p>
+
+<x-code title="Radix sort">
+<pre lang="js">
+// non-negative integers; uses countingSortBy from above
+function radixSort(nums) {
+  const biggest = nums.reduce((m, x) => Math.max(m, x), 0);
+  for (let place = 1; place <= biggest; place *= 10) {
+    nums = countingSortBy(nums, (x) => Math.floor(x / place) % 10, 10);
+  }
+  return nums;
+}
+
+radixSort([512, 38, 407, 223, 95, 340, 18]);
+// [18, 38, 95, 223, 340, 407, 512]
+</pre>
+<pre lang="py">
+# non-negative integers; uses counting_sort_by from above
+def radix_sort(nums):
+    biggest = max(nums, default=0)
+    place = 1
+    while place <= biggest:
+        nums = counting_sort_by(nums, lambda x: x // place % 10, 10)
+        place *= 10
+    return nums
+
+radix_sort([512, 38, 407, 223, 95, 340, 18])
+# [18, 38, 95, 223, 340, 407, 512]
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Counting sort", "time": "O(n + k)", "space": "O(n + k)", "note": "Passes over the n items and over the k counters. Great when k is not much bigger than n." },
+    { "name": "Radix sort", "time": "O(d × (n + b))", "space": "O(n + b)", "note": "d digits, each a counting sort with b counters. Base 10 means b = 10." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>Counting sort beats O(n log n) by using keys as array indexes instead of comparing items. It pays off only when the range of keys is small; radix sort keeps the range small by working one digit at a time.</p>
+</x-callout>
+
+<h2>Every sort in this module</h2>
+
+<p>Here <code>n</code> is the number of items, <code>k</code> the number of possible keys, <code>d</code> the number of digits and <code>b</code> the base.</p>
+
+<table>
+<thead><tr><th>Sort</th><th>Best</th><th>Average</th><th>Worst</th><th>Extra space</th><th>Stable</th><th>Reach for it when</th></tr></thead>
+<tbody>
+<tr><td>Insertion</td><td>O(n)</td><td>O(n²)</td><td>O(n²)</td><td>O(1)</td><td>Yes</td><td>the input is tiny or nearly sorted</td></tr>
+<tr><td>Selection</td><td>O(n²)</td><td>O(n²)</td><td>O(n²)</td><td>O(1)</td><td>No</td><td>writes are very expensive (at most n − 1 swaps)</td></tr>
+<tr><td>Bubble</td><td>O(n)</td><td>O(n²)</td><td>O(n²)</td><td>O(1)</td><td>Yes</td><td>almost never; it is a teaching example</td></tr>
+<tr><td>Merge</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n)</td><td>Yes</td><td>you need stability, a linked list, or data on disk</td></tr>
+<tr><td>Quicksort</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n²)</td><td>O(log n)</td><td>No</td><td>fast in-place sorting with a random pivot</td></tr>
+<tr><td>Heap</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(1)</td><td>No</td><td>you need a guarantee with no extra memory</td></tr>
+<tr><td>Counting</td><td>O(n + k)</td><td>O(n + k)</td><td>O(n + k)</td><td>O(n + k)</td><td>Yes</td><td>keys are small whole numbers</td></tr>
+<tr><td>Radix</td><td>O(d(n + b))</td><td>O(d(n + b))</td><td>O(d(n + b))</td><td>O(n + b)</td><td>Yes</td><td>keys are fixed-length numbers or strings</td></tr>
+<tr><td>Built-in (Timsort)</td><td>O(n)</td><td>O(n log n)</td><td>O(n log n)</td><td>O(n)</td><td>Yes</td><td>almost always, in real code</td></tr>
+</tbody>
+</table>
+
+<p>In real code, call the built-in sort unless the right-hand column gives you a reason not to.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Counting sort over a huge range">
+<p>Ten numbers between 0 and 1,000,000,000 need a billion counters, and the O(n + k) is all k. Check the range before you reach for counting sort. If the range is big, use radix sort or a comparison sort.</p>
+</x-callout>
+
+<x-callout type="mistake" title="An unstable sort inside radix sort">
+<p>Each digit pass must be stable. If the hundreds pass reordered 018, 038 and 095 freely, the work of the first two passes would be lost and the result would be wrong. That is why each pass is a counting sort that places items in input order.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Negative numbers">
+<p>A key of −3 is not a valid array index. Shift every key by the minimum (use <code>x − min</code> as the key), or sort negatives and non-negatives separately.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Radix sort shines on huge numbers of fixed-size keys: millions of 32-bit integers on a GPU, or dates written as YYYYMMDD.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Counts for keys 0 to 3 are <code>[2, 0, 3, 1]</code>. At which output position does the first item with key 3 go?",
+      "options": [
+        { "text": "5", "correct": true, "why": "2 + 0 + 3 = 5 items have smaller keys, so key 3 starts at position 5." },
+        { "text": "3", "why": "That is the key itself, not its position. Positions come from how many items have smaller keys." },
+        { "text": "6", "why": "That is one past the last item. With 6 items, positions go from 0 to 5." }
+      ]
+    },
+    {
+      "question": "Radix sort on <code>[21, 12, 22, 11]</code>. What is the order after the ones pass?",
+      "options": [
+        { "text": "[21, 11, 12, 22]", "correct": true, "why": "Ones digits are 1, 2, 2, 1. The 1s come first in input order (21, 11), then the 2s in input order (12, 22)." },
+        { "text": "[11, 21, 12, 22]", "why": "That swaps 21 and 11, which tie on the ones digit. A stable pass keeps 21 first because it came first." },
+        { "text": "[11, 12, 21, 22]", "why": "That is the final result, after the tens pass too." }
+      ]
+    },
+    {
+      "question": "You must sort 1 million user IDs, each a random number up to 10<sup>18</sup>. Is counting sort a good fit?",
+      "options": [
+        { "text": "Yes, it is O(n)", "why": "It is O(n + k), and k here is 10<sup>18</sup>. The counter array alone could never fit in memory." },
+        { "text": "No, the range of keys is far too large", "correct": true, "why": "Use radix sort over the digits or bytes, or a normal comparison sort." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Sorting is often a first step rather than the goal. Once data is sorted, you can find anything in it in O(log n) with <a href="/algorithms/binary-search.html">Binary Search</a>, the next lesson.</p>

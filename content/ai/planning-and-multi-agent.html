@@ -1,0 +1,217 @@
+<!--
+{
+  "title": "Planning and Multi-Agent Systems",
+  "description": "Help an agent with a big task by making it plan first, and split work across agents with fresh context, plus the costs and when one agent is better.",
+  "minutes": 15,
+  "tags": ["agents", "planning"]
+}
+-->
+<p>You ask an agent to compare how three open-source web frameworks handle security updates: how fast they ship fixes, how they announce them, and how long old versions get patches. It reads Framework A's documentation, then B's, then C's. By the time it writes the report, its history holds dozens of pages. The report says Framework A supports old versions for two years. That was Framework C.</p>
+
+<p>Nothing was wrong with any single step. The task was simply too long for one loop to hold clearly. There are two tools for this problem: make the agent <strong>plan</strong>, and split the work across <strong>several agents</strong> that each see less.</p>
+
+<h2>Plan first, then act</h2>
+
+<p>An agent running the <a href="/ai/the-agent-loop.html">agent loop</a> picks one step at a time. On a long task that leads to drift: it follows an interesting lead, forgets a part of the request, and runs out of steps with one framework still unread.</p>
+
+<p>The fix is cheap. Before any tool call, ask the model for a short plan, keep that plan in the history as a checklist, and have the agent tick items off and rewrite the plan when it learns something new.</p>
+
+<x-prompt label="Asking for a plan before acting" tone="good">
+<x-system>
+Before using any tool, write a numbered plan of at most 6 steps. After each step, restate the plan with finished steps marked [done]. If a result changes what you need to do, rewrite the remaining steps and say why.
+</x-system>
+<x-user>
+Compare how Framework A, B and C handle security updates: time to ship a fix, how fixes are announced, and how long old versions are supported. Cite a page for each claim.
+</x-user>
+<x-model>
+Plan:
+1. Find Framework A's security policy page and note the three facts.
+2. Same for Framework B.
+3. Same for Framework C.
+4. For any fact a policy page does not state, check release notes for the last 3 security fixes.
+5. Build a table: framework × three facts, with a source per cell.
+6. Write a short comparison under the table.
+
+Starting step 1.
+</x-model>
+</x-prompt>
+
+<p>A plan helps in three ways. The checklist stops parts of the task from being forgotten. A person can read it and correct the approach before any work is done. And progress becomes visible: "step 4 of 6" means something.</p>
+
+<p>The plan is a guess, not a contract. Step 4 exists because the agent expects some pages to be incomplete. If Framework B turns out to have no security page at all, the right move is to rewrite the remaining steps, not to follow the old ones.</p>
+
+<h2>Several agents, each with a fresh context</h2>
+
+<p>Planning keeps the agent on track, but it does not shrink the history. All three frameworks' pages still pile up in one context. The second tool is to split the work.</p>
+
+<p>In the most common design, an <strong>orchestrator</strong> agent breaks the task into parts and hands each part to a <strong>worker</strong> agent. Each worker starts with an empty history and only its own part. It does the reading, and sends back a short summary. The orchestrator never sees the raw pages, only the summaries.</p>
+
+<x-tracer title="One orchestrator, three workers">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "The orchestrator reads the task and writes a plan with three independent parts, one per framework. Its context is small: the task and the plan.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["orchestrator", "worker A"], ["orchestrator", "worker B"], ["orchestrator", "worker C"]], "highlight": ["orchestrator"], "dim": ["worker A", "worker B", "worker C"], "labels": {"orchestrator": "300 tokens"} },
+      "vars": { "orchestrator context": 300 }
+    },
+    {
+      "caption": "Each worker gets a brief: the overall goal, its one framework, and the format to reply in. That is all it knows. The three can run at the same time.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["orchestrator", "worker A"], ["orchestrator", "worker B"], ["orchestrator", "worker C"]], "highlight": ["worker A", "worker B", "worker C"], "highlightEdges": [["orchestrator", "worker A"], ["orchestrator", "worker B"], ["orchestrator", "worker C"]], "labels": {"orchestrator": "300 tokens", "worker A": "200", "worker B": "200", "worker C": "200"} },
+      "vars": { "orchestrator context": 300 }
+    },
+    {
+      "caption": "Each worker runs its own loop, searching and reading pages about one framework. Each history grows to about 12,000 tokens, but only about one framework, so nothing gets mixed up.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["orchestrator", "worker A"], ["orchestrator", "worker B"], ["orchestrator", "worker C"]], "highlight": ["worker A", "worker B", "worker C"], "labels": {"orchestrator": "300 tokens", "worker A": "12,200", "worker B": "12,200", "worker C": "12,200"} },
+      "vars": { "orchestrator context": 300 }
+    },
+    {
+      "caption": "Each worker replies with a summary of about 300 tokens: the three facts with a source each. The worker's long history is thrown away.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["worker A", "orchestrator"], ["worker B", "orchestrator"], ["worker C", "orchestrator"]], "highlightEdges": [["worker A", "orchestrator"], ["worker B", "orchestrator"], ["worker C", "orchestrator"]], "mark": ["worker A", "worker B", "worker C"], "labels": {"orchestrator": "1,200 tokens", "worker A": "done", "worker B": "done", "worker C": "done"} },
+      "vars": { "orchestrator context": 1200 }
+    },
+    {
+      "caption": "The orchestrator writes the comparison from 1,200 tokens of clean summaries. A single agent would have written it from about 36,000 tokens of raw pages.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["worker A", "orchestrator"], ["worker B", "orchestrator"], ["worker C", "orchestrator"]], "mark": ["orchestrator"], "dim": ["worker A", "worker B", "worker C"], "labels": {"orchestrator": "report"} },
+      "vars": { "orchestrator context": 1200, "single agent would hold": 36100 }
+    },
+    {
+      "caption": "The catch: all four agents together handled about 3 × 12,200 + 1,200 = 37,800 tokens, more than the single agent. Splitting buys clarity and speed, not savings.",
+      "graph": { "directed": true, "nodes": [{"id": "orchestrator", "x": 50, "y": 10}, {"id": "worker A", "x": 15, "y": 60}, {"id": "worker B", "x": 50, "y": 60}, {"id": "worker C", "x": 85, "y": 60}], "edges": [["worker A", "orchestrator"], ["worker B", "orchestrator"], ["worker C", "orchestrator"]], "mark": ["orchestrator"], "labels": {"orchestrator": "1,200", "worker A": "12,200", "worker B": "12,200", "worker C": "12,200"} },
+      "vars": { "total across agents": 37800, "single agent": 36100 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The numbers are illustrative, and the single-agent total assumes the task (100 tokens) plus 12,000 tokens of pages per framework. The shape is what matters: workers keep the orchestrator's context small and focused, and the work can run in parallel. Each worker is just the loop from the previous lesson, given its own goal.</p>
+
+<x-code>
+<pre lang="js">
+// runWorker(brief) runs one agent loop and returns its final answer.
+function orchestrate(goal, parts, runWorker) {
+  const summaries = parts.map((part) =>
+    runWorker(`Overall goal: ${goal}\nYour part: ${part}\n` +
+      "Reply with at most 5 bullet points, each with a source link."));
+  return summaries; // in a real app, run the workers in parallel
+}
+
+const fakeWorker = (brief) => `summary of: ${brief.split("\n")[1]}`;
+console.log(orchestrate("Compare security updates",
+  ["Framework A", "Framework B", "Framework C"], fakeWorker));
+// [ 'summary of: Your part: Framework A', ... ]
+</pre>
+<pre lang="py">
+# run_worker(brief) runs one agent loop and returns its final answer.
+def orchestrate(goal, parts, run_worker):
+    summaries = [
+        run_worker(f"Overall goal: {goal}\nYour part: {part}\n"
+                   "Reply with at most 5 bullet points, each with a source link.")
+        for part in parts
+    ]
+    return summaries  # in a real app, run the workers in parallel
+
+fake_worker = lambda brief: f"summary of: {brief.splitlines()[1]}"
+print(orchestrate("Compare security updates",
+                  ["Framework A", "Framework B", "Framework C"], fake_worker))
+# ['summary of: Your part: Framework A', ...]
+</pre>
+</x-code>
+
+<p>Look at what the brief contains. The worker knows nothing except what is in that string, so the brief has to carry the goal, the boundaries of the part, and the shape of the reply. A vague brief, like "Research Framework B", gets back a vague essay.</p>
+
+<h2>When one agent is better</h2>
+
+<p>Multi-agent systems are popular to draw and often worse in practice. They cost more in total, as the tracer showed. Every handoff loses context the orchestrator had and did not write down. And when the final answer is wrong, there are more places to look.</p>
+
+<p>Split work only when the parts are truly independent: researching separate topics, checking separate files, trying separate approaches and keeping the best. Keep one agent when the parts depend on each other. Two workers writing different halves of the same program will each make reasonable choices about names, data formats and error handling, and the choices will not match.</p>
+
+<x-callout type="key">
+<p>Split a task across agents only when the parts can be done without talking to each other. Otherwise, one agent with a plan is simpler, cheaper and easier to debug.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Research assistants that answer broad questions often use workers to read many sources in parallel. Coding agents more often stay single, because edits to one codebase depend on each other, and use a plan to stay organized.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Write a worker's brief">
+<x-task>
+<p>The orchestrator in the framework comparison sends this brief to a worker. The worker comes back with a long history of the project and no dates. Rewrite the brief so the summary is usable in the final table.</p>
+</x-task>
+<x-start>
+Research Framework B.
+</x-start>
+<x-answer>
+<x-prompt label="Rewritten brief" tone="good">
+<x-user>
+Overall goal: a table comparing how three web frameworks handle security updates. You are covering Framework B only.
+
+Find these three facts:
+1. Typical time from a reported vulnerability to a released fix.
+2. Where fixes are announced (mailing list, blog, advisory database...).
+3. How long older major versions receive security fixes.
+
+Use the project's own security policy and release notes first. If a fact is not stated anywhere, write "not stated" rather than estimating.
+
+Reply with exactly three bullet points, one per fact, each ending with the source URL. No background on the project.
+</x-user>
+</x-prompt>
+<p>Why it works: the worker knows how its output will be used (a table cell), exactly which three facts to find, where to look, what to do when a fact is missing, and the shape of the reply. That is the same <a href="/ai/writing-a-good-brief.html">brief</a> you would give a human contractor who cannot ask you questions.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Splitting work that is not independent">
+<p>If worker B needs a decision worker A makes, they will each guess, and the guesses will clash. Either do those parts in one agent, or make the decision first and put it in both briefs.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Following a stale plan">
+<p>A plan written before any tool ran is based on assumptions. When a result contradicts one, update the plan. Tell the agent in its instructions that rewriting the plan is expected, or it may stick to the original out of obedience.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Trusting summaries without sources">
+<p>The orchestrator cannot check what a worker read. Ask workers to cite a source for each claim, so a person, or a checking step, can follow it back.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Why do workers help an orchestrator write a more accurate report?",
+      "options": [
+        { "text": "Workers use a better model", "why": "They can use the same model. The gain comes from what each one has to read." },
+        { "text": "Each worker sees only its own part, and the orchestrator sees only short summaries", "correct": true, "why": "Right. Smaller, focused contexts mean fewer details mixed up between parts." },
+        { "text": "Several agents always use fewer tokens", "why": "They usually use more in total. The orchestrator's own context is smaller, not the whole system's cost." }
+      ]
+    },
+    {
+      "question": "Which task is the best fit for several worker agents?",
+      "options": [
+        { "text": "Writing one function and its tests", "why": "The tests depend on the function's exact behaviour. Splitting them invites mismatches." },
+        { "text": "Checking 20 separate log files for the same error message", "correct": true, "why": "The files are independent, so each worker can search one without knowing about the others." },
+        { "text": "Renaming a variable used across a codebase", "why": "Every change depends on the same decision and must stay consistent. One agent with a plan is safer." }
+      ]
+    },
+    {
+      "question": "Halfway through, a result shows that step 4 of the agent's plan is no longer needed. What should happen?",
+      "options": [
+        { "text": "Do step 4 anyway, for consistency", "why": "That spends steps on work that no longer serves the goal." },
+        { "text": "Rewrite the remaining plan and note why", "correct": true, "why": "A plan is a working guess. Updating it when facts change is the point of keeping one." },
+        { "text": "Stop the run and start over", "why": "Nothing is broken. The plan just needs a change." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>More agents and more steps mean more ways to go wrong quietly. Continue with <a href="/ai/evals.html">Evals</a> to measure whether an agent actually does its job, then <a href="/ai/guardrails.html">Guardrails</a> to limit what it can break.</p>

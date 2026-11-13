@@ -1,0 +1,257 @@
+<!--
+{
+  "title": "Tokens",
+  "description": "Models read and write tokens, not letters or words. See how a tokenizer learns its pieces, and why tokens explain costs, limits and odd spelling mistakes.",
+  "minutes": 14,
+  "tags": ["llm", "tokens", "fundamentals"]
+}
+-->
+<p>Ask an AI assistant how many times the letter "r" appears in a long, unusual word, and it may get it wrong while explaining its answer in perfect English. Ask it to write a poem about the same word and it does fine. The model is not careless about letters. It mostly never sees them.</p>
+
+<p>In <a href="/ai/what-is-an-llm.html">What Is an LLM</a> you saw that a model predicts the next piece of text, again and again. Those pieces are called <strong>tokens</strong>, and they are not letters. Understanding them explains a lot: why limits and prices are counted in tokens, why some languages cost more than others, and why counting letters is hard for a system that writes so well.</p>
+
+<h2>Text becomes a list of numbers</h2>
+
+<p>A model can only do arithmetic. Before it reads anything, a program called a <strong>tokenizer</strong> cuts the text into pieces from a fixed list, the <em>vocabulary</em>, and replaces each piece with its position in that list. The model sees only those numbers, called token IDs.</p>
+
+<x-figure caption="An illustrative split. Real tokenizers differ in where they cut and which IDs they use.">
+<svg viewBox="0 0 520 170" aria-label="The sentence I'm unbelievably tired, split into seven boxes: I, 'm, space un, believ, ably, space tired, full stop. Under each box is a made-up token ID.">
+  <text x="10" y="26" class="t-sans t-small f-muted">Text</text>
+  <text x="10" y="50" class="t-big">I'm unbelievably tired.</text>
+  <text x="10" y="92" class="t-sans t-small f-muted">Tokens</text>
+  <rect x="10" y="100" width="34" height="34" rx="6" class="f-accent-soft s-accent"/><text x="27" y="122" text-anchor="middle">I</text>
+  <rect x="48" y="100" width="44" height="34" rx="6" class="f-surface s-line"/><text x="70" y="122" text-anchor="middle">'m</text>
+  <rect x="96" y="100" width="56" height="34" rx="6" class="f-accent-soft s-accent"/><text x="124" y="122" text-anchor="middle">␣un</text>
+  <rect x="156" y="100" width="70" height="34" rx="6" class="f-surface s-line"/><text x="191" y="122" text-anchor="middle">believ</text>
+  <rect x="230" y="100" width="54" height="34" rx="6" class="f-accent-soft s-accent"/><text x="257" y="122" text-anchor="middle">ably</text>
+  <rect x="288" y="100" width="76" height="34" rx="6" class="f-surface s-line"/><text x="326" y="122" text-anchor="middle">␣tired</text>
+  <rect x="368" y="100" width="34" height="34" rx="6" class="f-accent-soft s-accent"/><text x="385" y="122" text-anchor="middle">.</text>
+  <text x="27" y="156" text-anchor="middle" class="t-small f-muted">40</text>
+  <text x="70" y="156" text-anchor="middle" class="t-small f-muted">2389</text>
+  <text x="124" y="156" text-anchor="middle" class="t-small f-muted">517</text>
+  <text x="191" y="156" text-anchor="middle" class="t-small f-muted">30911</text>
+  <text x="257" y="156" text-anchor="middle" class="t-small f-muted">2088</text>
+  <text x="326" y="156" text-anchor="middle" class="t-small f-muted">11724</text>
+  <text x="385" y="156" text-anchor="middle" class="t-small f-muted">13</text>
+  <text x="420" y="122" class="t-sans t-small f-muted">7 tokens</text>
+</svg>
+</x-figure>
+
+<p>Three things to notice. Common short words like "tired" are a single token. A long or rare word is split into chunks. And the space usually belongs to the token after it (shown as ␣), so " tired" and "tired" are different tokens with different IDs.</p>
+
+<p>Why not just use letters? Then a sentence would be dozens of tokens, and the model would need many more steps to read and write anything. Why not whole words? Then the vocabulary would need every word, name, typo and number ever written. Pieces in between give the best of both: frequent text is short, and anything at all can still be spelled out from smaller pieces.</p>
+
+<h2>Where the pieces come from</h2>
+
+<p>Nobody picks the vocabulary by hand. A common method, called <strong>byte-pair encoding</strong>, learns it from a sample of text with a very simple rule:</p>
+
+<ol>
+<li>Start with every word split into single characters.</li>
+<li>Count every pair of neighbouring pieces across all the text.</li>
+<li>Glue the most frequent pair into one new piece, and add it to the vocabulary.</li>
+<li>Repeat until the vocabulary is as big as you want.</li>
+</ol>
+
+<p>Here it is on a tiny sample of six words: tea, tea, team, teams, steam, seat.</p>
+
+<x-tracer title="Learning tokens from six words">
+<script type="application/json">
+{
+  "code": [
+    "split every word into letters",
+    "repeat k times:",
+    "  count each pair of neighbouring pieces",
+    "  best = the most frequent pair",
+    "  glue best together everywhere",
+    "  add best to the vocabulary"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Every word starts as single letters. The sample has 24 letters, so 24 tokens.", "line": 1, "arrays": [ { "label": "tea ×2", "values": ["t", "e", "a"] }, { "label": "team", "values": ["t", "e", "a", "m"] }, { "label": "teams", "values": ["t", "e", "a", "m", "s"] }, { "label": "steam", "values": ["s", "t", "e", "a", "m"] }, { "label": "seat", "values": ["s", "e", "a", "t"] } ], "vars": { "tokens": 24 } },
+    { "caption": "Count the pairs. <code>e a</code> appears 6 times (every word has it). <code>t e</code> appears 5 times (not in seat). <code>e a</code> wins.", "line": 4, "arrays": [ { "label": "tea ×2", "values": ["t", "e", "a"], "highlight": [1, 2] }, { "label": "team", "values": ["t", "e", "a", "m"], "highlight": [1, 2] }, { "label": "teams", "values": ["t", "e", "a", "m", "s"], "highlight": [1, 2] }, { "label": "steam", "values": ["s", "t", "e", "a", "m"], "highlight": [2, 3] }, { "label": "seat", "values": ["s", "e", "a", "t"], "highlight": [1, 2] } ], "vars": { "e a": 6, "t e": 5, "a m": 3 } },
+    { "caption": "Glue <code>e a</code> into the new piece <code>ea</code> everywhere. 6 merges, so the total drops from 24 to 18 tokens.", "line": 5, "arrays": [ { "label": "tea ×2", "values": ["t", "ea"], "mark": [1] }, { "label": "team", "values": ["t", "ea", "m"], "mark": [1] }, { "label": "teams", "values": ["t", "ea", "m", "s"], "mark": [1] }, { "label": "steam", "values": ["s", "t", "ea", "m"], "mark": [2] }, { "label": "seat", "values": ["s", "ea", "t"], "mark": [1] } ], "vars": { "vocabulary + ": "ea", "tokens": 18 } },
+    { "caption": "Count again. <code>t ea</code> now appears 5 times, more than anything else. Glue it into <code>tea</code>. Total: 13 tokens.", "line": 5, "arrays": [ { "label": "tea ×2", "values": ["tea"], "mark": [0] }, { "label": "team", "values": ["tea", "m"], "mark": [0] }, { "label": "teams", "values": ["tea", "m", "s"], "mark": [0] }, { "label": "steam", "values": ["s", "tea", "m"], "mark": [1] }, { "label": "seat", "values": ["s", "ea", "t"] } ], "vars": { "vocabulary + ": "tea", "t ea": 5, "tokens": 13 } },
+    { "caption": "Next, <code>tea m</code> appears 3 times. Glue it into <code>team</code>. Total: 10 tokens.", "line": 5, "arrays": [ { "label": "tea ×2", "values": ["tea"] }, { "label": "team", "values": ["team"], "mark": [0] }, { "label": "teams", "values": ["team", "s"], "mark": [0] }, { "label": "steam", "values": ["s", "team"], "mark": [1] }, { "label": "seat", "values": ["s", "ea", "t"] } ], "vars": { "vocabulary + ": "team", "tea m": 3, "tokens": 10 } },
+    { "caption": "Three rules learned: <code>ea</code>, <code>tea</code>, <code>team</code>. Frequent words are now one token. The rare word <code>seat</code> is still three pieces, even though it contains the letters of <code>tea</code>.", "arrays": [ { "label": "tea ×2", "values": ["tea"], "mark": [0] }, { "label": "team", "values": ["team"], "mark": [0] }, { "label": "teams", "values": ["team", "s"] }, { "label": "steam", "values": ["s", "team"] }, { "label": "seat", "values": ["s", "ea", "t"], "dim": [0, 1, 2] } ], "vars": { "merges": 3, "tokens": 10, "letters": 24 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Real tokenizers run the same idea on billions of words, usually on raw bytes rather than letters so that any text in any script can be handled, and stop after tens of thousands of merges or more. To tokenize new text later, they apply the learned merges in the same order.</p>
+
+<h2>The code</h2>
+
+<x-code>
+<pre lang="js">
+function learnMerges(words, numMerges) {
+  let pieces = words.map((w) => w.split("")); // start from single letters
+  const merges = [];
+  for (let m = 0; m < numMerges; m++) {
+    const counts = new Map(); // count every pair of neighbouring pieces
+    for (const word of pieces) {
+      for (let i = 0; i + 1 < word.length; i++) {
+        const pair = word[i] + "|" + word[i + 1];
+        counts.set(pair, (counts.get(pair) || 0) + 1);
+      }
+    }
+    let best = null; // most frequent pair; the first one seen wins a tie
+    for (const [pair, c] of counts) if (best === null || c > counts.get(best)) best = pair;
+    if (best === null) break; // every word is already one piece
+    const [a, b] = best.split("|");
+    merges.push(a + b);
+    pieces = pieces.map((word) => {
+      const out = [];
+      for (let i = 0; i < word.length; i++) {
+        if (word[i] === a && word[i + 1] === b) { out.push(a + b); i++; }
+        else out.push(word[i]);
+      }
+      return out;
+    });
+  }
+  return { merges, pieces };
+}
+
+learnMerges(["tea", "tea", "team", "teams", "steam", "seat"], 3).merges;
+// ["ea", "tea", "team"]
+</pre>
+<pre lang="py">
+def learn_merges(words, num_merges):
+    pieces = [list(w) for w in words]  # start from single letters
+    merges = []
+    for _ in range(num_merges):
+        counts = {}  # count every pair of neighbouring pieces
+        for word in pieces:
+            for a, b in zip(word, word[1:]):
+                counts[(a, b)] = counts.get((a, b), 0) + 1
+        if not counts:
+            break  # every word is already one piece
+        best = max(counts, key=counts.get)  # the first one seen wins a tie
+        merges.append(best[0] + best[1])
+        new_pieces = []
+        for word in pieces:
+            out, i = [], 0
+            while i < len(word):
+                if i + 1 < len(word) and (word[i], word[i + 1]) == best:
+                    out.append(word[i] + word[i + 1])
+                    i += 2
+                else:
+                    out.append(word[i])
+                    i += 1
+            new_pieces.append(out)
+        pieces = new_pieces
+    return merges, pieces
+
+learn_merges(["tea", "tea", "team", "teams", "steam", "seat"], 3)[0]
+# ['ea', 'tea', 'team']
+</pre>
+</x-code>
+
+<p>Each merge scans all the text once, so learning <code>k</code> merges over <code>n</code> characters is O(k · n) in this simple version. Production tokenizers use smarter bookkeeping, but the result is the same kind of vocabulary.</p>
+
+<h2>Why tokens matter to you</h2>
+
+<p><strong>Limits and prices are in tokens.</strong> How much text a model can read at once, and what a request costs, are measured in tokens, not words or characters. For ordinary English prose, expect somewhat more tokens than words. The exact ratio depends on the tokenizer.</p>
+
+<p><strong>Not all text is equal.</strong> A tokenizer learns its merges from its training sample. Text that was common there, like English prose and popular programming languages, packs into few tokens. Languages that were rarer, unusual names, long numbers and random strings like IDs or hashes break into many small pieces. The same message can cost several times more tokens in one language than another.</p>
+
+<p><strong>Letters are hidden.</strong> The model receives the ID for "␣tired", not t-i-r-e-d. It can often still spell words, because it has seen many spellings in its training text, but counting or reversing letters asks it to recover something it was never directly shown. Numbers have the same problem: "2847" might be one token or two, and the split is not by place value, which is part of why plain arithmetic on long numbers is unreliable.</p>
+
+<x-callout type="key">
+<p>A model reads and writes tokens: chunks of text mapped to numbers. Anything that depends on individual characters, like spelling, counting letters or digit-by-digit arithmetic, is harder for it than the fluent text suggests.</p>
+</x-callout>
+
+<p>After this step, each token ID is turned into a list of numbers, a vector, that the model learns during training. That is the <a href="/ai/embeddings.html">embedding</a> idea from the previous module, applied to tokens.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Estimating limits in words or pages">
+<p>A limit that fits 50 pages of English prose may fit far fewer pages of code, tables, another language or text full of numbers. When a limit matters, count tokens with the tokenizer for the model you use, not with a word counter.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Asking for character-level work and trusting the answer">
+<p>"How many letters", "reverse this string", "check every digit" are tasks the model may get wrong while sounding certain. Ask it to write the characters out one by one before counting, or better, have it write code that does the counting.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Assuming one tokenizer fits all models">
+<p>Different models use different vocabularies. The same text can have a different token count, and different splits, from one model to the next. Never reuse a count from one model for another.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Make letter counting reliable">
+<x-task>
+<p>This prompt sometimes gets a wrong count, stated confidently. Rewrite it so the model works at the level of letters instead of tokens.</p>
+</x-task>
+<x-start>
+How many times does the letter "s" appear in "possessiveness"?
+</x-start>
+<x-answer>
+<x-prompt label="Rewritten prompt" tone="good">
+<x-user>
+Spell the word "possessiveness" one letter per line, numbering each line.
+Then list the line numbers that contain the letter "s".
+Finally, give the count.
+</x-user>
+<x-model>
+1. p
+2. o
+3. s
+4. s
+5. e
+6. s
+7. s
+8. i
+9. v
+10. e
+11. n
+12. e
+13. s
+14. s
+
+Lines with "s": 3, 4, 6, 7, 13, 14
+Count: 6
+</x-model>
+</x-prompt>
+<p>Why it works: writing one letter per line turns each letter into its own token in the model's output. Counting then means looking back at short, separate tokens, which is much easier than seeing inside a multi-letter chunk. You can also check every line yourself. For anything where a mistake matters, ask for code that counts instead.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "In the six-word example, why did <code>seat</code> stay as three pieces?",
+      "options": [
+        { "text": "Byte-pair encoding cannot handle words that start with s", "why": "<code>steam</code> also starts with s and became <code>s</code> + <code>team</code>. The first letter is not the issue." },
+        { "text": "The pairs in <code>seat</code> were not frequent enough to be merged", "correct": true, "why": "Right. Only the most frequent pairs get merged. <code>seat</code> appears once, so after <code>ea</code> its pairs never won a round." },
+        { "text": "The tokenizer only merges pairs at the start of words", "why": "The first merge, <code>ea</code>, happened in the middle of words." }
+      ]
+    },
+    {
+      "question": "The same paragraph, translated into a language that was rare in the tokenizer's training sample, will usually...",
+      "options": [
+        { "text": "use about the same number of tokens", "why": "The merges were learned from common text. Rare text keeps more small pieces." },
+        { "text": "use more tokens", "correct": true, "why": "Fewer of its letter pairs were frequent enough to merge, so it splits into more, smaller pieces." },
+        { "text": "use fewer tokens, because it is shorter", "why": "Token count depends on the vocabulary, not just length." }
+      ]
+    },
+    {
+      "question": "Why can a model write fluent sentences but miscount the letters in a word?",
+      "options": [
+        { "text": "It reads token IDs for chunks of text, so individual letters are not directly visible", "correct": true, "why": "Right. A whole word can arrive as one ID. Recovering the letters inside it relies on what the model learned about spelling." },
+        { "text": "It is bad at numbers in general", "why": "Counting is part of it, but the main problem is that the letters themselves are hidden inside tokens." },
+        { "text": "It was not trained on any spellings", "why": "It has seen many spellings, which is why it often gets them right. It just does not see letters directly." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Next, <a href="/ai/attention-and-transformers.html">Attention and Transformers</a> shows how the model combines the token vectors so that each one can use information from the others.</p>

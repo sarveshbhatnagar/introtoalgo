@@ -1,0 +1,293 @@
+<!--
+{
+  "title": "Structured Output",
+  "description": "Get replies a program can read: specify the exact JSON shape, allowed values and what to do with missing data, then parse and check every reply in code.",
+  "minutes": 15,
+  "tags": ["prompting", "json"]
+}
+-->
+<p>You have 300 customer emails and want each one as a row in a spreadsheet: name, order number, type of problem. You write a prompt, run it on the first email, and the reply opens with a cheerful "Sure, here are the details" followed by bold labels and a bulleted list. A person reads that fine. Your script, which expected three clean fields, crashes on the first line.</p>
+
+<p>When a program reads the reply, the reply is no longer prose. It is data passing through an interface, and an interface needs an exact format on both sides.</p>
+
+<h2>Specify the shape, not just the content</h2>
+
+<p>Asking a model to "extract the name, order number and issue" tells it what to find. It says nothing about how to write it down, so the model picks the format a helpful chat reply usually has.</p>
+
+<x-prompt label="Content only" tone="weak">
+<x-user>
+Extract the customer's name, order number and issue from this email.
+
+Hi, this is Dana Whitfield. My blender (order 48213) arrived yesterday and the lid was cracked in two places. Can you help?
+</x-user>
+<x-model>
+Sure! Here are the details:
+
+- **Name:** Dana Whitfield
+- **Order number:** #48213
+- **Issue:** The blender arrived with a cracked lid.
+</x-model>
+</x-prompt>
+
+<p>For a program, everything about this is wrong: the friendly opener, the markdown, the <code>#</code> added to the number, and an issue written as a free sentence that cannot be counted. A good structured-output prompt settles five things:</p>
+
+<ol>
+<li><strong>The format.</strong> Usually JSON, because every language can parse it.</li>
+<li><strong>The exact field names and types.</strong> <code>order_id</code> as a string of digits, not "Order number".</li>
+<li><strong>The allowed values</strong> for any field you will group or count by.</li>
+<li><strong>What to do when something is missing.</strong> Use <code>null</code>; never guess.</li>
+<li><strong>Nothing else.</strong> No text before or after the JSON.</li>
+</ol>
+
+<x-prompt label="Shape specified" tone="good">
+<x-user>
+Extract details from the customer email below. Reply with one JSON object and nothing else: no explanation, no markdown.
+
+Use exactly this shape:
+{
+  "name": string or null,
+  "order_id": string of digits only, or null,
+  "issue_type": one of "damaged", "late", "wrong-item", "other"
+}
+
+If a value is not in the email, use null. Do not guess.
+
+<email>
+Hi, this is Dana Whitfield. My blender (order 48213) arrived yesterday and the lid was cracked in two places. Can you help?
+</email>
+</x-user>
+<x-model>
+{
+  "name": "Dana Whitfield",
+  "order_id": "48213",
+  "issue_type": "damaged"
+}
+</x-model>
+</x-prompt>
+
+<p>The template does the work of an example, as in <a href="/ai/show-examples.html">Show Examples</a>, while the rules around it set the limits. Asking for <code>null</code> matters most: without it, a missing order number tends to come back as something plausible-looking, which is far worse than an empty field.</p>
+
+<x-callout type="key">
+<p>A model is good at following a format and not perfect at it. Specify the shape exactly in the prompt, then check every reply in code before you use it.</p>
+</x-callout>
+
+<h2>Check every reply</h2>
+
+<p>Even with a clear prompt, across hundreds of calls you will see the occasional reply wrapped in a markdown code fence, with a value outside your list, or with a missing field. Treat model output like input from a user: parse it, check it, and only then trust it.</p>
+
+<x-tracer title="Checking one reply">
+<script type="application/json">
+{
+  "code": [
+    "strip a ```json fence if present",
+    "parse as JSON; check every field is present",
+    "check name: string or null",
+    "check order_id: digits or null",
+    "check issue_type: in the allowed list",
+    "if any check failed: report the errors"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {
+      "caption": "A reply arrives for a different email. It starts with <code>```json</code>: the model wrapped the JSON in a markdown code fence, a common slip even when told not to.",
+      "line": 1,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "found"], ["parse", null], ["name", null], ["order_id", null], ["issue_type", null]], "highlight": [[0, 1]] },
+      "vars": { "errors": 0 }
+    },
+    {
+      "caption": "The fence is harmless if you expect it, so the code strips it. What is left parses as JSON, and all three fields are there.",
+      "line": 2,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "stripped"], ["parse", "ok"], ["name", null], ["order_id", null], ["issue_type", null]], "mark": [[0, 1], [1, 1]] },
+      "vars": { "errors": 0 }
+    },
+    {
+      "caption": "<code>name</code> is <code>\"Sam Ortiz\"</code>, a string. Fine.",
+      "line": 3,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "stripped"], ["parse", "ok"], ["name", "ok"], ["order_id", null], ["issue_type", null]], "mark": [[0, 1], [1, 1], [2, 1]] },
+      "vars": { "errors": 0 }
+    },
+    {
+      "caption": "<code>order_id</code> is <code>null</code>. This email had no order number, and null is exactly what the prompt asked for in that case.",
+      "line": 4,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "stripped"], ["parse", "ok"], ["name", "ok"], ["order_id", "ok (null)"], ["issue_type", null]], "mark": [[0, 1], [1, 1], [2, 1], [3, 1]] },
+      "vars": { "errors": 0 }
+    },
+    {
+      "caption": "<code>issue_type</code> is <code>\"late delivery\"</code>. Close in meaning to <code>late</code>, but not on the list. Counting by issue type would put it in its own group.",
+      "line": 5,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "stripped"], ["parse", "ok"], ["name", "ok"], ["order_id", "ok (null)"], ["issue_type", "not allowed"]], "mark": [[0, 1], [1, 1], [2, 1], [3, 1]], "highlight": [[4, 1]] },
+      "vars": { "errors": 1 }
+    },
+    {
+      "caption": "One error, so the reply is rejected with a message naming the problem. The program can send the email again with that message added, or set it aside for a person. Either way, a bad value never reaches the spreadsheet.",
+      "line": 6,
+      "grid": { "label": "checks", "colLabels": ["check", "result"], "rows": [["fence", "stripped"], ["parse", "ok"], ["name", "ok"], ["order_id", "ok (null)"], ["issue_type", "not allowed"]], "mark": [[0, 1], [1, 1], [2, 1], [3, 1]], "highlight": [[4, 1]] },
+      "vars": { "errors": 1, "result": "rejected" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Here is the same check in code. It returns either the clean data or a list of errors you can show to a person or send back to the model.</p>
+
+<x-code>
+<pre lang="js">
+const FIELDS = ["name", "order_id", "issue_type"];
+const ISSUE_TYPES = ["damaged", "late", "wrong-item", "other"];
+
+function parseTicket(reply) {
+  const text = reply.trim().replace(/^```(json)?\s*/, "").replace(/\s*```$/, "");
+  let data;
+  try { data = JSON.parse(text); } catch { return { ok: false, errors: ["not valid JSON"] }; }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return { ok: false, errors: ["expected one JSON object"] };
+  }
+  const missing = FIELDS.filter((f) => !(f in data));
+  if (missing.length) return { ok: false, errors: missing.map((f) => "missing " + f) };
+  const errors = [];
+  const { name, order_id: orderId } = data;
+  if (name !== null && typeof name !== "string") errors.push("name must be a string or null");
+  if (orderId !== null && !(typeof orderId === "string" && /^[0-9]+$/.test(orderId))) {
+    errors.push("order_id must be digits or null");
+  }
+  if (!ISSUE_TYPES.includes(data.issue_type)) errors.push("issue_type must be one of " + ISSUE_TYPES.join(", "));
+  return errors.length ? { ok: false, errors } : { ok: true, value: data };
+}
+
+const reply = '```json\n{"name": "Sam Ortiz", "order_id": null, "issue_type": "late delivery"}\n```';
+console.log(parseTicket(reply)); // { ok: false, errors: [ 'issue_type must be one of ...' ] }
+</pre>
+<pre lang="py">
+import json, re
+
+FIELDS = ["name", "order_id", "issue_type"]
+ISSUE_TYPES = ["damaged", "late", "wrong-item", "other"]
+
+def parse_ticket(reply):
+    text = re.sub(r"^```(json)?\s*|\s*```$", "", reply.strip())
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {"ok": False, "errors": ["not valid JSON"]}
+    if not isinstance(data, dict):
+        return {"ok": False, "errors": ["expected one JSON object"]}
+    missing = [f for f in FIELDS if f not in data]
+    if missing:
+        return {"ok": False, "errors": ["missing " + f for f in missing]}
+    errors = []
+    if data["name"] is not None and not isinstance(data["name"], str):
+        errors.append("name must be a string or null")
+    order_id = data["order_id"]
+    if order_id is not None and not (isinstance(order_id, str) and re.fullmatch(r"[0-9]+", order_id)):
+        errors.append("order_id must be digits or null")
+    if data["issue_type"] not in ISSUE_TYPES:
+        errors.append("issue_type must be one of " + ", ".join(ISSUE_TYPES))
+    return {"ok": False, "errors": errors} if errors else {"ok": True, "value": data}
+
+reply = '```json\n{"name": "Sam Ortiz", "order_id": null, "issue_type": "late delivery"}\n```'
+print(parse_ticket(reply))  # {'ok': False, 'errors': ['issue_type must be one of ...']}
+</pre>
+</x-code>
+
+<p>Missing fields are caught before any value is checked. Note that <code>null</code> and missing are different: <code>"order_id": null</code> is the model saying "not in the email", which you asked for; no <code>order_id</code> key at all means it skipped part of the format.</p>
+
+<x-callout type="real-world">
+<p>Many model APIs offer a structured output or JSON mode, where you pass a schema and the reply is constrained to match it. Use it when you have it: it removes most format errors. It cannot check meaning, though. A reply can match the schema perfectly and still put the wrong value in a field, so keep checking values that matter.</p>
+</x-callout>
+
+<h2>Designing a shape that works</h2>
+
+<ul>
+<li><strong>Keep it flat and small.</strong> Five clear fields beat twenty nested ones. Each extra field is another chance for a mistake.</li>
+<li><strong>Name fields plainly.</strong> <code>delivery_date</code> tells the model what goes there; <code>dd</code> does not.</li>
+<li><strong>Give every category field a catch-all.</strong> An <code>"other"</code> value gives odd inputs somewhere honest to go.</li>
+<li><strong>If you need reasoning, give it a field.</strong> Put a <code>"reasoning"</code> field <em>before</em> the answer fields, for the reason <a href="/ai/give-the-model-room-to-think.html">Give the Model Room to Think</a> explains: fields are written in order.</li>
+</ul>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Make the recipe readable by an app">
+<x-task>
+<p>A shopping-list app needs each ingredient's name, amount and unit, so it can add up amounts across recipes. This prompt returns a nicely formatted list a person can read and the app cannot. Rewrite it.</p>
+</x-task>
+<x-start>
+List the ingredients in this recipe.
+
+[recipe text]
+</x-start>
+<x-answer>
+<x-prompt label="Rewritten prompt" tone="good">
+<x-user>
+Extract the ingredients from the recipe below for a shopping-list app. Reply with a JSON array and nothing else.
+
+Each item:
+{
+  "name": the ingredient in singular, lowercase, e.g. "egg",
+  "amount": a number, or null if no amount is given (as in "salt to taste"),
+  "unit": one of "g", "ml", "tsp", "tbsp", "piece", or null
+}
+
+Convert "2 cups" and similar to ml (1 cup = 240 ml). Use "piece" for countable items like eggs.
+
+<recipe>
+[recipe text]
+</recipe>
+</x-user>
+</x-prompt>
+<p>Why it works: the app can add amounts only if units match, so the prompt fixes a short list of units and says how to convert. <code>null</code> covers "to taste" honestly instead of an invented quantity. Singular lowercase names mean "Eggs" and "egg" from two recipes land on the same line. And "nothing else" keeps the reply parseable, though your code should still check it.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Trusting the reply because it looks right">
+<p>Ninety-nine good replies do not make the hundredth safe. Parse and check every reply, and decide in advance what happens when one fails: retry with the error, or set it aside for a person.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Leaving no way to say &quot;missing&quot;">
+<p>If every field must be filled, the model fills it, sometimes with a guess. Allow <code>null</code> and say when to use it.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Free text where you need categories">
+<p>A field like <code>"issue": "the lid was cracked"</code> is fine to read and useless to count. If you will group by a field, give it a fixed list of values.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An email has no order number. Your prompt does not mention missing values. What is the risk?",
+      "options": [
+        { "text": "The reply will be invalid JSON", "why": "The JSON will usually be valid. The problem is the value inside it." },
+        { "text": "The model may fill the field with a plausible-looking guess", "correct": true, "why": "A required field invites a value. Say \"use null if it is not in the text\" so missing stays missing." },
+        { "text": "The model will refuse to answer", "why": "Refusal is unlikely. Quietly filling the gap is the common failure." }
+      ]
+    },
+    {
+      "question": "You use an API mode that guarantees replies match your JSON schema. Do you still need to check replies?",
+      "options": [
+        { "text": "No, the schema guarantees correctness", "why": "It guarantees shape, not truth. A field can be well-formed and wrong." },
+        { "text": "Yes, for values that matter: the shape can be right while a value is wrong", "correct": true, "why": "Right. Schema modes remove format errors, not mistakes in content." },
+        { "text": "Yes, because schema modes rarely work", "why": "They generally do work for format. The remaining risk is meaning." }
+      ]
+    },
+    {
+      "question": "You want the model to reason before picking a category, inside the JSON. Where should the <code>reasoning</code> field go?",
+      "options": [
+        { "text": "Before the category field", "correct": true, "why": "Fields are written in order, so reasoning that comes first can inform the category." },
+        { "text": "After the category field", "why": "Then the category is chosen before any reasoning exists, and the reasoning only justifies it." },
+        { "text": "Order does not matter in JSON", "why": "For a parser it does not. For a model writing one token at a time, it does." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>So far every instruction has lived in a single message. When the same rules must apply to every message in a conversation or an app, they belong in a <a href="/ai/system-prompts.html">system prompt</a>.</p>

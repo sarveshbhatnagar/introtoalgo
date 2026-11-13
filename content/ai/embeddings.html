@@ -1,0 +1,229 @@
+<!--
+{
+  "title": "Embeddings",
+  "description": "Turn words, documents and products into lists of numbers where similar meanings sit close together, and measure closeness with cosine similarity.",
+  "minutes": 15,
+  "tags": ["machine learning", "embeddings", "search"]
+}
+-->
+<p>A customer types "warm jacket" into a clothing shop's search box. The shop sells an "insulated winter coat", which is exactly what they want. A keyword search finds nothing, because the two phrases do not share a single word. Meanwhile it happily returns a "jacket potato" recipe card from the café section.</p>
+
+<p>The fix is to stop comparing letters and start comparing meanings. To do that, a computer needs meaning in a form it can calculate with: numbers. That is what an embedding is.</p>
+
+<h2>Meaning as a position</h2>
+
+<p>An <strong>embedding</strong> is a list of numbers that represents a piece of content, chosen so that things with similar meanings get similar lists. You can think of each list as a point in space. "Insulated winter coat" and "warm jacket" land near each other. "Linen shirt" lands somewhere else, and "jacket potato" far away.</p>
+
+<x-figure caption="A sketch of an embedding space, flattened to two dimensions. Similar items cluster together, and a search query lands among the items that mean the same thing, even with no words in common.">
+<svg viewBox="0 0 480 250" aria-label="Points scattered on a plane in three loose clusters. Top left: winter coat, parka, wool overcoat, with the query warm jacket among them. Right: linen shirt, shorts, sandals. Bottom: jacket potato and soup, far from the clothing.">
+  <ellipse cx="130" cy="80" rx="115" ry="62" class="f-accent-soft"/>
+  <ellipse cx="360" cy="90" rx="105" ry="58" class="f-surface s-line"/>
+  <ellipse cx="250" cy="205" rx="100" ry="36" class="f-surface s-line"/>
+  <circle cx="70" cy="60" r="5" class="f-fg"/><text x="80" y="64" class="t-sans t-small">winter coat</text>
+  <circle cx="100" cy="110" r="5" class="f-fg"/><text x="110" y="114" class="t-sans t-small">parka</text>
+  <circle cx="165" cy="50" r="5" class="f-fg"/><text x="175" y="54" class="t-sans t-small">wool overcoat</text>
+  <circle cx="150" cy="88" r="7" class="f-accent"/><text x="162" y="92" class="t-sans t-small t-bold f-accent">"warm jacket"</text>
+  <circle cx="300" cy="70" r="5" class="f-fg"/><text x="310" y="74" class="t-sans t-small">linen shirt</text>
+  <circle cx="330" cy="115" r="5" class="f-fg"/><text x="340" y="119" class="t-sans t-small">shorts</text>
+  <circle cx="395" cy="60" r="5" class="f-fg"/><text x="405" y="64" class="t-sans t-small">sandals</text>
+  <circle cx="200" cy="205" r="5" class="f-fg"/><text x="210" y="209" class="t-sans t-small">jacket potato</text>
+  <circle cx="300" cy="200" r="5" class="f-fg"/><text x="310" y="204" class="t-sans t-small">soup</text>
+</svg>
+</x-figure>
+
+<p>Real embeddings have hundreds or thousands of numbers per item, not two. You cannot picture that many dimensions, but the arithmetic is exactly the same as in two or three, so small examples teach everything you need.</p>
+
+<h2>Where the numbers come from</h2>
+
+<p>Nobody types embeddings in by hand. They come out of a <a href="/ai/neural-networks.html">neural network</a> trained on a task that forces similar things to look similar inside it. Two common tasks:</p>
+
+<ul>
+<li><strong>Predict the context.</strong> Train a network to guess a word from the words around it. Words that appear in similar sentences, like "coat" and "jacket", must produce similar hidden values to make similar guesses.</li>
+<li><strong>Match pairs.</strong> Show the network pairs that belong together, like a question and its answer, or a search and the product people clicked. Train it so matching pairs get close vectors and random pairs get distant ones.</li>
+</ul>
+
+<p>After training, you keep the network and use one of its layers as the embedding: feed in any text and read off the list of numbers.</p>
+
+<h2>Measuring closeness</h2>
+
+<p>To use embeddings, you need one number that says how similar two lists are. The standard choice is <strong>cosine similarity</strong>. It looks at the direction the two vectors point in, ignoring how long they are. It is 1 when they point the same way, 0 when they are unrelated, and −1 when they point in opposite directions.</p>
+
+<p>It takes two ingredients, both school algebra:</p>
+
+<ul>
+<li>The <strong>dot product</strong>: multiply matching positions and add. For <code>[4, 1, 1]</code> and <code>[5, 2, 2]</code> it is 4×5 + 1×2 + 1×2 = 24.</li>
+<li>The <strong>length</strong> of a vector: Pythagoras in more dimensions. For <code>[4, 1, 1]</code> it is √(16 + 1 + 1) = √18 ≈ 4.24.</li>
+</ul>
+
+<p><code>cosine(a, b) = dot(a, b) / (length(a) × length(b))</code></p>
+
+<p>Dividing by the lengths is what makes it about direction only. A long document and a short one about the same thing still score as similar.</p>
+
+<h2>Trace a search</h2>
+
+<p>To keep the numbers small, give each item a hand-made 3-number embedding: how warm it is, how dressy, how waterproof. The query "warm jacket" becomes <code>[4, 1, 1]</code>. Real embedding dimensions do not have tidy names like these, but the search works the same way.</p>
+
+<x-tracer title="Rank products by cosine similarity to [4, 1, 1]">
+<script type="application/json">
+{
+  "code": [
+    "qlen = length(query)",
+    "for each item:",
+    "  score = dot(query, item) / (qlen * length(item))",
+    "sort items by score, highest first"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The query is <code>[4, 1, 1]</code>. Its length is √(16 + 1 + 1) = √18 ≈ 4.24. Compute it once and reuse it.", "line": 1, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"] }, { "label": "cosine", "values": [null, null, null, null] } ], "vars": { "query": "[4, 1, 1]", "qlen": 4.24 } },
+    { "caption": "Winter coat <code>[5, 2, 2]</code>: dot = 20 + 2 + 2 = 24. Length √33 ≈ 5.74. Cosine = 24 / (4.24 × 5.74) ≈ 0.98. Almost the same direction.", "line": 3, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"], "pointers": { "i": 0 }, "highlight": [0] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"], "highlight": [0] }, { "label": "cosine", "values": [0.98, null, null, null], "highlight": [0] } ], "vars": { "qlen": 4.24, "dot": 24, "length": 5.74 } },
+    { "caption": "Wool overcoat <code>[4, 4, 0]</code>: dot = 16 + 4 + 0 = 20. Length √32 ≈ 5.66. Cosine ≈ 0.83. Warm, but dressier than the query asked for.", "line": 3, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"], "pointers": { "i": 1 }, "highlight": [1] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"], "highlight": [1] }, { "label": "cosine", "values": [0.98, 0.83, null, null], "highlight": [1] } ], "vars": { "qlen": 4.24, "dot": 20, "length": 5.66 } },
+    { "caption": "Rain shell <code>[1, 1, 5]</code>: dot = 4 + 1 + 5 = 10. Length √27 ≈ 5.20. Cosine ≈ 0.45. It points mostly toward \"waterproof\", away from \"warm\".", "line": 3, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"], "pointers": { "i": 2 }, "highlight": [2] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"], "highlight": [2] }, { "label": "cosine", "values": [0.98, 0.83, 0.45, null], "highlight": [2] } ], "vars": { "qlen": 4.24, "dot": 10, "length": 5.2 } },
+    { "caption": "Linen shirt <code>[0, 3, 0]</code>: dot = 0 + 3 + 0 = 3. Length 3. Cosine = 3 / (4.24 × 3) ≈ 0.24. Barely related.", "line": 3, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"], "pointers": { "i": 3 }, "highlight": [3] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"], "highlight": [3] }, { "label": "cosine", "values": [0.98, 0.83, 0.45, 0.24], "highlight": [3] } ], "vars": { "qlen": 4.24, "dot": 3, "length": 3 } },
+    { "caption": "Sort by score: coat, overcoat, shell, shirt. The winter coat comes first even though it shares no words with \"warm jacket\". Four comparisons, one per item.", "line": 4, "arrays": [ { "label": "item", "values": ["coat", "overcoat", "shell", "shirt"], "mark": [0] }, { "label": "vector", "values": ["5,2,2", "4,4,0", "1,1,5", "0,3,0"] }, { "label": "cosine", "values": [0.98, 0.83, 0.45, 0.24], "mark": [0] } ], "vars": { "best match": "coat", "comparisons": 4 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+function dot(a, b) {
+  let total = 0;
+  for (let i = 0; i < a.length; i++) total += a[i] * b[i];
+  return total;
+}
+
+// Cosine similarity: 1 means same direction, 0 means unrelated.
+function cosine(a, b) {
+  return dot(a, b) / (Math.sqrt(dot(a, a)) * Math.sqrt(dot(b, b)));
+}
+
+// Item names with their scores, most similar first.
+function search(query, items) {
+  return Object.entries(items)
+    .map(([name, vec]) => [name, cosine(query, vec)])
+    .sort((x, y) => y[1] - x[1]);
+}
+
+search([4, 1, 1], {
+  "insulated winter coat": [5, 2, 2],
+  "wool overcoat": [4, 4, 0],
+  "rain shell": [1, 1, 5],
+  "linen shirt": [0, 3, 0],
+}); // coat 0.985, overcoat 0.833, shell 0.454, shirt 0.236
+</pre>
+<pre lang="py">
+import math
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+def cosine(a, b):
+    """Cosine similarity: 1 means same direction, 0 means unrelated."""
+    return dot(a, b) / (math.sqrt(dot(a, a)) * math.sqrt(dot(b, b)))
+
+def search(query, items):
+    """Item names with their scores, most similar first."""
+    scored = [(name, cosine(query, vec)) for name, vec in items.items()]
+    return sorted(scored, key=lambda pair: pair[1], reverse=True)
+
+search([4, 1, 1], {
+    "insulated winter coat": [5, 2, 2],
+    "wool overcoat": [4, 4, 0],
+    "rain shell": [1, 1, 5],
+    "linen shirt": [0, 3, 0],
+})  # coat 0.985, overcoat 0.833, shell 0.454, shirt 0.236
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Compare with every item", "time": "O(n × d)", "space": "O(n × d)", "note": "n items, each with d numbers. Fine for thousands of items." },
+    { "name": "Approximate nearest-neighbour index", "time": "much less than O(n × d) per query", "space": "O(n × d) plus the index", "note": "Groups vectors ahead of time so a query only checks promising regions. Very fast, occasionally misses the true best match." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>An embedding turns meaning into a position. Once content is a position, "find similar things" becomes "find nearby points", which is just arithmetic.</p>
+</x-callout>
+
+<h2>What embeddings are used for</h2>
+
+<ul>
+<li><strong>Search by meaning.</strong> Embed every document once. At query time, embed the query and return the nearest documents, as in the trace.</li>
+<li><strong>Recommendations.</strong> "People who liked this also liked" becomes "items near this one".</li>
+<li><strong>Grouping and duplicates.</strong> Near-identical support tickets or product listings sit almost on top of each other.</li>
+<li><strong>Feeding language models.</strong> Language models turn every <a href="/ai/tokens.html">token</a> into an embedding before doing anything else. And retrieval systems use embedding search to find the passages a model should read before answering, covered in <a href="/ai/rag-basics.html">RAG Basics</a>.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Mixing embeddings from different models">
+<p>Each embedding model builds its own space. Position 17 in one model's list has nothing to do with position 17 in another's. If you switch models, re-embed everything, documents and queries alike.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Treating similar as correct">
+<p>"Refunds are accepted within 30 days" and "Refunds are not accepted" are about the same topic, so their embeddings are close. Similarity finds related text; it does not check whether that text agrees with the query or is true. Read what you retrieve.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Using the dot product without normalizing">
+<p>The raw dot product grows with vector length, so long or repetitive items can outscore better matches. Use cosine similarity, or scale every vector to length 1 first, after which the dot product and cosine give the same answer.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Direction beats length">
+<x-task>
+<p>A query has the embedding <code>[1, 2]</code>. Document A is <code>[2, 4]</code> and document B is <code>[3, 1]</code>. Compute the dot product and the cosine similarity of the query with each. Which document is the better match, and why do the two measures disagree on how strong the match is?</p>
+</x-task>
+<x-answer>
+<ul>
+<li><strong>A:</strong> dot = 1×2 + 2×4 = 10. Lengths are √5 and √20, so cosine = 10 / √100 = 10 / 10 = <strong>1.0</strong>.</li>
+<li><strong>B:</strong> dot = 1×3 + 2×1 = 5. Lengths are √5 and √10, so cosine = 5 / √50 ≈ <strong>0.71</strong>.</li>
+</ul>
+<p>A is the better match: it points in exactly the same direction as the query, just twice as far. Cosine says so with a perfect 1.0. The dot product also ranks A first here, but its values (10 and 5) depend on lengths too, so you cannot tell from them that A is a perfect match in direction. That is why cosine is the usual choice: its scale is fixed from −1 to 1, whatever the vectors' lengths.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Two vectors point in exactly the same direction, but one is three times longer. What is their cosine similarity?",
+      "options": [
+        { "text": "1", "correct": true, "why": "Cosine only cares about direction. Scaling a vector does not change it." },
+        { "text": "1/3", "why": "That would be true if length mattered. Dividing by both lengths removes it." },
+        { "text": "3", "why": "Cosine similarity is never above 1." }
+      ]
+    },
+    {
+      "question": "You switch to a new embedding model for queries but keep the old document embeddings. What happens?",
+      "options": [
+        { "text": "Results get slightly better because the new model is better", "why": "The query and documents now live in different spaces. Comparing them is meaningless." },
+        { "text": "Search results become close to random", "correct": true, "why": "Positions in one model's space mean nothing in another's. Re-embed the documents with the new model." },
+        { "text": "Nothing changes as long as both have the same number of dimensions", "why": "Same length does not mean same meaning for each position." }
+      ]
+    },
+    {
+      "question": "A search for \"can I cancel my order\" returns a passage saying \"orders cannot be cancelled once shipped\" as the top match. What does that tell you?",
+      "options": [
+        { "text": "The embeddings are broken", "why": "The passage is on exactly the topic asked about. That is a correct retrieval." },
+        { "text": "The passage is related to the query, and still needs to be read for what it actually says", "correct": true, "why": "Embeddings measure topic similarity, not agreement. The passage is relevant, and the answer it gives may be no." },
+        { "text": "The user can cancel their order", "why": "High similarity says nothing about whether the passage says yes or no." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>This completes the foundations. Next, see how these pieces combine into a language model in <a href="/ai/what-is-an-llm.html">What Is an LLM</a>, or jump to <a href="/ai/rag-basics.html">RAG Basics</a> to put embedding search to work.</p>

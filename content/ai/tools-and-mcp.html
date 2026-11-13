@@ -1,0 +1,243 @@
+<!--
+{
+  "title": "Tools and MCP",
+  "description": "How a model asks an app to run a tool and reads the result back, and how the Model Context Protocol lets any app connect to any tool server.",
+  "minutes": 14,
+  "tags": ["context", "tools", "mcp"]
+}
+-->
+<p>You ask a friend whether it will rain this afternoon. They do not know from memory. They take out their phone, open the weather app, and read you the answer. Without the phone, the best they could do is look at the sky and guess.</p>
+
+<p>A model has no phone. Everything it knows comes from training or from its <a href="/ai/what-is-context.html">context</a>. Notes and retrieved documents are prepared before the call. <strong>Tools</strong> let the model ask for fresh information, or ask for an action, in the middle of answering.</p>
+
+<h2>How a tool call works</h2>
+
+<p>The model cannot run anything. It can only write text. Tool calling is a protocol between the model and the app around it:</p>
+
+<ol>
+<li><strong>Describe.</strong> The app puts a short description of each tool in the context: its name, what it does, and what inputs it takes.</li>
+<li><strong>Request.</strong> When the model decides a tool would help, it writes a structured request instead of an answer: "call <code>getWeather</code> with <code>city = Bristol</code>".</li>
+<li><strong>Run.</strong> The app reads that request, checks it, and runs the real code: an API call, a database query, a file read.</li>
+<li><strong>Return.</strong> The app adds the result to the context and calls the model again.</li>
+<li><strong>Answer.</strong> The model reads the result and writes its reply, or requests another tool.</li>
+</ol>
+
+<p>The app is in charge at every step. It chooses which tools exist, whether a request is allowed, and what goes back into the context. That is where safety checks live.</p>
+
+<x-tracer title="One question, one tool call">
+<script type="application/json">
+{
+  "code": [
+    "context = [instructions + tool descriptions, user message]",
+    "out = model(context)",
+    "while out is a tool request:",
+    "  result = app runs the tool",
+    "  context += [out, result]",
+    "  out = model(context)",
+    "show out to the user"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The context starts with the instructions and a description of one tool, <code>getWeather(city)</code>, followed by the question.", "line": 1, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?"], "highlight": [1] }, "vars": { "model calls": 0, "tool runs": 0 } },
+    { "caption": "The model knows it cannot know today's weather, and it sees a tool that can. It writes a tool request instead of an answer.", "line": 2, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?"] }, "vars": { "model calls": 1, "tool runs": 0, "out": "getWeather(Bristol)" } },
+    { "caption": "The app sees a tool request, checks that the tool exists and the input is valid, and runs the real weather lookup. The model is not involved in this step at all.", "line": 4, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?"] }, "vars": { "model calls": 1, "tool runs": 1, "result": "80% rain, 15:00" } },
+    { "caption": "The app appends the request and its result to the context. The weather is now text the model can read, just like a pasted document.", "line": 5, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?", "call: getWeather(Bristol)", "result: 80% rain, 15:00"], "highlight": [2, 3] }, "vars": { "model calls": 1, "tool runs": 1 } },
+    { "caption": "The model is called again with the longer context and writes a normal answer: \"Likely, yes: an 80% chance around 3pm. Take an umbrella.\"", "line": 6, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?", "call: getWeather(Bristol)", "result: 80% rain, 15:00"], "mark": [3] }, "vars": { "model calls": 2, "tool runs": 1, "out": "answer" } },
+    { "caption": "Not a tool request, so the loop ends and the user sees the answer. One question cost two model calls and one tool run.", "line": 7, "array": { "label": "context", "values": ["tools: getWeather", "user: rain in Bristol at 3?", "call: getWeather(Bristol)", "result: 80% rain, 15:00"], "mark": [3] }, "vars": { "model calls": 2, "tool runs": 1 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The loop can go around many times: search, read a page, search again, then answer. A model running that loop with real freedom is the basis of an agent, covered in <a href="/ai/the-agent-loop.html">The Agent Loop</a>.</p>
+
+<h2>What the app writes</h2>
+
+<p>A tool description is usually a small block of structured data. The exact field names differ between providers, but they all carry the same three things: a name, a description in plain words, and the inputs with their types.</p>
+
+<x-code single title="A tool description">
+<pre lang="json">
+{
+  "name": "getWeather",
+  "description": "Get the hourly forecast for a city for today. Use for questions about rain, temperature or wind today. Not for past weather or forecasts beyond today.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": { "type": "string", "description": "City name, e.g. \"Bristol\"" }
+    },
+    "required": ["city"]
+  }
+}
+</pre>
+</x-code>
+
+<p>The description is not for a compiler. It is for the model, which reads it to decide when to use the tool and what to pass. Write it like instructions to a colleague, including when <em>not</em> to use it.</p>
+
+<p>On the app's side, running a request is a lookup and a function call. Here it is with a fake weather function, so you can run it.</p>
+
+<x-code>
+<pre lang="js">
+const tools = {
+  getWeather: ({ city }) => ({ city, rainChance: 0.8, at: "15:00" }), // fake data
+};
+
+function runToolCall(call) {
+  const tool = tools[call.name];
+  if (!tool) return { error: `Unknown tool: ${call.name}` };
+  if (typeof call.arguments?.city !== "string") return { error: "city must be a string" };
+  return tool(call.arguments);
+}
+
+// The model wrote this instead of an answer:
+const call = { name: "getWeather", arguments: { city: "Bristol" } };
+console.log(runToolCall(call)); // { city: 'Bristol', rainChance: 0.8, at: '15:00' }
+console.log(runToolCall({ name: "bookFlight", arguments: {} })); // { error: 'Unknown tool: bookFlight' }
+</pre>
+<pre lang="py">
+tools = {
+    "getWeather": lambda args: {"city": args["city"], "rain_chance": 0.8, "at": "15:00"},  # fake data
+}
+
+def run_tool_call(call):
+    tool = tools.get(call["name"])
+    if tool is None:
+        return {"error": f"Unknown tool: {call['name']}"}
+    if not isinstance(call.get("arguments", {}).get("city"), str):
+        return {"error": "city must be a string"}
+    return tool(call["arguments"])
+
+# The model wrote this instead of an answer:
+call = {"name": "getWeather", "arguments": {"city": "Bristol"}}
+print(run_tool_call(call))  # {'city': 'Bristol', 'rain_chance': 0.8, 'at': '15:00'}
+print(run_tool_call({"name": "bookFlight", "arguments": {}}))  # {'error': 'Unknown tool: bookFlight'}
+</pre>
+</x-code>
+
+<p>Note the checks. The model's request is text it generated, so it can name a tool that does not exist or pass a bad input. The app validates before running, and an error goes back into the context so the model can try again.</p>
+
+<h2>MCP: one plug for every tool</h2>
+
+<p>Every app that wants a calendar, a code repository, a database and a ticket tracker could write its own connector for each. With 3 apps and 3 services, that is 3 × 3 = 9 custom connectors, and every new app or service adds a whole row or column.</p>
+
+<p>The <strong>Model Context Protocol</strong> (MCP) is an open standard that removes that multiplication. A service is wrapped once as an <strong>MCP server</strong>. An AI app that speaks MCP can connect to any such server, ask what it offers, and pass that on to its model. Each side implements the protocol once: 3 + 3 pieces of work instead of 9.</p>
+
+<x-figure caption="Without a shared protocol, every app needs its own connector to every service. With MCP, each app and each server implements the protocol once.">
+<svg viewBox="0 0 520 220" aria-label="Three app boxes on the left, three server boxes on the right labelled calendar, code and tickets, and a vertical band in the middle labelled MCP. Each app has one line to the band and each server has one line to the band.">
+  <rect x="10" y="20" width="110" height="40" rx="8" class="f-surface s-line"/><text x="65" y="45" text-anchor="middle" class="t-sans">chat app</text>
+  <rect x="10" y="90" width="110" height="40" rx="8" class="f-surface s-line"/><text x="65" y="115" text-anchor="middle" class="t-sans">code editor</text>
+  <rect x="10" y="160" width="110" height="40" rx="8" class="f-surface s-line"/><text x="65" y="185" text-anchor="middle" class="t-sans">your own app</text>
+  <rect x="225" y="15" width="70" height="190" rx="10" class="f-accent-soft s-accent"/>
+  <text x="260" y="105" text-anchor="middle" class="t-sans t-bold f-accent">MCP</text>
+  <text x="260" y="124" text-anchor="middle" class="t-sans t-small f-accent">protocol</text>
+  <rect x="400" y="20" width="110" height="40" rx="8" class="f-info s-line"/><text x="455" y="45" text-anchor="middle" class="t-sans f-bg">calendar</text>
+  <rect x="400" y="90" width="110" height="40" rx="8" class="f-info s-line"/><text x="455" y="115" text-anchor="middle" class="t-sans f-bg">code repo</text>
+  <rect x="400" y="160" width="110" height="40" rx="8" class="f-info s-line"/><text x="455" y="185" text-anchor="middle" class="t-sans f-bg">tickets</text>
+  <line x1="120" y1="40" x2="225" y2="40" class="s-accent" stroke-width="2"/>
+  <line x1="120" y1="110" x2="225" y2="110" class="s-accent" stroke-width="2"/>
+  <line x1="120" y1="180" x2="225" y2="180" class="s-accent" stroke-width="2"/>
+  <line x1="295" y1="40" x2="400" y2="40" class="s-accent" stroke-width="2"/>
+  <line x1="295" y1="110" x2="400" y2="110" class="s-accent" stroke-width="2"/>
+  <line x1="295" y1="180" x2="400" y2="180" class="s-accent" stroke-width="2"/>
+  <text x="172" y="212" text-anchor="middle" class="t-sans t-small f-muted">MCP clients</text>
+  <text x="348" y="212" text-anchor="middle" class="t-sans t-small f-muted">MCP servers</text>
+</svg>
+</x-figure>
+
+<p>An MCP server can offer three kinds of things:</p>
+
+<ul>
+<li><strong>Tools</strong>: actions the model can request, like "create a ticket" or "search the repository".</li>
+<li><strong>Resources</strong>: data the app can read and put into the context, like a file or a database record.</li>
+<li><strong>Prompts</strong>: ready-made templates for common tasks, which a user can pick.</li>
+</ul>
+
+<p>MCP does not change the tool loop above. It standardizes how the app finds out which tools exist and how it calls them. The model still only writes requests, and the app still decides what runs.</p>
+
+<x-callout type="key">
+<p>Tools turn "the model does not know" into "the model can ask". Every tool description and every tool result is context, so they compete for the same space and attention as everything else.</p>
+</x-callout>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Connecting every tool you can find">
+<p>Each tool description is sent on every call. Fifty tools cost tokens before the user has typed anything, and similar-sounding tools make the model pick the wrong one. Connect the tools this task needs and leave the rest off.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Tools that return a flood">
+<p>A search tool that returns 200 full results fills the <a href="/ai/the-context-window.html">window</a> in one step. Design tools to return short, relevant results: the top few matches, the fields that matter, and a way to ask for more.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Trusting tool results and requests blindly">
+<p>A web page or email returned by a tool can contain text written to steer the model, which is <a href="/ai/prompt-injection.html">prompt injection</a>. Treat tool results as data, and require a human to confirm actions that send, delete, buy or publish anything. Only connect MCP servers from sources you trust; a server's own descriptions reach the model too.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Fix a vague tool description">
+<x-task>
+<p>A team's assistant keeps calling this tool for the wrong things, like general knowledge questions, and passes whole sentences as the query. Rewrite the description so the model knows when to use it and what to pass.</p>
+</x-task>
+<x-start>
+name: search
+description: Searches stuff.
+parameters: q (string)
+</x-start>
+<x-answer>
+<p>One better version:</p>
+<x-code single title="Rewritten tool description">
+<pre lang="json">
+{
+  "name": "searchTeamWiki",
+  "description": "Search the team's internal wiki (runbooks, onboarding guides, design docs). Use when the question is about our own systems, processes or decisions. Do not use for general programming or world knowledge. Returns up to 5 page titles with a short excerpt each.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "2 to 6 keywords, e.g. \"deploy rollback runbook\". Not a full sentence." }
+    },
+    "required": ["query"]
+  }
+}
+</pre>
+</x-code>
+<p>Why it works: the name says what is searched. The description says when to use it, when not to, and what comes back, so the model can plan its next step. The parameter description shows the expected format with an example.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "When a model \"uses a tool\", who actually runs the tool's code?",
+      "options": [
+        { "text": "The model, inside its own computation", "why": "The model only generates text. It cannot open network connections or run programs." },
+        { "text": "The app, after reading the model's structured request", "correct": true, "why": "Right. The app runs the tool and puts the result back into the context. That is also where permission checks belong." },
+        { "text": "The user, by copying the request", "why": "Some setups ask the user to confirm, but the app does the running." }
+      ]
+    },
+    {
+      "question": "What problem does MCP mainly solve?",
+      "options": [
+        { "text": "It makes models more accurate", "why": "MCP does not change the model. It changes how apps connect to tools and data." },
+        { "text": "Every app needing a custom connector for every service", "correct": true, "why": "Right. With a shared protocol, a service is wrapped once as a server and any compatible app can use it." },
+        { "text": "It removes the need for a context window", "why": "Tool descriptions and results from MCP servers still go into the context and use space." }
+      ]
+    },
+    {
+      "question": "An assistant has 60 tools connected and often calls the wrong one. What is the first thing to try?",
+      "options": [
+        { "text": "Connect only the tools relevant to the current task", "correct": true, "why": "Right. Fewer, clearly described tools take less context and leave fewer wrong choices." },
+        { "text": "Add more tools so it has better options", "why": "More options make the choice harder and the context bigger." },
+        { "text": "Raise the temperature", "why": "More randomness makes tool choice less predictable, not more accurate." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Tools add to the context on every turn, and long sessions pile up. <a href="/ai/context-rot.html">Context Rot</a> covers what happens when a context grows stale and how to recover. For tool design in depth, continue with <a href="/ai/tool-use.html">Tool Use</a> in the Agents module.</p>

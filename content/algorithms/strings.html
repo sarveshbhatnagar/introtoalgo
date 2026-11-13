@@ -1,0 +1,220 @@
+<!--
+{
+  "title": "Strings",
+  "description": "Strings are arrays of characters you cannot change in place. Learn why += in a loop gets slow, how to build strings fast, and how to count letters.",
+  "minutes": 13,
+  "tags": ["strings", "arrays", "fundamentals"]
+}
+-->
+<p>Your script writes a sales report one line at a time: <code>report += line</code>, ten thousand times. On a small test it finishes instantly. On a full year of data it takes noticeably longer than it should, and the extra time grows much faster than the number of lines.</p>
+
+<p>The code is not wrong. It is paying for one fact about strings that is easy to forget: you cannot change a string. Every <code>+=</code> may build a brand new one.</p>
+
+<h2>A string is an array of characters</h2>
+
+<p>Underneath, a string is an <a href="/algorithms/arrays.html">array</a> of characters stored side by side. Everything you learned about arrays carries over. <code>s[3]</code> is O(1). <code>s.length</code> in JavaScript and <code>len(s)</code> in Python are O(1), because the length is stored. Looping over every character is O(n).</p>
+
+<p>Each character is stored as a number, its <strong>character code</strong>. The lowercase letters <code>a</code> to <code>z</code> have the codes 97 to 122, in order. So subtracting the code of <code>a</code> turns any lowercase letter into a position from 0 to 25: <code>c</code> is 99 − 97 = 2. You will use that trick in a moment.</p>
+
+<h2>You cannot change a string in place</h2>
+
+<p>Strings in JavaScript and Python are <strong>immutable</strong>. Once made, they never change. <code>s[0] = "J"</code> does nothing in JavaScript (or throws, in strict mode) and raises an error in Python. Methods like <code>toUpperCase()</code>, <code>replace()</code> and slicing do not edit the string. They return a new one.</p>
+
+<p>That is why <code>report += line</code> can be slow. The old report cannot grow, so the language may allocate a new string and copy the old report plus the new line into it. The first line is copied once, the second line twice, the third three times, and so on.</p>
+
+<x-figure caption="Building a string one piece at a time. Each step may copy everything built so far.">
+<svg viewBox="0 0 480 200" aria-label="Four rows. Row one has one box A. Row two has A and B. Row three has A, B, C. Row four has A, B, C, D. Next to each row is the number of characters copied: 1, 2, 3, 4, with a total of 10.">
+  <text x="10" y="35" class="t-sans t-small f-muted">s += "A"</text>
+  <rect x="110" y="16" width="34" height="30" rx="5" class="f-accent-soft s-accent"/><text x="127" y="36" text-anchor="middle">A</text>
+  <text x="400" y="35" class="t-sans t-small">1 copied</text>
+  <text x="10" y="79" class="t-sans t-small f-muted">s += "B"</text>
+  <rect x="110" y="60" width="34" height="30" rx="5" class="f-surface s-line"/><text x="127" y="80" text-anchor="middle">A</text>
+  <rect x="148" y="60" width="34" height="30" rx="5" class="f-accent-soft s-accent"/><text x="165" y="80" text-anchor="middle">B</text>
+  <text x="400" y="79" class="t-sans t-small">2 copied</text>
+  <text x="10" y="123" class="t-sans t-small f-muted">s += "C"</text>
+  <rect x="110" y="104" width="34" height="30" rx="5" class="f-surface s-line"/><text x="127" y="124" text-anchor="middle">A</text>
+  <rect x="148" y="104" width="34" height="30" rx="5" class="f-surface s-line"/><text x="165" y="124" text-anchor="middle">B</text>
+  <rect x="186" y="104" width="34" height="30" rx="5" class="f-accent-soft s-accent"/><text x="203" y="124" text-anchor="middle">C</text>
+  <text x="400" y="123" class="t-sans t-small">3 copied</text>
+  <text x="10" y="167" class="t-sans t-small f-muted">s += "D"</text>
+  <rect x="110" y="148" width="34" height="30" rx="5" class="f-surface s-line"/><text x="127" y="168" text-anchor="middle">A</text>
+  <rect x="148" y="148" width="34" height="30" rx="5" class="f-surface s-line"/><text x="165" y="168" text-anchor="middle">B</text>
+  <rect x="186" y="148" width="34" height="30" rx="5" class="f-surface s-line"/><text x="203" y="168" text-anchor="middle">C</text>
+  <rect x="224" y="148" width="34" height="30" rx="5" class="f-accent-soft s-accent"/><text x="241" y="168" text-anchor="middle">D</text>
+  <text x="400" y="167" class="t-sans t-small">4 copied</text>
+  <text x="400" y="194" class="t-sans t-small t-bold">10 in total</text>
+</svg>
+</x-figure>
+
+<p>For <code>n</code> pieces that is 1 + 2 + … + n, about n²/2 copies: O(n²). Ten thousand lines means around 50 million character copies where ten thousand would do.</p>
+
+<p>The fix is to collect the pieces in an array, which grows cheaply at the end, and glue them together once at the very end. <code>join</code> measures the total length first and copies each piece exactly once.</p>
+
+<x-code>
+<pre lang="js">
+function buildReport(sales) {
+  const lines = [];
+  for (const sale of sales) {
+    lines.push(`${sale.item}: ${sale.amount}`); // cheap append to an array
+  }
+  return lines.join("\n"); // one copy of everything, at the end
+}
+
+buildReport([{ item: "tea", amount: 4 }, { item: "cake", amount: 7 }]);
+// "tea: 4\ncake: 7"
+</pre>
+<pre lang="py">
+def build_report(sales):
+    lines = []
+    for sale in sales:
+        lines.append(f"{sale['item']}: {sale['amount']}")  # cheap append to a list
+    return "\n".join(lines)  # one copy of everything, at the end
+
+build_report([{"item": "tea", "amount": 4}, {"item": "cake", "amount": 7}])
+# "tea: 4\ncake: 7"
+</pre>
+</x-code>
+
+<p>To be fair to <code>+=</code>: modern JavaScript engines, and CPython in simple cases, often avoid the full copy behind the scenes. You cannot count on it, and the rule costs nothing to follow. In a loop, build a list and join it.</p>
+
+<x-callout type="key">
+<p>Treat a string as a read-only array of characters. Reading is cheap. Every change makes a new string, so build big strings from a list of parts and join once.</p>
+</x-callout>
+
+<h2>Counting letters with 26 boxes</h2>
+
+<p>Many string problems come down to "which characters appear, and how often?" Take this one: are two words anagrams, made of exactly the same letters? <code>tea</code> and <code>eat</code> are. <code>tea</code> and <code>tee</code> are not.</p>
+
+<p>You could sort both words and compare, but there is a simpler way when the words use only lowercase letters. Keep 26 counters, one per letter. Walk the first word and add 1 for each letter. Walk the second word and subtract 1. If they are anagrams, every counter ends at 0. In the tracer only the counters for a, e and t are shown; the other 23 stay at 0 throughout.</p>
+
+<x-tracer title="Are tea and eat anagrams?">
+<script type="application/json">
+{
+  "code": [
+    "if lengths differ: return false",
+    "counts = 26 zeros",
+    "for ch in first: counts[ch - 'a'] += 1",
+    "for ch in second: counts[ch - 'a'] -= 1",
+    "return every count is 0"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Both words have 3 letters, so they might be anagrams. All counters start at 0.", "line": 2, "array": { "label": "first", "values": ["t", "e", "a"] }, "grid": { "label": "counts", "rows": [[0, 0, 0]], "colLabels": ["a", "e", "t"] } },
+    { "caption": "<code>t</code> is letter 116 − 97 = 19. Add 1 to its counter.", "line": 3, "array": { "label": "first", "values": ["t", "e", "a"], "pointers": { "ch": 0 }, "highlight": [0] }, "grid": { "label": "counts", "rows": [[0, 0, 1]], "colLabels": ["a", "e", "t"], "highlight": [[0, 2]] } },
+    { "caption": "<code>e</code>: add 1.", "line": 3, "array": { "label": "first", "values": ["t", "e", "a"], "pointers": { "ch": 1 }, "highlight": [1] }, "grid": { "label": "counts", "rows": [[0, 1, 1]], "colLabels": ["a", "e", "t"], "highlight": [[0, 1]] } },
+    { "caption": "<code>a</code>: add 1. The counters now describe the first word: one a, one e, one t.", "line": 3, "array": { "label": "first", "values": ["t", "e", "a"], "pointers": { "ch": 2 }, "highlight": [2] }, "grid": { "label": "counts", "rows": [[1, 1, 1]], "colLabels": ["a", "e", "t"], "highlight": [[0, 0]] } },
+    { "caption": "Now the second word, subtracting. <code>e</code>: its counter drops to 0.", "line": 4, "array": { "label": "second", "values": ["e", "a", "t"], "pointers": { "ch": 0 }, "highlight": [0] }, "grid": { "label": "counts", "rows": [[1, 0, 1]], "colLabels": ["a", "e", "t"], "highlight": [[0, 1]] } },
+    { "caption": "<code>a</code>: subtract 1.", "line": 4, "array": { "label": "second", "values": ["e", "a", "t"], "pointers": { "ch": 1 }, "highlight": [1] }, "grid": { "label": "counts", "rows": [[0, 0, 1]], "colLabels": ["a", "e", "t"], "highlight": [[0, 0]] } },
+    { "caption": "<code>t</code>: subtract 1.", "line": 4, "array": { "label": "second", "values": ["e", "a", "t"], "pointers": { "ch": 2 }, "highlight": [2] }, "grid": { "label": "counts", "rows": [[0, 0, 0]], "colLabels": ["a", "e", "t"], "highlight": [[0, 2]] } },
+    { "caption": "Every counter is 0, so each letter appeared equally often in both words. They are anagrams. Cost: 6 letter visits plus 26 counter checks.", "line": 5, "array": { "label": "second", "values": ["e", "a", "t"], "mark": [0, 1, 2] }, "grid": { "label": "counts", "rows": [[0, 0, 0]], "colLabels": ["a", "e", "t"], "mark": [[0, 0], [0, 1], [0, 2]] }, "vars": { "result": "true" } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>With <code>tea</code> and <code>tee</code>, the a counter would end at 1 and the e counter at −1. Any counter that is not 0 means some letter appears more often in one word than the other.</p>
+
+<x-code>
+<pre lang="js">
+// Assumes both words use only lowercase a to z.
+function isAnagram(first, second) {
+  if (first.length !== second.length) return false;
+  const counts = new Array(26).fill(0);
+  const A = "a".charCodeAt(0); // 97
+  for (const ch of first) counts[ch.charCodeAt(0) - A]++;
+  for (const ch of second) counts[ch.charCodeAt(0) - A]--;
+  return counts.every((c) => c === 0);
+}
+
+isAnagram("tea", "eat"); // true
+isAnagram("tea", "tee"); // false
+</pre>
+<pre lang="py">
+# Assumes both words use only lowercase a to z.
+def is_anagram(first, second):
+    if len(first) != len(second):
+        return False
+    counts = [0] * 26
+    for ch in first:
+        counts[ord(ch) - ord("a")] += 1
+    for ch in second:
+        counts[ord(ch) - ord("a")] -= 1
+    return all(c == 0 for c in counts)
+
+is_anagram("tea", "eat")  # True
+is_anagram("tea", "tee")  # False
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Read s[i] or the length", "time": "O(1)", "space": "O(1)", "note": "Same as an array." },
+    { "name": "Compare, copy or slice", "time": "O(n)", "space": "O(n) for a copy", "note": "Touches every character." },
+    { "name": "+= in a loop of n pieces", "time": "O(n²)", "space": "O(n)", "note": "Can copy everything built so far on each step." },
+    { "name": "Collect parts, join once", "time": "O(n)", "space": "O(n)", "note": "Each character is copied once." },
+    { "name": "Anagram check with 26 counters", "time": "O(n)", "space": "O(1)", "note": "26 counters, however long the words are." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>The 26 counters are O(1) space because their number never changes with the input. Sorting both words would also work, but costs O(n log n).</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Forgetting case and spaces">
+<p><code>"Listen"</code> and <code>"silent"</code> fail the anagram check because <code>L</code> and <code>l</code> have different codes. Worse, <code>L</code> minus 97 is −21, an index outside 0 to 25, and Python quietly turns a negative index into a different letter's counter. Decide the rules first, then normalise: lowercase both strings and remove spaces before counting.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Assuming one character is one slot">
+<p>In JavaScript, <code>.length</code> counts 16-bit units, not visible characters. Most emoji and some rare letters take two units, so a string with one smiley has length 2 in JavaScript and 1 in Python. If the input can contain them, loop with <code>for (const ch of s)</code>, which walks whole characters, and do not use the 26-counter trick.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Searching inside a loop">
+<p><code>s.indexOf(x)</code>, <code>s.includes(x)</code> and <code>x in s</code> scan the string. Calling one for every character turns a single pass into O(n²). Count once up front, then look the counts up.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Spell checkers, search boxes and log parsers all lean on these two habits: count characters or words in one pass, and build output from a list of pieces instead of growing one string.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A loop runs <code>n</code> times and does <code>result += piece</code> each time, where every piece is short. If each <code>+=</code> copies the whole string, what is the total cost?",
+      "options": [
+        { "text": "O(n)", "why": "That is the cost of the join approach. Here, step k copies about k pieces, so the work keeps growing." },
+        { "text": "O(n²)", "correct": true, "why": "1 + 2 + … + n copies, about n²/2. Collect pieces in a list and join once to get O(n)." },
+        { "text": "O(n log n)", "why": "Nothing is halved or sorted. The copies grow by a constant amount each step." }
+      ]
+    },
+    {
+      "question": "You run the counter check on <code>\"cab\"</code> and <code>\"dab\"</code>. Which counters are not 0 at the end?",
+      "options": [
+        { "text": "c is 1 and d is −1", "correct": true, "why": "c was added by the first word and never subtracted. d was subtracted by the second word and never added." },
+        { "text": "Only c, which is 1", "why": "The second word also changes a counter: d goes down to −1." },
+        { "text": "None, because both words have 3 letters", "why": "Equal length is only the first filter. The letters still have to match." }
+      ]
+    },
+    {
+      "question": "Why is the 26-counter anagram check O(1) in space, even for very long words?",
+      "options": [
+        { "text": "Because the counters are small numbers", "why": "The size of each number is not the point. What matters is how many counters there are." },
+        { "text": "Because there are always 26 counters, whatever the input length", "correct": true, "why": "The memory used does not grow with n. A word of a million letters still needs 26 counters." },
+        { "text": "It is not; it is O(n)", "why": "It would be O(n) if you copied the words or stored one entry per character. Here you only keep 26 counts." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The 26 counters only work because the alphabet is small and known in advance. To count words, user IDs or anything else, you need a structure that turns any key into a box number. That is a <a href="/algorithms/hash-tables.html">hash table</a>.</p>

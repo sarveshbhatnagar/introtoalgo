@@ -1,0 +1,258 @@
+<!--
+{
+  "title": "Intervals",
+  "description": "Merge overlapping time ranges, test any two for overlap, and count how many run at once. Sort first, then sweep once from left to right.",
+  "minutes": 15,
+  "tags": ["intervals", "sorting", "patterns"]
+}
+-->
+<p>Your calendar has five meetings today, entered in no particular order: 13–15, 9–11, 10–12, 16–17 and 14–16. A colleague asks when you are busy. They do not want five meetings. They want the busy stretches: 9 to 12, and 13 to 17.</p>
+
+<p>Each meeting is an <strong>interval</strong>, a start and an end. Intervals show up everywhere: bookings, shifts, video segments, ranges of IP addresses, the lines a code review comment covers. Almost every interval problem is solved the same way: sort them, then walk through once.</p>
+
+<h2>When do two intervals overlap</h2>
+
+<p>Start with two intervals, <code>a</code> and <code>b</code>. There are many ways to overlap (partly, fully inside, identical) and only two ways not to: <code>a</code> ends before <code>b</code> starts, or <code>b</code> ends before <code>a</code> starts. So test the two easy cases and flip the result.</p>
+
+<x-figure caption="Two intervals miss each other only when one ends before the other starts. Everything else is an overlap.">
+<svg viewBox="0 0 500 200" aria-label="Three rows. Overlap: two bars that share a middle part. Touching: one bar ends exactly where the next starts. Apart: a gap between the bars.">
+  <text x="0" y="36" class="t-sans t-bold">Overlap</text>
+  <rect x="120" y="20" width="160" height="22" rx="5" class="f-accent-soft s-accent"/><text x="200" y="36" text-anchor="middle" class="t-small">a</text>
+  <rect x="220" y="48" width="160" height="22" rx="5" class="f-surface s-info"/><text x="300" y="64" text-anchor="middle" class="t-small">b</text>
+  <text x="0" y="104" class="t-sans t-bold">Touching</text>
+  <rect x="120" y="88" width="130" height="22" rx="5" class="f-accent-soft s-accent"/><text x="185" y="104" text-anchor="middle" class="t-small">a</text>
+  <rect x="250" y="116" width="130" height="22" rx="5" class="f-surface s-info"/><text x="315" y="132" text-anchor="middle" class="t-small">b</text>
+  <line x1="250" y1="82" x2="250" y2="144" class="s-muted s-dash" stroke-width="1.5"/>
+  <text x="400" y="118" class="t-sans t-small f-muted">depends on the problem</text>
+  <text x="0" y="172" class="t-sans t-bold">Apart</text>
+  <rect x="120" y="158" width="110" height="22" rx="5" class="f-accent-soft s-accent"/><text x="175" y="174" text-anchor="middle" class="t-small">a</text>
+  <rect x="280" y="158" width="100" height="22" rx="5" class="f-surface s-info"/><text x="330" y="174" text-anchor="middle" class="t-small">b</text>
+  <text x="400" y="174" class="t-sans t-small f-muted">a.end &lt; b.start</text>
+</svg>
+</x-figure>
+
+<x-code>
+<pre lang="js">
+// Touching counts as overlapping here. Use < instead of <= if it should not.
+function overlaps(a, b) {
+  return a[0] <= b[1] && b[0] <= a[1];
+}
+</pre>
+<pre lang="py">
+# Touching counts as overlapping here. Use < instead of <= if it should not.
+def overlaps(a, b):
+    return a[0] <= b[1] and b[0] <= a[1]
+</pre>
+</x-code>
+
+<p>Whether touching intervals overlap is a rule of the problem, not of the code. In a calendar, 14–16 and 16–17 make one busy stretch. For room bookings, a meeting ending at 16 does not block one starting at 16. Decide once, then use the same <code>&lt;</code> or <code>&lt;=</code> everywhere.</p>
+
+<h2>The idea: sort by start, then sweep</h2>
+
+<p>Comparing every pair of meetings is O(n²). Sorting by start time fixes that. Once sorted, a meeting can only overlap the block you are building right now, never an earlier block, because everything earlier has already ended.</p>
+
+<p>So keep one open block. For each next meeting, ask one question: does it start before the open block ends? If yes, stretch the block's end. If no, close the block and open a new one.</p>
+
+<x-callout type="key">
+<p>Sort intervals by start, and you only ever need to compare each one with the last block you built.</p>
+</x-callout>
+
+<x-tracer title="Merge five meetings into busy blocks">
+<script type="application/json">
+{
+  "code": [
+    "sort meetings by start",
+    "busy = [first meeting]",
+    "for each next meeting (start, end):",
+    "  last = the final block in busy",
+    "  if start <= last.end: last.end = max(last.end, end)",
+    "  else: add (start, end) as a new block"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption":"Sorted by start time. The first meeting opens the first busy block.","line":2,"arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"pointers":{"i":0},"highlight":[0]},{"label":"busy","values":["9–11"],"highlight":[0]}],"vars":{"block end":11}},
+    {"caption":"10–12 starts at 10, before the block ends at 11. They overlap, so stretch the block's end to 12.","line":5,"arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"pointers":{"i":1},"highlight":[1],"dim":[0]},{"label":"busy","values":["9–12"],"highlight":[0]}],"vars":{"block end":12}},
+    {"caption":"13–15 starts at 13, after the block ends at 12. There is a gap, so the block is finished. Start a new one.","line":6,"arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"pointers":{"i":2},"highlight":[2],"dim":[0,1]},{"label":"busy","values":["9–12","13–15"],"highlight":[1]}],"vars":{"block end":15}},
+    {"caption":"14–16 starts at 14, inside the block that ends at 15. Stretch the end to 16.","line":5,"arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"pointers":{"i":3},"highlight":[3],"dim":[0,1,2]},{"label":"busy","values":["9–12","13–16"],"highlight":[1]}],"vars":{"block end":16}},
+    {"caption":"16–17 starts at 16, exactly when the block ends. In a calendar that is still one busy stretch, so stretch the end to 17.","line":5,"arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"pointers":{"i":4},"highlight":[4],"dim":[0,1,2,3]},{"label":"busy","values":["9–12","13–17"],"highlight":[1]}],"vars":{"block end":17}},
+    {"caption":"Five meetings became two busy blocks, in one pass after sorting. Each meeting was looked at once.","arrays":[{"label":"meetings","values":["9–11","10–12","13–15","14–16","16–17"],"dim":[0,1,2,3,4]},{"label":"busy","values":["9–12","13–17"],"mark":[0,1]}],"vars":{"blocks":2}}
+
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+function mergeBusy(meetings) {
+  if (meetings.length === 0) return [];
+  const sorted = [...meetings].sort((a, b) => a[0] - b[0]);
+  const busy = [[...sorted[0]]];
+  for (const [start, end] of sorted.slice(1)) {
+    const last = busy[busy.length - 1];
+    if (start <= last[1]) {
+      last[1] = Math.max(last[1], end); // overlaps or touches: stretch
+    } else {
+      busy.push([start, end]);          // gap: new block
+    }
+  }
+  return busy;
+}
+
+mergeBusy([[13, 15], [9, 11], [10, 12], [16, 17], [14, 16]]);
+// [[9, 12], [13, 17]]
+</pre>
+<pre lang="py">
+def merge_busy(meetings):
+    if not meetings:
+        return []
+    ordered = sorted(meetings, key=lambda m: m[0])
+    busy = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        last = busy[-1]
+        if start <= last[1]:
+            last[1] = max(last[1], end)  # overlaps or touches: stretch
+        else:
+            busy.append([start, end])    # gap: new block
+    return busy
+
+merge_busy([[13, 15], [9, 11], [10, 12], [16, 17], [14, 16]])
+# [[9, 12], [13, 17]]
+</pre>
+</x-code>
+
+<p>The code copies the first meeting instead of using it directly. Otherwise stretching the block would quietly change the caller's data.</p>
+
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(n log n)", "space": "O(n)", "note": "Sorting dominates. The sweep is one O(n) pass, and the output can hold all n intervals." } ] }
+</script>
+</x-complexity>
+
+<h2>How many at the same time</h2>
+
+<p>A different question: the office has to host meetings 9–12, 10–11, 11–13 and 13–14. How many rooms does it need? That is the largest number of meetings running at any one moment.</p>
+
+<p>Stop thinking of meetings and think of <strong>events</strong>. Each meeting is a +1 when it starts and a −1 when it ends. Sort all the events by time and walk through them with a counter. The highest the counter ever reaches is the answer. When an end and a start happen at the same time, process the end first: the person leaving at 11 frees the room for the one arriving at 11.</p>
+
+<x-tracer title="Count rooms with a sweep over events">
+<script type="application/json">
+{
+  "code": [
+    "events = (start, +1) and (end, −1) for each meeting",
+    "sort events by time; at a tie, −1 before +1",
+    "for each event:",
+    "  inUse += change; most = max(most, inUse)"
+  ],
+  "codeLang": "text",
+  "steps": [
+    {"caption":"9: the 9–12 meeting starts. One room in use.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":0},"highlight":[0]},"vars":{"inUse":1,"most":1}},
+    {"caption":"10: the 10–11 meeting starts while 9–12 is still running. Two rooms.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":1},"highlight":[1],"dim":[0]},"vars":{"inUse":2,"most":2}},
+    {"caption":"11: two things happen at 11. The end comes first in the sorted order: 10–11 leaves, freeing a room.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":2},"highlight":[2],"dim":[0,1]},"vars":{"inUse":1,"most":2}},
+    {"caption":"11: now 11–13 starts and takes the room 10–11 just left. Still two rooms, never three.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":3},"highlight":[3],"dim":[0,1,2]},"vars":{"inUse":2,"most":2}},
+    {"caption":"12: 9–12 ends.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":4},"highlight":[4],"dim":[0,1,2,3]},"vars":{"inUse":1,"most":2}},
+    {"caption":"13: 11–13 ends first, again because ends sort before starts.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":5},"highlight":[5],"dim":[0,1,2,3,4]},"vars":{"inUse":0,"most":2}},
+    {"caption":"13: 13–14 starts in the freed room.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":6},"highlight":[6],"dim":[0,1,2,3,4,5]},"vars":{"inUse":1,"most":2}},
+    {"caption":"14: 13–14 ends. The busiest moment needed 2 rooms, so 2 rooms are enough for the whole day.","line":4,"array":{"label":"events","values":["9 +","10 +","11 −","11 +","12 −","13 −","13 +","14 −"],"pointers":{"i":7},"highlight":[7],"dim":[0,1,2,3,4,5,6]},"vars":{"inUse":0,"most":2}}
+
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+function roomsNeeded(meetings) {
+  const events = [];
+  for (const [start, end] of meetings) {
+    events.push([start, 1], [end, -1]);
+  }
+  // by time; at a tie, -1 (an end) sorts before +1 (a start)
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let inUse = 0;
+  let most = 0;
+  for (const [, change] of events) {
+    inUse += change;
+    most = Math.max(most, inUse);
+  }
+  return most;
+}
+
+roomsNeeded([[9, 12], [10, 11], [11, 13], [13, 14]]); // 2
+</pre>
+<pre lang="py">
+def rooms_needed(meetings):
+    events = []
+    for start, end in meetings:
+        events.append((start, 1))
+        events.append((end, -1))
+    # tuples sort by time, then by change, so -1 (an end) comes before +1
+    events.sort()
+    in_use = most = 0
+    for _, change in events:
+        in_use += change
+        most = max(most, in_use)
+    return most
+
+rooms_needed([[9, 12], [10, 11], [11, 13], [13, 14]])  # 2
+</pre>
+</x-code>
+
+<p>This is also O(n log n) for the sort and O(n) for the events list. A third classic question, "keep as many meetings as possible with no overlaps", is solved by sorting on end time instead; it is worked through in <a href="/algorithms/greedy-algorithms.html">Greedy Algorithms</a>.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Setting the end instead of stretching it">
+<p>Writing <code>last.end = end</code> breaks when one meeting sits inside another. Merging 9–17 with 10–11 would shrink the block to 9–11 and lose six busy hours. Always take the larger end: <code>max(last.end, end)</code>.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting to sort">
+<p>The sweep only works because an interval can never overlap a block that is already closed. Without sorting, 13–15 might be closed before 9–11 arrives, and you end up with blocks that overlap each other.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Breaking ties the wrong way">
+<p>In the room count, if the start at 11 is processed before the end at 11, the counter briefly reads 3 and you book a room you never needed. Pick the tie rule on purpose and check one back-to-back pair by hand.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Calendar apps merge busy times exactly this way to show free slots. Video editors merge selected ranges of a clip, and network tools merge address ranges so a firewall rule list stays short.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Merge <code>[1, 4]</code>, <code>[2, 3]</code>, <code>[5, 7]</code>, <code>[6, 9]</code>, with touching counted as overlapping. What comes out?",
+      "options": [
+        { "text": "<code>[[1, 3], [5, 9]]</code>", "why": "2–3 sits inside 1–4. Taking its end instead of the larger one shrinks the block." },
+        { "text": "<code>[[1, 4], [5, 9]]</code>", "correct": true, "why": "1–4 swallows 2–3, and 5 is after 4, so a new block starts. 6–9 starts inside 5–7 and stretches it to 9." },
+        { "text": "<code>[[1, 9]]</code>", "why": "There is a gap between 4 and 5, so these are two separate blocks." }
+      ]
+    },
+    {
+      "question": "Meetings 1–5, 2–6 and 5–8, and a room is free the moment a meeting ends. How many rooms are needed?",
+      "options": [
+        { "text": "1", "why": "1–5 and 2–6 run at the same time between 2 and 5." },
+        { "text": "2", "correct": true, "why": "1–5 and 2–6 overlap. At 5, 1–5 ends before 5–8 starts, so the count goes 2, 1, 2 and never reaches 3." },
+        { "text": "3", "why": "That happens only if the start at 5 is counted before the end at 5. The meeting ending at 5 frees its room first." }
+      ]
+    },
+    {
+      "question": "Why does merging sort by start time?",
+      "options": [
+        { "text": "So the output comes out sorted", "why": "That is a side effect. The real reason is about which intervals can still overlap." },
+        { "text": "So each interval only needs to be compared with the last block", "correct": true, "why": "Right. Every earlier block ended before the last one started, so a new interval cannot reach back to them." },
+        { "text": "Because sorting by end time does not work", "why": "Sorting by end is the right tool for a different question: keeping the most intervals with no overlaps." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Interval problems mix with the other techniques in this module: sort-and-sweep is the same habit you saw in <a href="/algorithms/greedy-algorithms.html">Greedy Algorithms</a>. Next, <a href="/algorithms/bit-manipulation.html">Bit Manipulation</a> changes gear completely and works on the individual bits of a number.</p>

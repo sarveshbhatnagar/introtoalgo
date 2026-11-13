@@ -1,0 +1,226 @@
+<!--
+{
+  "title": "Memory",
+  "description": "Models do not remember between calls. Learn how apps fake memory with saved notes and summaries, and how to decide what to save, update and load.",
+  "minutes": 13,
+  "tags": ["context", "memory"]
+}
+-->
+<p>You see your family doctor twice a year. They do not remember you; they see hundreds of people. But in the minute before you walk in, they read your file: allergies, current medication, what you agreed last time. A good file makes it feel like they remember. An empty file means starting over. A file that still says you smoke, ten years after you quit, is worse than either.</p>
+
+<p>AI apps with "memory" work the same way. The model does not learn anything from your conversations. The app keeps a file and slips the right parts of it into the <a href="/ai/what-is-context.html">context</a> before each call.</p>
+
+<h2>Where memory actually lives</h2>
+
+<p>A model's weights are fixed while you use it. Nothing you say changes them. So every kind of memory is the app storing text somewhere and sending some of it back later. There are three common layers.</p>
+
+<ul>
+<li><strong>The conversation itself.</strong> The history resent on every call, as in <a href="/ai/what-is-context.html">What Is Context</a>. It lasts until the chat ends or the <a href="/ai/the-context-window.html">window</a> trims it.</li>
+<li><strong>A running summary.</strong> When a chat gets long, the app replaces old turns with a short summary of what was said and decided. It keeps the gist in far fewer tokens, but details can be lost.</li>
+<li><strong>Long-term notes.</strong> Facts saved across chats: "vegetarian", "prefers short answers", "working on the billing project". A small set can be loaded every time. A large set is searched like any document collection, with the same <a href="/ai/rag-basics.html">retrieval</a> tools.</li>
+</ul>
+
+<p>Every memory system makes two decisions over and over:</p>
+
+<ol>
+<li><strong>Write:</strong> what is worth saving, and does it replace something already saved?</li>
+<li><strong>Read:</strong> which saved notes belong in the context for <em>this</em> call?</li>
+</ol>
+
+<x-callout type="key">
+<p>Memory is context that was chosen earlier. It has all the same problems as any other context: it can be irrelevant, stale or wrong, and it costs space every time it is loaded.</p>
+</x-callout>
+
+<h2>A memory over three sessions</h2>
+
+<p>Here is a small note store, keyed by topic, so a new fact on the same topic replaces the old one. Step through three separate chats.</p>
+
+<x-tracer title="Saving, updating and loading notes">
+<script type="application/json">
+{
+  "code": [
+    "write: notes[topic] = fact   (replaces any older fact)",
+    "read:  load notes for the topics this message needs",
+    "context = notes loaded + message"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Session 1. The user mentions they are vegetarian. That is a lasting preference, so save it under <code>diet</code>.", "line": 1, "arrays": [ { "label": "topic", "values": ["diet"], "mark": [0] }, { "label": "fact", "values": ["vegetarian"], "mark": [0] } ], "vars": { "session": 1 } },
+    { "caption": "They also say they live in Leeds. Save it under <code>city</code>. \"I'm tired today\" was also said, and is not saved: it will not be true tomorrow.", "line": 1, "arrays": [ { "label": "topic", "values": ["diet", "city"], "mark": [1] }, { "label": "fact", "values": ["vegetarian", "Leeds"], "mark": [1] } ], "vars": { "session": 1 } },
+    { "caption": "Session 2, a fresh chat: \"Any quick dinner ideas?\" This needs <code>diet</code> but not <code>city</code>, so only the diet note is loaded. The suggestions are all vegetarian.", "line": 2, "arrays": [ { "label": "topic", "values": ["diet", "city"], "highlight": [0], "dim": [1] }, { "label": "fact", "values": ["vegetarian", "Leeds"], "highlight": [0], "dim": [1] } ], "vars": { "session": 2, "loaded": "diet" } },
+    { "caption": "Session 3: \"I moved to Bristol last month.\" Same topic, newer fact. Replace Leeds instead of adding a second city. Two cities side by side would be a contradiction waiting to happen.", "line": 1, "arrays": [ { "label": "topic", "values": ["diet", "city"], "mark": [1] }, { "label": "fact", "values": ["vegetarian", "Bristol"], "mark": [1] } ], "vars": { "session": 3 } },
+    { "caption": "Later in session 3: \"Find me a climbing gym nearby.\" Load <code>city</code>. The model gets Bristol and searches there.", "line": 3, "arrays": [ { "label": "topic", "values": ["diet", "city"], "highlight": [1], "dim": [0] }, { "label": "fact", "values": ["vegetarian", "Bristol"], "highlight": [1], "dim": [0] } ], "vars": { "session": 3, "loaded": "city" } },
+    { "caption": "Two notes, a few tokens each, carried across three chats. Each call loaded only what it needed.", "arrays": [ { "label": "topic", "values": ["diet", "city"], "mark": [0, 1] }, { "label": "fact", "values": ["vegetarian", "Bristol"], "mark": [0, 1] } ], "vars": { "notes": 2, "sessions": 3 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The important step is the fourth one. If the store had only ever appended, the context in session 3 would hold both "lives in Leeds" and "moved to Bristol", and the model would have to work out which is current. Sometimes it would get it wrong.</p>
+
+<h2>The store in code</h2>
+
+<x-code>
+<pre lang="js">
+class Memory {
+  constructor() {
+    this.notes = new Map(); // topic -> { fact, saved }
+  }
+  remember(topic, fact, saved) {
+    this.notes.set(topic, { fact, saved }); // newer replaces older
+  }
+  forget(topic) {
+    this.notes.delete(topic);
+  }
+  recall(topics) {
+    return topics
+      .filter((t) => this.notes.has(t))
+      .map((t) => `- ${t}: ${this.notes.get(t).fact} (saved ${this.notes.get(t).saved})`)
+      .join("\n");
+  }
+}
+
+const memory = new Memory();
+memory.remember("diet", "vegetarian", "March");
+memory.remember("city", "Leeds", "March");
+memory.remember("city", "Bristol", "June");
+console.log(memory.recall(["city"])); // - city: Bristol (saved June)
+</pre>
+<pre lang="py">
+class Memory:
+    def __init__(self):
+        self.notes = {}  # topic -> (fact, saved)
+
+    def remember(self, topic, fact, saved):
+        self.notes[topic] = (fact, saved)  # newer replaces older
+
+    def forget(self, topic):
+        self.notes.pop(topic, None)
+
+    def recall(self, topics):
+        return "\n".join(
+            f"- {t}: {self.notes[t][0]} (saved {self.notes[t][1]})"
+            for t in topics if t in self.notes
+        )
+
+memory = Memory()
+memory.remember("diet", "vegetarian", "March")
+memory.remember("city", "Leeds", "March")
+memory.remember("city", "Bristol", "June")
+print(memory.recall(["city"]))  # - city: Bristol (saved June)
+</pre>
+</x-code>
+
+<p>Real systems are messier in two places. Deciding what to save is usually done by a model reading the conversation and proposing notes, which means it can save the wrong thing. And choosing which notes to load is usually a similarity search rather than exact topics. The shape stays the same: write with replacement, read selectively, and keep the date.</p>
+
+<h2>Stale memory in action</h2>
+
+<p>The saved date is not decoration. Compare two versions of the same request, where the app's notes were never updated after a move.</p>
+
+<x-prompt label="Undated note, no rule" tone="weak">
+<x-system>
+Notes about the user:
+- Lives in Leeds
+</x-system>
+<x-user>
+Find me a climbing gym nearby.
+</x-user>
+<x-model>
+Here are three well-reviewed climbing gyms in Leeds: ...
+</x-model>
+</x-prompt>
+
+<x-prompt label="Dated note, with a rule" tone="good">
+<x-system>
+Notes about the user (may be out of date):
+- Lives in Leeds (saved 14 months ago)
+
+If a note matters to the answer and is more than a year old, check it with the user before relying on it.
+</x-system>
+<x-user>
+Find me a climbing gym nearby.
+</x-user>
+<x-model>
+Happy to. My notes say you live in Leeds, but that was over a year ago. Are you still there?
+</x-model>
+</x-prompt>
+
+<p>The second version costs one extra question and avoids a confidently wrong answer.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Saving everything">
+<p>A memory that stores every passing remark fills up with noise: moods, one-off tasks, jokes taken literally. Each note loaded costs tokens and can mislead. Save lasting facts, preferences and decisions, not the weather.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Appending instead of updating">
+<p>If new facts are only ever added, old and new versions pile up and contradict each other. Give notes a topic or key so a newer fact replaces the older one, and keep the date so staleness is visible.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Hidden memory">
+<p>Users should be able to see, correct and delete what is remembered about them. Memory written by a model can be wrong, and some of it may be sensitive. A memory nobody can inspect is a bug, and often a privacy problem. See <a href="/ai/privacy-and-security.html">Privacy and Security</a>.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="What is worth remembering">
+<x-task>
+<p>A user of a general-purpose assistant says these things over one chat. Decide for each one: save it as a long-term note, keep it only for this chat, or never store it. Give a reason.</p>
+<ol>
+<li>"I work night shifts as a nurse."</li>
+<li>"Ugh, I'm so tired today."</li>
+<li>"Please always keep answers short, I read them on my phone."</li>
+<li>"My sister is visiting this weekend."</li>
+<li>"Here's my online banking password so you can check my balance: …"</li>
+</ol>
+</x-task>
+<x-answer>
+<ol>
+<li><strong>Save.</strong> A lasting fact that changes useful answers, such as meal timing or sleep advice. Store it as a note the user can see and remove.</li>
+<li><strong>This chat only.</strong> True today, false tomorrow. Saving moods makes future replies oddly fixated on them.</li>
+<li><strong>Save.</strong> A clear, lasting preference about every future answer. This is exactly what long-term memory is for.</li>
+<li><strong>This chat only</strong>, or save with an expiry date. It is useful this week and wrong next week. If saved, the date matters.</li>
+<li><strong>Never store.</strong> Secrets do not belong in memory or, ideally, in the conversation at all. A good assistant should also tell the user not to share it.</li>
+</ol>
+<p>The pattern: save what is lasting, useful and safe. When in doubt, ask the user ("Want me to remember that?") rather than guessing.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An assistant with a memory feature recalls your favourite programming language in a brand-new chat. How?",
+      "options": [
+        { "text": "The model was updated with your preference", "why": "Models are not retrained from individual chats. Their weights stay fixed while you use them." },
+        { "text": "The app saved a note earlier and added it to the context of this chat", "correct": true, "why": "Right. Memory is saved text that gets loaded back into the context." },
+        { "text": "The model guessed from your writing style", "why": "It might guess, but a reliable recall across chats comes from a stored note." }
+      ]
+    },
+    {
+      "question": "A memory store holds \"works at a bakery\" from January and \"works at a bookshop\" from May. What is the best design fix?",
+      "options": [
+        { "text": "Load both and let the model decide", "why": "The model has to guess which is current, and sometimes guesses wrong." },
+        { "text": "Store notes under a topic like <code>job</code> so the newer fact replaces the older one", "correct": true, "why": "Right. Updating instead of appending removes the contradiction at the source. Keep the date too." },
+        { "text": "Delete all notes every month", "why": "That removes stale notes, but also every good one. Updating is more precise." }
+      ]
+    },
+    {
+      "question": "What is the main trade-off of replacing old chat turns with a running summary?",
+      "options": [
+        { "text": "It uses more tokens than the original turns", "why": "The point of a summary is to use fewer tokens." },
+        { "text": "It saves space but can drop details that later turn out to matter", "correct": true, "why": "Right. Whatever the summary leaves out is gone for good, so what it keeps matters." },
+        { "text": "It makes the model retrain on the conversation", "why": "Summaries are just shorter text in the context. No training happens." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Notes and documents are text you prepare in advance. <a href="/ai/tools-and-mcp.html">Tools and MCP</a> shows how a model can fetch fresh information itself, in the middle of answering. For what happens when a single chat runs too long, see <a href="/ai/context-rot.html">Context Rot</a>.</p>

@@ -1,0 +1,224 @@
+<!--
+{
+  "title": "Debugging Prompts",
+  "description": "Fix a misbehaving prompt the way you fix code: collect failing cases, guess the cause, change one thing, and rerun every case to catch what you broke.",
+  "minutes": 15,
+  "tags": ["prompting", "testing"]
+}
+-->
+<p>A prompt has worked for weeks. Then someone forwards a bad reply. You add a line, "Be careful with this kind of request", try the bad case again, and it looks fine. A week later, three different cases that used to work are broken, and nobody knows which edit did it.</p>
+
+<p>That is debugging by feel. Prompts deserve the same habits as code: reproduce the problem, test against a fixed set of cases, change one thing at a time, and check you did not break anything else.</p>
+
+<h2>The loop</h2>
+
+<ol>
+<li><strong>Collect cases.</strong> Gather 5 to 20 real inputs: the ones that failed, plus a spread of ones that already work. Write down the right answer for each.</li>
+<li><strong>Run them all</strong> and record which pass.</li>
+<li><strong>Read the failures</strong> next to the prompt, and guess why. Name one cause.</li>
+<li><strong>Change one thing</strong> that targets that cause.</li>
+<li><strong>Rerun every case</strong>, not just the one you were fixing. Keep the change only if the total got better.</li>
+</ol>
+
+<p>Step 5 is the one people skip. A prompt is a single piece of text that affects every input, so a fix for one case can quietly change many others.</p>
+
+<x-callout type="key">
+<p>Never judge a prompt change on one example. Keep a small set of test cases with known answers and rerun all of them after every change.</p>
+</x-callout>
+
+<h2>A debugging session</h2>
+
+<p>A support team uses a prompt to label incoming tickets as <code>urgent</code>, <code>normal</code> or <code>low</code>. They collected six tickets and the label each should get. The tracer follows an illustrative session through three versions of the prompt.</p>
+
+<x-tracer title="Three versions, six test tickets">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "Six real tickets and the label a support lead says each should get. This is the test set. It includes tickets that already work, not only the ones that failed.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", null, null, null], ["urgent", null, null, null], ["low", null, null, null], ["low", null, null, null], ["normal", null, null, null], ["urgent", null, null, null]] },
+      "vars": { "version": "none yet" }
+    },
+    {
+      "caption": "v1: \"Label this ticket's priority: urgent, normal or low.\" Four pass. The calm ticket about payments failing got <code>normal</code>, and the furious one about a typo got <code>urgent</code>.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", "urgent", null, null], ["urgent", "normal", null, null], ["low", "low", null, null], ["low", "urgent", null, null], ["normal", "normal", null, null], ["urgent", "urgent", null, null]], "mark": [[0, 1], [2, 1], [4, 1], [5, 1]], "highlight": [[1, 1], [3, 1]] },
+      "vars": { "version": "v1", "passed": "4 / 6" }
+    },
+    {
+      "caption": "Hypothesis: \"priority\" is never defined, so the model goes by tone. Calm sounds minor, angry sounds urgent. v2 adds a definition: urgent means many users are affected or data is at risk; cosmetic issues are low.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", "urgent", null, null], ["urgent", "normal", null, null], ["low", "low", null, null], ["low", "urgent", null, null], ["normal", "normal", null, null], ["urgent", "urgent", null, null]], "highlight": [[1, 1], [3, 1]] },
+      "vars": { "version": "v2", "change": "define urgent" }
+    },
+    {
+      "caption": "Both failures are fixed. But rerunning all six shows a new one: a single user locked out right before a payroll deadline is now <code>normal</code>, because \"many users\" does not cover them. Testing only the two broken tickets would have missed this.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", "urgent", "urgent", null], ["urgent", "normal", "urgent", null], ["low", "low", "low", null], ["low", "urgent", "low", null], ["normal", "normal", "normal", null], ["urgent", "urgent", "normal", null]], "mark": [[0, 2], [1, 2], [2, 2], [3, 2], [4, 2]], "highlight": [[5, 2]] },
+      "vars": { "version": "v2", "passed": "5 / 6" }
+    },
+    {
+      "caption": "The definition was too narrow. v3 states the real goal: urgent if anyone is fully blocked from working or data is at risk, \"however calm or angry the message sounds\". The reason covers both the tone problem and the single-user case.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", "urgent", "urgent", null], ["urgent", "normal", "urgent", null], ["low", "low", "low", null], ["low", "urgent", "low", null], ["normal", "normal", "normal", null], ["urgent", "urgent", "normal", null]], "highlight": [[5, 2]] },
+      "vars": { "version": "v3", "change": "blocked, not many" }
+    },
+    {
+      "caption": "All six pass. Three versions, each one change, each checked against the whole set. You know what fixed what, and that nothing that used to work broke on the way.",
+      "grid": { "label": "test set", "colLabels": ["expected", "v1", "v2", "v3"], "rowLabels": ["Site down for all", "Calm: no one can pay", "Feature idea", "FURIOUS about typo", "Reports page slow", "One user locked out"], "rows": [["urgent", "urgent", "urgent", "urgent"], ["urgent", "normal", "urgent", "urgent"], ["low", "low", "low", "low"], ["low", "urgent", "low", "low"], ["normal", "normal", "normal", "normal"], ["urgent", "urgent", "normal", "urgent"]], "mark": [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [5, 3]] },
+      "vars": { "version": "v3", "passed": "6 / 6" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Notice what the fix was <em>not</em>: "If the ticket mentions payroll, label it urgent." That passes the test and teaches the model nothing about the next ticket, which will mention invoices. Fix the cause, not the case.</p>
+
+<h2>Finding the cause</h2>
+
+<p>Most prompt bugs come from a short list of causes. Match the symptom first.</p>
+
+<table>
+<thead>
+<tr><th>Symptom</th><th>Likely cause</th><th>Try</th></tr>
+</thead>
+<tbody>
+<tr><td>Generic or off-target answer</td><td>Missing context</td><td>Say who it is for and why (<a href="/ai/prompting-basics.html">Prompting Basics</a>)</td></tr>
+<tr><td>Different readings of one word</td><td>Undefined term</td><td>Define it, with a reason (<a href="/ai/be-clear-and-specific.html">Be Clear and Specific</a>)</td></tr>
+<tr><td>Right content, wrong format</td><td>Format described, not shown</td><td>Add an example or template (<a href="/ai/show-examples.html">Show Examples</a>)</td></tr>
+<tr><td>Wrong answer to a multi-step problem</td><td>No room for working</td><td>Working before answer (<a href="/ai/give-the-model-room-to-think.html">Give the Model Room to Think</a>)</td></tr>
+<tr><td>Ignores one rule, sometimes</td><td>Rules that conflict, or the rule is buried</td><td>Say which rule wins; move it up</td></tr>
+<tr><td>Confident made-up details</td><td>Facts not provided, no fallback</td><td>Provide the facts; say what to write when unsure</td></tr>
+</tbody>
+</table>
+
+<p>A useful trick when you cannot see the cause: ask the model. Add "Before the label, explain in one sentence which words in the ticket decided it." The explanation is not a reliable account of how the model really works, but it often shows which part of your prompt or input it latched onto.</p>
+
+<h2>A tiny test runner</h2>
+
+<p>Once you have more than a few cases, run them with code. The runner below takes your cases and any function that returns a label. In real use that function sends the prompt and the ticket to a model; here a stand-in returns fixed answers so you can run it as is.</p>
+
+<x-code>
+<pre lang="js">
+function runTests(cases, getLabel) {
+  const failures = [];
+  for (const c of cases) {
+    const got = getLabel(c.ticket);
+    if (got !== c.expected) failures.push(`${c.ticket}: expected ${c.expected}, got ${got}`);
+  }
+  console.log(`passed ${cases.length - failures.length} / ${cases.length}`);
+  for (const f of failures) console.log("  " + f);
+}
+
+const cases = [
+  { ticket: "Calm: no one can pay", expected: "urgent" },
+  { ticket: "FURIOUS about typo", expected: "low" },
+  { ticket: "Reports page slow", expected: "normal" },
+];
+// Stand-in for a real model call, behaving like prompt v1:
+const v1 = { "Calm: no one can pay": "normal", "FURIOUS about typo": "urgent", "Reports page slow": "normal" };
+runTests(cases, (ticket) => v1[ticket]); // passed 1 / 3
+</pre>
+<pre lang="py">
+def run_tests(cases, get_label):
+    failures = []
+    for c in cases:
+        got = get_label(c["ticket"])
+        if got != c["expected"]:
+            failures.append(f'{c["ticket"]}: expected {c["expected"]}, got {got}')
+    print(f"passed {len(cases) - len(failures)} / {len(cases)}")
+    for f in failures:
+        print("  " + f)
+
+cases = [
+    {"ticket": "Calm: no one can pay", "expected": "urgent"},
+    {"ticket": "FURIOUS about typo", "expected": "low"},
+    {"ticket": "Reports page slow", "expected": "normal"},
+]
+# Stand-in for a real model call, behaving like prompt v1:
+v1 = {"Calm: no one can pay": "normal", "FURIOUS about typo": "urgent", "Reports page slow": "normal"}
+run_tests(cases, lambda ticket: v1[ticket])  # passed 1 / 3
+</pre>
+</x-code>
+
+<p>Model replies vary from run to run, as <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> explains. So run each case a few times. A case that passes 2 times out of 3 is a real problem, even though a single run might have hidden it. Growing this runner into a proper test suite is the subject of <a href="/ai/evals.html">Evals</a>.</p>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Find the cause, then fix it">
+<x-task>
+<p>This prompt translates app text for a Spanish release. The product is called Bloom. Some replies come back with the name translated as "Florecer", which confused testers. Write one sentence naming the likely cause, then rewrite the prompt to fix the cause, not just this one word.</p>
+</x-task>
+<x-start>
+Translate the following app text into Spanish.
+
+Bloom keeps your notes in sync across devices.
+</x-start>
+<x-answer>
+<p>Cause: the prompt never says that some words are names, so "Bloom" looks like an ordinary English word to translate.</p>
+<x-prompt label="Rewritten prompt" tone="good">
+<x-user>
+Translate the app text below into Spanish for users in Spain. Use the informal "tú".
+
+Do not translate names of products, features or buttons. Keep these exactly as written: Bloom, Sync Hub, Quick Note. Users search for them in our help pages by their English names, so a translated name sends them nowhere.
+
+Reply with the translation only.
+
+<text>
+Bloom keeps your notes in sync across devices.
+</text>
+</x-user>
+</x-prompt>
+<p>Why it works: it fixes the cause (names were not marked as names) with a general rule plus a list, and the reason lets the model treat other feature names the same way. After the change, rerun your other translation test cases too, to check the new rule did not stop ordinary words from being translated.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Changing several things at once">
+<p>If you add an example, reword the task and move a rule in one edit, and the results improve, you do not know which change helped. Worse, one of them may have hurt, masked by the others.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Patching one case at a time">
+<p>A rule per failing input ("if it mentions payroll…") makes the prompt longer and more fragile without making it better at new inputs. Ask what the failures have in common, and fix that.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Blaming the model too early">
+<p>Before concluding that a model "can't do this", reread the prompt as a stranger would. Most failures come from something missing or ambiguous in the prompt. Swapping models is a fair test only after the prompt is clear.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Your change fixes the failing case. What should you do before keeping it?",
+      "options": [
+        { "text": "Nothing; it works now", "why": "It works on one input. The same text affects every other input too." },
+        { "text": "Rerun every case in your test set", "correct": true, "why": "A prompt change can break cases that used to pass, like the locked-out user in v2. Only the full rerun shows it." },
+        { "text": "Run the fixed case ten more times", "why": "Repeating it is useful for flaky cases, but it still tells you nothing about the others." }
+      ]
+    },
+    {
+      "question": "Tickets written angrily are labelled urgent even when the problem is minor. What is the most likely cause?",
+      "options": [
+        { "text": "The model cannot read emotions", "why": "The reverse: it reads tone well, and is using tone because nothing else was defined." },
+        { "text": "Urgency was never defined, so the model judged by tone", "correct": true, "why": "Without a definition, how urgent a message sounds is the most obvious signal. Define urgency by impact, and say tone does not count." },
+        { "text": "The temperature is too high", "why": "Randomness would cause inconsistent labels, not a steady bias toward angry tickets." }
+      ]
+    },
+    {
+      "question": "A case passes on one run and fails on the next with the same prompt. What does that tell you?",
+      "options": [
+        { "text": "The test is broken", "why": "The test is fine. The reply is varying." },
+        { "text": "The prompt leaves the model close to undecided on this input", "correct": true, "why": "Replies are sampled, so a borderline case can go either way. Treat it as a failure and make the prompt clearer for it." },
+        { "text": "The model is overloaded", "why": "Varying replies are normal sampling behaviour, not a sign of load." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Some bad replies are not your prompt's fault at all: they come from text that someone else slipped into the input. That is <a href="/ai/prompt-injection.html">Prompt Injection</a>, the last lesson in this module.</p>

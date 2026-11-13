@@ -1,0 +1,243 @@
+<!--
+{
+  "title": "Binary Search on the Answer",
+  "description": "When checking a guess is easy but finding the answer is hard, binary search over the possible answers. Spot the pattern and reuse the lower-bound template.",
+  "minutes": 16,
+  "tags": ["searching", "binary search", "patterns"]
+}
+-->
+<p>You have six podcast episodes to catch up on, in order: 40, 25, 60, 30, 45 and 20 minutes long. You want to finish them in 3 days. You only listen to whole episodes, and you never skip ahead. To keep each day short, you set a daily limit. What is the smallest limit that still gets you through in 3 days?</p>
+
+<p>Working out the answer directly is awkward: you would have to try every way of cutting the list into 3 days. But checking a <em>guess</em> is easy. Say the limit is 80 minutes. Fill each day until the next episode would go over 80, then start a new day: 40 + 25, then 60, then 30 + 45, then 20. That is 4 days, so 80 is too small. Checking a guess takes one pass. That is the opening this lesson is about.</p>
+
+<h2>The idea: search the answers, not the array</h2>
+
+<p>Line up every possible limit from small to large and ask the same question of each: "can I finish in 3 days with this limit?"</p>
+
+<ul>
+<li>A limit below 60 can never work, because the 60-minute episode would not fit in any day.</li>
+<li>A limit of 220, the total, always works: you could listen to everything in one day.</li>
+<li>If some limit works, any bigger limit works too. A looser limit never needs more days.</li>
+</ul>
+
+<p>So the answers go no, no, no, …, yes, yes, yes. That is exactly the shape from <a href="/algorithms/binary-search.html">Binary Search</a>: you want the first "yes". The only difference is that the positions are candidate answers instead of array indexes, and checking one means running the day-count instead of reading <code>a[mid]</code>.</p>
+
+<x-figure caption="Every limit from 60 to 220 is a candidate. The answers switch from no to yes exactly once, at 90.">
+<svg viewBox="0 0 480 130" aria-label="A number line from 60 to 220. The part from 60 to 89 is red and labelled 'no: more than 3 days'. The part from 90 to 220 is green and labelled 'yes: 3 days or fewer'. An arrow marks 90 as the first yes.">
+  <line x1="40" y1="60" x2="113" y2="60" class="s-bad" stroke-width="8"/>
+  <line x1="115" y1="60" x2="440" y2="60" class="s-good" stroke-width="8"/>
+  <line x1="40" y1="50" x2="40" y2="70" class="s-fg" stroke-width="2"/>
+  <line x1="115" y1="44" x2="115" y2="76" class="s-accent" stroke-width="3"/>
+  <line x1="440" y1="50" x2="440" y2="70" class="s-fg" stroke-width="2"/>
+  <text x="40" y="94" text-anchor="middle">60</text>
+  <text x="115" y="94" text-anchor="middle" class="f-accent t-bold">90</text>
+  <text x="440" y="94" text-anchor="middle">220</text>
+  <text x="77" y="32" text-anchor="middle" class="t-sans t-small f-bad">no</text>
+  <text x="278" y="32" text-anchor="middle" class="t-sans t-small f-good">yes: 3 days or fewer</text>
+  <text x="115" y="118" text-anchor="middle" class="t-sans t-small f-accent">first yes = the answer</text>
+</svg>
+</x-figure>
+
+<p>Checking all 161 candidates one by one would work, but binary search needs only about log₂ 161, which is 8 checks at most.</p>
+
+<h2>Traced</h2>
+
+<p>The template is the lower bound from the last lesson. <code>lo</code> starts at the smallest candidate, 60. <code>hi</code> starts at 220, which is known to be a "yes"; it plays the role that <code>n</code> played before. The <code>day</code> row shows which day each episode lands on for the guess being checked.</p>
+
+<x-tracer title="Smallest daily limit for 3 days">
+<script type="application/json">
+{
+  "code": [
+    "lo = max(episodes), hi = sum(episodes)",
+    "while lo < hi:",
+    "  mid = lo + (hi - lo) // 2",
+    "  if daysNeeded(mid) <= 3: hi = mid",
+    "  else: lo = mid + 1",
+    "return lo"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The answer is somewhere from 60 (the longest episode) to 220 (all of them in one day).", "line": 1, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] } ], "vars": { "lo": 60, "hi": 220, "checks": 0 } },
+    { "caption": "Guess 140. Day 1 fits 40 + 25 + 60 = 125; adding 30 would make 155. Day 2 takes the rest. 2 days is a yes, so the answer is 140 or less: <code>hi = 140</code>.", "line": 4, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 1, 2, 2, 2] } ], "vars": { "lo": 60, "hi": 140, "mid": 140, "days": 2, "checks": 1 } },
+    { "caption": "Guess 100. Days of 65, 90 and 65 minutes. 3 days: yes. <code>hi = 100</code>.", "line": 4, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 2, 3, 3] } ], "vars": { "lo": 60, "hi": 100, "mid": 100, "days": 3, "checks": 2 } },
+    { "caption": "Guess 80. 60 + 30 is 90, too much, so 30 starts day 3, and 30 + 45 + 20 is too much, so 20 needs day 4. No, and every smaller limit is also a no: <code>lo = 81</code>.", "line": 5, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 3, 3, 4], "highlight": [5] } ], "vars": { "lo": 81, "hi": 100, "mid": 80, "days": 4, "checks": 3 } },
+    { "caption": "Guess 90. 60 + 30 is exactly 90, which fits. Days of 65, 90 and 65 minutes. Yes: <code>hi = 90</code>.", "line": 4, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 2, 3, 3], "highlight": [2, 3] } ], "vars": { "lo": 81, "hi": 90, "mid": 90, "days": 3, "checks": 4 } },
+    { "caption": "Guess 85. 60 + 30 no longer fits, so it takes 4 days. No: <code>lo = 86</code>.", "line": 5, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 3, 3, 4], "highlight": [5] } ], "vars": { "lo": 86, "hi": 90, "mid": 85, "days": 4, "checks": 5 } },
+    { "caption": "Guess 88. Still 4 days. <code>lo = 89</code>.", "line": 5, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 3, 3, 4], "highlight": [5] } ], "vars": { "lo": 89, "hi": 90, "mid": 88, "days": 4, "checks": 6 } },
+    { "caption": "Guess 89. Still 4 days, one minute short of fitting 60 + 30. <code>lo = 90</code>.", "line": 5, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 3, 3, 4], "highlight": [5] } ], "vars": { "lo": 90, "hi": 90, "mid": 89, "days": 4, "checks": 7 } },
+    { "caption": "<code>lo</code> meets <code>hi</code> at 90. That is the smallest limit that works: 7 checks of 6 episodes each, instead of up to 31 checks going up one minute at a time from 60.", "line": 6, "arrays": [ { "label": "episodes", "values": [40, 25, 60, 30, 45, 20] }, { "label": "day", "values": [1, 1, 2, 2, 3, 3], "mark": [0, 1, 2, 3, 4, 5] } ], "vars": { "answer": 90, "checks": 7 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The code</h2>
+
+<p>Split the code into two parts: a general <code>firstYes</code> search you can reuse for any problem of this kind, and the check that is specific to this one.</p>
+
+<x-code>
+<pre lang="js">
+// Smallest x in [lo, hi] with isYes(x) true.
+// isYes must go no, ..., no, yes, ..., yes, and isYes(hi) must be true.
+function firstYes(lo, hi, isYes) {
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (isYes(mid)) hi = mid; // mid works: answer is mid or smaller
+    else lo = mid + 1;        // mid fails: answer is bigger
+  }
+  return lo;
+}
+
+// Assumes limit >= the longest episode.
+function daysNeeded(episodes, limit) {
+  let days = 1, today = 0;
+  for (const minutes of episodes) {
+    if (today + minutes > limit) { days++; today = 0; } // start a new day
+    today += minutes;
+  }
+  return days;
+}
+
+function smallestDailyLimit(episodes, maxDays) {
+  const lo = Math.max(...episodes);
+  const hi = episodes.reduce((sum, m) => sum + m, 0);
+  return firstYes(lo, hi, (limit) => daysNeeded(episodes, limit) <= maxDays);
+}
+
+smallestDailyLimit([40, 25, 60, 30, 45, 20], 3); // 90
+</pre>
+<pre lang="py">
+# Smallest x in [lo, hi] with is_yes(x) true.
+# is_yes must go no, ..., no, yes, ..., yes, and is_yes(hi) must be true.
+def first_yes(lo, hi, is_yes):
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if is_yes(mid):
+            hi = mid      # mid works: answer is mid or smaller
+        else:
+            lo = mid + 1  # mid fails: answer is bigger
+    return lo
+
+# Assumes limit >= the longest episode.
+def days_needed(episodes, limit):
+    days, today = 1, 0
+    for minutes in episodes:
+        if today + minutes > limit:  # start a new day
+            days += 1
+            today = 0
+        today += minutes
+    return days
+
+def smallest_daily_limit(episodes, max_days):
+    lo, hi = max(episodes), sum(episodes)
+    return first_yes(lo, hi, lambda limit: days_needed(episodes, limit) <= max_days)
+
+smallest_daily_limit([40, 25, 60, 30, 45, 20], 3)  # 90
+</pre>
+</x-code>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Try every limit from the bottom", "time": "O(n × R)", "space": "O(1)", "note": "R = hi − lo + 1 candidates, each checked in O(n)." },
+    { "name": "Binary search on the answer", "time": "O(n log R)", "space": "O(1)", "note": "About log₂ R checks. Even R = 1,000,000,000 needs only 30." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>If you can check a guess quickly, and every answer bigger than a good one is also good, you can binary search over the answers themselves.</p>
+</x-callout>
+
+<h2>How to spot it</h2>
+
+<p>Reach for this pattern when the problem says things like "the smallest speed that…", "the largest size such that…", or "minimise the biggest…". Then make sure three things are true:</p>
+
+<ol>
+<li><strong>You can bound the answer.</strong> Find a <code>lo</code> that is the smallest possible candidate and a <code>hi</code> that surely works.</li>
+<li><strong>You can check a guess</strong> faster than you can find the answer, often with one greedy pass like <code>daysNeeded</code>.</li>
+<li><strong>The answers are monotone.</strong> If <code>x</code> works, <code>x + 1</code> works too. Say why out loud before you code.</li>
+</ol>
+
+<h2>When you want the largest value</h2>
+
+<p>Some problems flip the direction: the answers go yes, yes, …, no, no, and you want the <em>last</em> yes. Do not write a new template. Search for the first <strong>no</strong> with the same function, then subtract 1. For example, the integer square root of 30 is the largest <code>x</code> with x × x ≤ 30. The first <code>x</code> where x × x &gt; 30 is 6, so the answer is 5.</p>
+
+<x-code title="Largest value that works">
+<pre lang="js">
+// Largest x with x * x <= n, for n >= 0.
+function intSqrt(n) {
+  // n + 1 is surely a "no": (n + 1)² > n
+  return firstYes(0, n + 1, (x) => x * x > n) - 1;
+}
+
+intSqrt(30); // 5
+</pre>
+<pre lang="py">
+# Largest x with x * x <= n, for n >= 0.
+def int_sqrt(n):
+    # n + 1 is surely a "no": (n + 1)² > n
+    return first_yes(0, n + 1, lambda x: x * x > n) - 1
+
+int_sqrt(30)  # 5
+</pre>
+</x-code>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="A lower bound that is too low">
+<p>If you start <code>lo</code> at 1 instead of the longest episode, <code>daysNeeded(…, 50)</code> puts the 60-minute episode in a day of its own and happily reports a day longer than the limit. The check is only right for limits of at least 60. Set <code>lo</code> to the smallest answer that can make sense.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A check that is not monotone">
+<p>Binary search only works if the answers switch from no to yes once. "Can I finish in <em>exactly</em> 3 days?" is not monotone: a huge limit finishes in 1 day, so it says no again. Ask "in at most 3 days?" instead.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Hand-writing a last-yes search">
+<p>Searching for the last yes with <code>lo = mid</code> and a round-down <code>mid</code> loops forever once <code>hi = lo + 1</code>. Flip the question and use <code>firstYes</code>, as in the square root example, so you only ever have one template to get right.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>Capacity planning uses the same move: "what is the fewest servers that keep response times under 200 ms?" Each guess is checked by a simulation or a load test. Because more servers never make it slower, a binary search over server counts finds the answer in a handful of expensive tests instead of dozens.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Episodes <code>[40, 25, 60, 30, 45, 20]</code> with a limit of 100 minutes. How many days does the greedy check need?",
+      "options": [
+        { "text": "3", "correct": true, "why": "40 + 25 = 65 (adding 60 would be 125). Then 60 + 30 = 90 (adding 45 would be 135). Then 45 + 20 = 65." },
+        { "text": "2", "why": "Day 1 cannot take 60 after 65 minutes, and the remaining 155 minutes do not fit in one more day." },
+        { "text": "4", "why": "That is what a limit of 80 needs. At 100, 60 and 30 fit on the same day." }
+      ]
+    },
+    {
+      "question": "The candidate answers run from 1 to 1,000,000,000. About how many checks does binary search on the answer need?",
+      "options": [
+        { "text": "About 30", "correct": true, "why": "Each check halves the range, and 2<sup>30</sup> is just over a billion." },
+        { "text": "About 1,000", "why": "Halving a billion takes far fewer steps than that. log₂ of 10<sup>9</sup> is about 30." },
+        { "text": "About 1,000,000,000", "why": "That is trying every candidate. Monotone answers let you skip half each time." }
+      ]
+    },
+    {
+      "question": "Which question can you binary search on?",
+      "options": [
+        { "text": "Can I finish within this limit in at most 3 days?", "correct": true, "why": "A bigger limit never needs more days, so the answers go no, …, no, yes, …, yes." },
+        { "text": "Does this limit give exactly 3 days?", "why": "A very large limit gives 1 day, so the answers go no, yes, then no again. There is no single switch to find." },
+        { "text": "Is this limit an even number?", "why": "The answers alternate, so a single check tells you nothing about the neighbours." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Before the next module, try the pattern on a new question by hand: with the same episodes, what is the smallest limit for 2 days? (It is 125.) The next module starts with <a href="/algorithms/binary-trees.html">Binary Trees</a>, the shape behind binary search trees, where "throw away half" becomes a data structure.</p>

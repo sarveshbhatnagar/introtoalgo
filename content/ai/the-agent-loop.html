@@ -1,0 +1,309 @@
+<!--
+{
+  "title": "The Agent Loop",
+  "description": "Write the loop that runs an agent: call the model, run the tool it asks for, feed back the result, and stop for the right reason. Real code you can run.",
+  "minutes": 15,
+  "tags": ["agents", "code"]
+}
+-->
+<p>A warehouse manager asks an assistant which of two warehouses has more blue mugs. The assistant has one tool, <code>stockLevel</code>, and needs to call it twice, once per warehouse, then compare. On its first try it writes the warehouse name with a capital letter and gets an error back.</p>
+
+<p>Whether this ends with the right answer, a crash, or a loop that never stops depends on about twenty lines of ordinary code around the model. That code is the agent loop, and this lesson writes it.</p>
+
+<h2>The idea: four moves, repeated</h2>
+
+<p><a href="/ai/what-is-an-agent.html">What Is an Agent</a> showed the loop as pseudocode. Written properly, every pass does four things:</p>
+
+<ol>
+<li><strong>Ask.</strong> Send the whole history to the model and get one reply.</li>
+<li><strong>Check.</strong> If the reply is a final answer, stop and return it.</li>
+<li><strong>Act.</strong> Otherwise the reply is a tool request. Run it. If it fails, turn the failure into an error message instead of crashing.</li>
+<li><strong>Record.</strong> Add the reply and the result to the history, so the next call can see them.</li>
+</ol>
+
+<p>Around those four moves sits one more rule: a hard limit on the number of passes. A model can keep asking for tools forever, so the code, not the model, must have the last word on when to stop.</p>
+
+<x-callout type="key">
+<p>The model decides what to do next. The loop decides whether it is allowed to keep going.</p>
+</x-callout>
+
+<h2>One run, step by step</h2>
+
+<p>Here is the blue-mug question running through the loop. North has 140 mugs and south has 95. The model's replies are realistic but scripted, so you can follow exactly what the code does with each one.</p>
+
+<x-tracer title="The loop answers the blue-mug question">
+<script type="application/json">
+{
+  "code": [
+    "history = [goal]",
+    "for step in 1..maxSteps:",
+    "  reply = model(history)",
+    "  history += reply",
+    "  if reply is an answer: return it",
+    "  try: result = run the tool",
+    "  except: result = the error message",
+    "  history += result",
+    "return \"stopped: step limit\""
+  ],
+  "codeLang": "text",
+  "steps": [
+    {
+      "caption": "The history starts with just the goal. Nothing has been asked yet.",
+      "line": 1,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"]], "highlight": [[0, 1]] },
+      "vars": { "step": 0, "maxSteps": 10, "entries": 1 }
+    },
+    {
+      "caption": "Step 1. The model asks for <code>stockLevel</code> with \"North\", capital N. It is not an answer, so the loop goes on to run it.",
+      "line": 4,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"]], "highlight": [[1, 1]] },
+      "vars": { "step": 1, "maxSteps": 10, "entries": 2 }
+    },
+    {
+      "caption": "The tool throws because it only knows \"north\". The loop catches it and records the error as a result. Without the <code>try</code>, the whole run would crash here.",
+      "line": 7,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."]], "highlight": [[2, 1]] },
+      "vars": { "step": 1, "maxSteps": 10, "entries": 3 }
+    },
+    {
+      "caption": "Step 2. The model reads the error in the history and fixes its own input.",
+      "line": 4,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."], ["4", "model: stockLevel(\"north\")"]], "highlight": [[3, 1]] },
+      "vars": { "step": 2, "maxSteps": 10, "entries": 4 }
+    },
+    {
+      "caption": "This time the tool works. The result is recorded: 140 blue mugs in the north warehouse.",
+      "line": 8,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."], ["4", "model: stockLevel(\"north\")"], ["5", "result: north, 140"]], "highlight": [[4, 1]] },
+      "vars": { "step": 2, "maxSteps": 10, "entries": 5 }
+    },
+    {
+      "caption": "Step 3. Same pattern for the south warehouse: request, run, record. 95 mugs.",
+      "line": 8,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."], ["4", "model: stockLevel(\"north\")"], ["5", "result: north, 140"], ["6", "model: stockLevel(\"south\")"], ["7", "result: south, 95"]], "highlight": [[5, 1], [6, 1]] },
+      "vars": { "step": 3, "maxSteps": 10, "entries": 7 }
+    },
+    {
+      "caption": "Step 4. With both numbers in the history, the model replies with an answer. The check on line 5 sees it and returns, with the reason it stopped.",
+      "line": 5,
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."], ["4", "model: stockLevel(\"north\")"], ["5", "result: north, 140"], ["6", "model: stockLevel(\"south\")"], ["7", "result: south, 95"], ["8", "model: North has more blue mugs: 140 against 95."]], "mark": [[7, 1]] },
+      "vars": { "step": 4, "maxSteps": 10, "entries": 8, "stopped": "answered" }
+    },
+    {
+      "caption": "4 model calls, 3 tool runs, 1 error recovered. With <code>maxSteps = 2</code> the same run would have ended after step 2 with no answer and <code>stopped: step limit</code>.",
+      "grid": { "label": "history", "colLabels": ["#", "entry"], "rows": [["1", "user: Which warehouse has more blue mugs?"], ["2", "model: stockLevel(\"North\")"], ["3", "error: Unknown warehouse \"North\". Use \"north\" or \"south\"."], ["4", "model: stockLevel(\"north\")"], ["5", "result: north, 140"], ["6", "model: stockLevel(\"south\")"], ["7", "result: south, 95"], ["8", "model: North has more blue mugs: 140 against 95."]], "mark": [[4, 1], [6, 1], [7, 1]] },
+      "vars": { "model calls": 4, "tool runs": 3, "errors": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>The loop in code</h2>
+
+<p>The <code>model</code> argument is any function that takes the history and returns either <code>{ type: "answer", text }</code> or <code>{ type: "tool", tool, input }</code>. In a real app it wraps a call to a model API and converts the reply into one of those two shapes. Here it is a stand-in, so the code runs without one.</p>
+
+<x-code>
+<pre lang="js">
+function runAgent(model, tools, goal, maxSteps = 10) {
+  const history = [{ role: "user", text: goal }];
+  for (let step = 1; step <= maxSteps; step++) {
+    const reply = model(history);
+    history.push(reply);
+    if (reply.type === "answer") {
+      return { answer: reply.text, steps: step, stopped: "answered" };
+    }
+    let result;
+    try {
+      const tool = tools[reply.tool];
+      if (!tool) throw new Error(`No tool named ${reply.tool}`);
+      result = tool(reply.input);
+    } catch (err) {
+      result = { error: err.message }; // the model reads errors too
+    }
+    history.push({ role: "tool", result });
+  }
+  return { answer: null, steps: maxSteps, stopped: "step limit" };
+}
+</pre>
+<pre lang="py">
+def run_agent(model, tools, goal, max_steps=10):
+    history = [{"role": "user", "text": goal}]
+    for step in range(1, max_steps + 1):
+        reply = model(history)
+        history.append(reply)
+        if reply["type"] == "answer":
+            return {"answer": reply["text"], "steps": step, "stopped": "answered"}
+        try:
+            tool = tools.get(reply["tool"])
+            if tool is None:
+                raise ValueError(f"No tool named {reply['tool']}")
+            result = tool(**reply["input"])
+        except Exception as err:
+            result = {"error": str(err)}  # the model reads errors too
+        history.append({"role": "tool", "result": result})
+    return {"answer": None, "steps": max_steps, "stopped": "step limit"}
+</pre>
+</x-code>
+
+<p>And the run from the tracer, with a fake tool and a scripted model that returns one reply per pass:</p>
+
+<x-code title="Running it">
+<pre lang="js">
+const stock = { north: 140, south: 95 };
+const tools = {
+  stockLevel: ({ warehouse }) => {
+    if (!(warehouse in stock)) {
+      throw new Error(`Unknown warehouse "${warehouse}". Use "north" or "south".`);
+    }
+    return { warehouse, blueMugs: stock[warehouse] };
+  },
+};
+const script = [
+  { type: "tool", tool: "stockLevel", input: { warehouse: "North" } },
+  { type: "tool", tool: "stockLevel", input: { warehouse: "north" } },
+  { type: "tool", tool: "stockLevel", input: { warehouse: "south" } },
+  { type: "answer", text: "North has more blue mugs: 140 against 95." },
+];
+const fakeModel = (history) => script[(history.length - 1) / 2];
+
+console.log(runAgent(fakeModel, tools, "Which warehouse has more blue mugs?"));
+// { answer: 'North has more blue mugs: 140 against 95.', steps: 4, stopped: 'answered' }
+console.log(runAgent(fakeModel, tools, "Which warehouse has more blue mugs?", 2));
+// { answer: null, steps: 2, stopped: 'step limit' }
+</pre>
+<pre lang="py">
+stock = {"north": 140, "south": 95}
+
+def stock_level(warehouse):
+    if warehouse not in stock:
+        raise ValueError(f'Unknown warehouse "{warehouse}". Use "north" or "south".')
+    return {"warehouse": warehouse, "blue_mugs": stock[warehouse]}
+
+tools = {"stock_level": stock_level}
+script = [
+    {"type": "tool", "tool": "stock_level", "input": {"warehouse": "North"}},
+    {"type": "tool", "tool": "stock_level", "input": {"warehouse": "north"}},
+    {"type": "tool", "tool": "stock_level", "input": {"warehouse": "south"}},
+    {"type": "answer", "text": "North has more blue mugs: 140 against 95."},
+]
+fake_model = lambda history: script[(len(history) - 1) // 2]
+
+print(run_agent(fake_model, tools, "Which warehouse has more blue mugs?"))
+# {'answer': 'North has more blue mugs: 140 against 95.', 'steps': 4, 'stopped': 'answered'}
+print(run_agent(fake_model, tools, "Which warehouse has more blue mugs?", max_steps=2))
+# {'answer': None, 'steps': 2, 'stopped': 'step limit'}
+</pre>
+</x-code>
+
+<p>Swap <code>fakeModel</code> for a real model call and <code>tools</code> for real ones, and the loop itself does not change. Real frameworks add streaming, logging and several tool calls per reply, but this is the core of all of them.</p>
+
+<h2>Good reasons to stop</h2>
+
+<p>An answer is the stop you want. The others are safety nets, and the loop should return which one fired, so the caller never mistakes a cut-off run for a finished one.</p>
+
+<ul>
+<li><strong>Step limit.</strong> The one shown above. Pick it from real runs: if a task normally takes 5 steps, a limit of 15 leaves room without allowing endless wandering.</li>
+<li><strong>Budget or time.</strong> Stop when total tokens or seconds pass a limit, for the same reason.</li>
+<li><strong>Repeats.</strong> If the model asks for the exact same tool with the exact same input it already tried, it is probably stuck. Keep a set of past requests, and on a repeat either stop or add a note to the history: "You already tried this. Try something different or answer with what you have."</li>
+<li><strong>A person says stop.</strong> Long runs should be cancellable.</li>
+</ul>
+
+<h2>What each step costs</h2>
+
+<p>The number of model calls grows in a straight line with the number of steps. The amount of text the model reads does not. Every call re-reads the whole history, and the history gets longer every step.</p>
+
+<p>Say each step adds about 500 tokens. Call 1 reads 500, call 2 reads 1,000, call 20 reads 10,000. Over 20 calls that is 500 × (1 + 2 + … + 20) = 500 × 210 = 105,000 tokens read, for a history that ends only 10,000 tokens long.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Model calls", "time": "O(n)", "note": "One per step." },
+    { "name": "Tokens read in total", "time": "O(n²)", "space": "O(n)", "note": "Call <code>i</code> re-reads about <code>i</code> steps of history. The history itself only grows linearly." }
+  ]
+}
+</script>
+</x-complexity>
+
+<p>That is why long runs get slow and expensive faster than you expect, and why <a href="/ai/tool-use.html">short tool results</a> matter so much. Many systems cut the cost by caching the unchanged start of the history, or by summarizing old steps, at the risk of losing details covered in <a href="/ai/context-rot.html">Context Rot</a>.</p>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Find the bugs in this loop">
+<x-task>
+<p>This loop works in the demo and fails in production. Find at least three problems and say how to fix each.</p>
+</x-task>
+<x-start>
+def run_agent(model, tools, goal):
+    history = [goal]
+    while True:
+        reply = model(history)
+        if reply["type"] == "answer":
+            return reply["text"]
+        result = tools[reply["tool"]](**reply["input"])
+        history.append(result)
+</x-start>
+<x-answer>
+<ol>
+<li><strong>No step limit.</strong> <code>while True</code> runs until the model chooses to answer, which may be never. Use a <code>for</code> loop up to <code>max_steps</code> and return a clear "stopped: step limit".</li>
+<li><strong>Tool failures crash the run.</strong> An exception inside a tool, or a misspelled tool name (a <code>KeyError</code> on <code>tools[...]</code>), ends the whole program. Catch errors and put the message into the history so the model can correct itself.</li>
+<li><strong>The model's own request is never recorded.</strong> Only the result goes into the history. On the next call the model sees an answer to a question it cannot see itself asking. Append the reply, then the result.</li>
+<li><strong>The caller cannot tell how it ended.</strong> Returning only text hides whether the run answered or was cut off. Return the reason too.</li>
+</ol>
+<p>Each of these is invisible on a happy demo run, which is why they reach production.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Letting the model decide when to stop, alone">
+<p>Most runs end with an answer. Some do not: the model keeps searching, or keeps retrying a broken tool. Without a hard limit in code, one bad run can make hundreds of calls before anyone notices.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Hiding errors from the model">
+<p>Catching an exception and silently skipping the step leaves the model thinking the call never happened, so it asks again. Put the error text into the history, as the loop above does.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Treating a cut-off run as a result">
+<p>If the step limit fires, the last thing in the history might be a half-finished plan. Check the stop reason before showing anything as an answer, and say plainly when the agent did not finish.</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A tool throws an exception inside the loop. What should the loop do?",
+      "options": [
+        { "text": "Stop the run and report a crash", "why": "Many errors are easy for the model to fix, like a wrong name or format. Stopping wastes the run." },
+        { "text": "Add the error message to the history and continue", "correct": true, "why": "Right. The model reads the error on the next call and can correct its request, as it did with \"North\"." },
+        { "text": "Skip the step without telling the model", "why": "The model then has no idea the call failed and will likely ask for the same thing again." }
+      ]
+    },
+    {
+      "question": "Each step adds about the same amount of text to the history. How does the total text the model reads grow with the number of steps <code>n</code>?",
+      "options": [
+        { "text": "O(n)", "why": "That is how the number of calls grows. Each call also re-reads everything before it." },
+        { "text": "O(n²)", "correct": true, "why": "Call <code>i</code> reads about <code>i</code> steps, and 1 + 2 + … + n is about n²/2." },
+        { "text": "O(1)", "why": "The history grows every step, so each call reads more than the last." }
+      ]
+    },
+    {
+      "question": "Why should the loop return the reason it stopped?",
+      "options": [
+        { "text": "For logging only", "why": "Logging helps, but the bigger reason is that the caller must act differently." },
+        { "text": "So the caller can tell a finished answer from a run that was cut off", "correct": true, "why": "A step-limit stop may leave no answer, or a partial one. Showing it as a result would mislead the user." },
+        { "text": "Because the model needs it on the next run", "why": "The next run starts fresh. The stop reason is for your code and your user." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Copy the loop, write a scripted model that asks for the same tool twice with the same input, and add the repeat check. Then continue with <a href="/ai/planning-and-multi-agent.html">Planning and Multi-Agent Systems</a>, for tasks too big for one loop to keep in its head.</p>

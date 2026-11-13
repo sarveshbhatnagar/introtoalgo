@@ -1,0 +1,207 @@
+<!--
+{
+  "title": "Context Rot",
+  "description": "Why long AI sessions slowly get worse, how to spot it, and how to recover with handoff summaries, fresh sessions and a notes file.",
+  "minutes": 13,
+  "tags": ["context", "workflow"]
+}
+-->
+<p>A team spends a whole day in a planning workshop. By five o'clock the whiteboard holds three versions of the timeline, a budget everyone rejected at lunch, and arrows to ideas that were crossed out but not erased. Someone walking in could not tell which plan is current. By now, even the people who were there start quoting the rejected budget.</p>
+
+<p>Long sessions with an AI assistant go the same way. The first hour is sharp. Two hours and a hundred messages later, it forgets a rule you set early on, brings back a fix you already rejected, and mixes the old version of your code with the new one. The context has rotted.</p>
+
+<h2>Why long sessions degrade</h2>
+
+<p>Every message, every attempt and every tool result stays in the <a href="/ai/what-is-context.html">context</a> and is reread on each call. As the session grows, several things happen at once.</p>
+
+<ul>
+<li><strong>Dead ends stay.</strong> A wrong approach you abandoned is still there, in full, looking just as authoritative as the right one. The model cannot tell which one you gave up on unless that is clearly said.</li>
+<li><strong>Old versions pile up.</strong> Three drafts of a function or an email sit in the context. Asked to change "the function", the model may edit the wrong one or blend them.</li>
+<li><strong>Early instructions fade.</strong> A rule from message 3 is now a tiny share of a huge context, far from the end. As <a href="/ai/the-context-window.html">The Context Window</a> showed, material in the middle of a long context gets less reliable attention, and near the limit it may be trimmed away entirely.</li>
+<li><strong>Mistakes become examples.</strong> If the model made the same error twice earlier, those replies are now part of the text it continues. It tends to keep the pattern.</li>
+</ul>
+
+<x-callout type="key">
+<p>A long session's context is mostly history, and much of that history is no longer true. Quality drops as the share of current, relevant material shrinks.</p>
+</x-callout>
+
+<h2>Watch it happen</h2>
+
+<p>A developer fixes a bug with an assistant. The token counts are made up. Track how much of the context is still current.</p>
+
+<x-tracer title="A debugging session rots, then restarts">
+<script type="application/json">
+{
+  "code": [
+    "each turn: context += new message + reply",
+    "nothing is ever removed",
+    "fresh session: context = handoff + current code"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The session starts with the goal and the rules: fix the date bug, tests must pass. Everything in the context is current.", "line": 1, "array": { "label": "context", "values": ["goal + rules"], "mark": [0] }, "vars": { "total": 200, "current": 200, "share": "100%" } },
+    { "caption": "The assistant proposes attempt A, a rewrite of the date parser (800 tokens). For now, it is the current plan.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A"], "mark": [0, 1] }, "vars": { "total": 1000, "current": 1000, "share": "100%" } },
+    { "caption": "Attempt A fails, with a 600-token error log. A is now a dead end, but its full text stays in the context.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log"], "mark": [0, 2], "dim": [1] }, "vars": { "total": 1600, "current": 800, "share": "50%" } },
+    { "caption": "The developer adds a constraint: \"Keep the public API the same.\" Attempt A had changed it, which is another reason it was rejected.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API"], "mark": [0, 2, 3], "dim": [1] }, "vars": { "total": 1700, "current": 900, "share": "53%" } },
+    { "caption": "Attempt B works. The error log is now resolved history. Current material: goal, constraint and attempt B, 200 + 100 + 800 = 1,100 tokens.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B"], "mark": [0, 3, 4], "dim": [1, 2] }, "vars": { "total": 2500, "current": 1100, "share": "44%" } },
+    { "caption": "A 600-token tangent about logging, unrelated to the bug. Current share drops to about a third.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "mark": [0, 3, 4], "dim": [1, 2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
+    { "caption": "The developer asks for one more change. The reply borrows from attempt A, the version that changed the API, because A is still sitting there with plenty of detail to copy.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "highlight": [1], "dim": [2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
+    { "caption": "Fresh session. It starts with a 250-token handoff (goal, the API rule, \"attempt A failed: changed the API\") plus attempt B's code. All of it is current, and the context is a third of the size.", "line": 3, "array": { "label": "context", "values": ["handoff", "attempt B"], "mark": [0, 1] }, "vars": { "total": 1050, "current": 1050, "share": "100%" } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Notice what the handoff kept from the dead end: one line saying it failed and why. That line stops the fresh session from trying it again. The 800 tokens of A's code are gone.</p>
+
+<h2>Signs your session has rotted</h2>
+
+<ul>
+<li>It forgets or breaks a rule you set early on.</li>
+<li>It brings back an approach or a bug you already rejected.</li>
+<li>It edits an old version of something instead of the latest.</li>
+<li>You are writing more corrections than requests.</li>
+<li>Replies get longer, vaguer, and more hedged than at the start.</li>
+</ul>
+
+<p>Two or more together mean it is time to change the context, not argue.</p>
+
+<h2>What to do about it</h2>
+
+<ol>
+<li><strong>Start fresh with a handoff.</strong> Ask the assistant for a short summary, correct it yourself, and paste it into a new chat. A good handoff has the goal, the current state, the decisions and rules, what was tried and failed with the reason, and the next step.</li>
+<li><strong>Keep a notes file.</strong> For work that spans days, keep the handoff in a file outside the chat: a project brief or a <code>NOTES.md</code> next to your code. Load it at the start of each session and update it at each milestone. Many coding tools read such a file automatically. It is <a href="/ai/memory.html">memory</a> that you control.</li>
+<li><strong>Edit instead of piling on.</strong> If a reply went wrong because of your message, many apps let you edit that message and regenerate. The bad reply leaves the context instead of staying as an example.</li>
+<li><strong>Split the work.</strong> Use separate sessions for separate tasks. A tangent about logging deserves its own chat.</li>
+<li><strong>Restate what matters.</strong> When a late request depends on an early rule, repeat the rule in the request. It costs one sentence.</li>
+</ol>
+
+<x-code single title="A notes file that survives sessions">
+<pre lang="text">
+# Date bug fix: notes
+
+Goal: dates entered as DD/MM must not be read as MM/DD.
+Rules: keep the public API unchanged. All tests must pass.
+
+Current state: parser fixed in parseDate() (attempt B). Tests pass.
+Tried and failed:
+- Rewriting the parser (attempt A): changed the public API.
+
+Next: add tests for 29 Feb and for two-digit years.
+</pre>
+</x-code>
+
+<p>Apps can do some of this automatically, often called <strong>compaction</strong>: when a session nears its limit, older turns are replaced by a summary and bulky tool results are cleared. It helps, but the summary decides for you what matters, so read it for important work.</p>
+
+<x-prompt label="Pushing on in a rotted session" tone="weak">
+<x-user>
+Still not right. Try again, and remember what I said about the API.
+</x-user>
+<x-model>
+You're right, apologies. Here is an updated version that restructures the date handling with a new DateInput class ...
+</x-model>
+</x-prompt>
+
+<x-prompt label="Fresh session with a handoff" tone="good">
+<x-user>
+Notes from a previous session:
+[the notes file above]
+
+Current parseDate() code:
+[attempt B]
+
+Task: add tests for 29 February and for two-digit years. Do not change parseDate's signature.
+</x-user>
+<x-model>
+Here are four new tests. Two cover 29 February (a leap year, which should parse, and a non-leap year, which should be rejected). Two cover two-digit years ...
+</x-model>
+</x-prompt>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Arguing with a rotted session">
+<p>Each correction adds more text to an already noisy context, and each wrong reply becomes another example to copy. After two or three failed corrections, stop and start fresh with a handoff.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A handoff that drops the failures">
+<p>If the summary only lists what works, the fresh session will happily try the approaches you already rejected. Keep one line per dead end, with the reason it failed.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Trusting a summary you did not read">
+<p>Summaries written by the model can be confidently wrong about what was decided. Read the handoff and fix anything that is off before using it.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Write the handoff">
+<x-task>
+<p>You have spent 60 messages planning a team offsite with an assistant, and replies are getting muddled. Here is what actually happened, in no particular order. Write a handoff for a fresh session in under 120 words.</p>
+<ul>
+<li>Porto was considered, then dropped because flights were too expensive. Lisbon was chosen.</li>
+<li>Dates: 12 to 14 May. Budget: 400 per person, 9 people.</li>
+<li>Three people are vegetarian.</li>
+<li>Hotel 1 was over budget. Hotel 2 had no meeting room. Hotel 3 has not replied yet.</li>
+<li>A long side discussion about team T-shirts went nowhere.</li>
+<li>Next: chase Hotel 3, then draft a day-by-day agenda.</li>
+</ul>
+</x-task>
+<x-answer>
+<x-prompt label="Handoff" tone="good">
+<x-user>
+Context from a previous planning session:
+
+Goal: team offsite, 9 people, Lisbon, 12 to 14 May. Budget 400 per person.
+Constraints: 3 vegetarians; need a meeting room.
+
+Decided: Lisbon (Porto dropped: flights too expensive).
+Hotels: Hotel 1 rejected (over budget). Hotel 2 rejected (no meeting room). Hotel 3 awaiting reply.
+
+Next steps:
+1. Draft a follow-up email to Hotel 3.
+2. Draft a day-by-day agenda for the 3 days.
+
+Start with step 1.
+</x-user>
+</x-prompt>
+<p>Why it works: the decisions and constraints come first, each dead end keeps one line with its reason so it is not retried, and the T-shirt tangent is gone. It ends with a single clear next task, so the fresh session starts working instead of recapping.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Late in a long session, the assistant keeps reusing an approach you rejected an hour ago. What is the most likely cause?",
+      "options": [
+        { "text": "The model is ignoring you on purpose", "why": "It has no intent. It continues the text it reads, and the rejected approach is a large part of that text." },
+        { "text": "The rejected approach is still in the context in full detail, while the rejection is one short line", "correct": true, "why": "Right. Dead ends stay in the context and look as authoritative as current material." },
+        { "text": "The context window is too small", "why": "A bigger window would keep even more of the stale history. Size is not the issue here." }
+      ]
+    },
+    {
+      "question": "Which handoff summary is most useful for a fresh session?",
+      "options": [
+        { "text": "The full transcript of the old session", "why": "That just moves the rot into the new session." },
+        { "text": "Goal, rules, current state, failed attempts with reasons, and the next step", "correct": true, "why": "Right. Short, current, and it records the dead ends so they are not retried." },
+        { "text": "Only the latest version of the work", "why": "Without the rules and the failed attempts, the new session can easily break a constraint or repeat a mistake." }
+      ]
+    },
+    {
+      "question": "Your project spans two weeks of sessions. What keeps each new session on track with the least effort?",
+      "options": [
+        { "text": "A notes file with decisions and current state, loaded at the start and updated at milestones", "correct": true, "why": "Right. It is memory you control: short, current, and readable by you and the model." },
+        { "text": "One single chat for the whole two weeks", "why": "That is the recipe for context rot." },
+        { "text": "Retyping the background from memory each time", "why": "It works, but it is slow and you will forget things. Write it down once and keep it updated." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Next time a session starts to drift, write the handoff and start fresh, and compare the next reply. Then move on to <a href="/ai/what-is-an-agent.html">What Is an Agent</a>, where a model runs long tool loops on its own and managing context becomes the core of the design.</p>

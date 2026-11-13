@@ -1,0 +1,174 @@
+<!--
+{
+  "title": "Why Models Hallucinate",
+  "description": "Why a language model can state false things fluently and confidently, what causes it, and the habits that make it far less likely to hurt you.",
+  "minutes": 14,
+  "tags": ["llm", "hallucination", "reliability"]
+}
+-->
+<p>You ask an assistant for three studies to cite in a report. It gives you three neat references: authors, year, journal, a one-line finding each. Two check out. The third looks just as real, with a plausible author and a journal that exists, but the paper does not. Nobody wrote it.</p>
+
+<p>This is called a <strong>hallucination</strong>: output that is fluent and confident but false or unsupported. It is not a rare glitch, and the model is not lying. It follows directly from how a model makes text.</p>
+
+<h2>Plausible is not the same as true</h2>
+
+<p>A language model produces text one token at a time, each picked from chances that say what usually comes next (<a href="/ai/what-is-an-llm.html">What Is an LLM</a>). <a href="/ai/training-and-fine-tuning.html">Pretraining</a> made those chances match real text, and real text is mostly true, so the model is usually right about things that are written about often.</p>
+
+<p>But nothing in the loop checks facts. The model was never rewarded for being true; it was rewarded for being a good continuation. When it knows a fact well, the true continuation and the plausible one are the same. When it does not, it still produces a plausible one. Every step of the loop must output some token; there is no built-in "I don't know" step.</p>
+
+<h2>Watch a fake reference being built</h2>
+
+<p>The chances below are invented to show the pattern. A model is asked for a study showing that houseplants improve exam scores, and suppose no such study is well known. Watch how sure it is at each step.</p>
+
+<x-tracer title="Writing a reference from guesses">
+<script type="application/json">
+{
+  "code": [
+    "repeat:",
+    "  chances = model(text so far)",
+    "  token = sample(chances)",
+    "  append token to text"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "The answer starts \"A study by\". This part is easy: lots of text starts this way, so the model is confident.", "line": 2, "arrays": [ { "label": "next", "values": ["A", "One", "Research"], "mark": [0] }, { "label": "chance", "values": [0.62, 0.21, 0.09], "mark": [0] } ], "vars": { "text": "A study by" } },
+    { "caption": "Now the author. The model has no strong memory of any author for this claim, so the chances are flat: many surnames, none above 0.07. It must still pick one, and sampling lands on \"Brennan\".", "line": 3, "arrays": [ { "label": "next", "values": ["Brennan", "Lindqvist", "Okafor", "Chen", "Patel"], "highlight": [0] }, { "label": "chance", "values": [0.07, 0.06, 0.05, 0.05, 0.05], "highlight": [0] } ], "vars": { "text": "A study by Brennan" } },
+    { "caption": "\"et al.\" is very likely after a surname in a reference. Confident again, and this is real knowledge: of the format, not of the study.", "line": 2, "arrays": [ { "label": "next", "values": ["et al.", "and", "("], "mark": [0] }, { "label": "chance", "values": [0.81, 0.11, 0.05], "mark": [0] } ], "vars": { "text": "A study by Brennan et al." } },
+    { "caption": "The year is another guess: anything recent is plausible. Sampling picks 2019.", "line": 3, "arrays": [ { "label": "next", "values": ["(2019)", "(2018)", "(2021)", "(2016)"], "highlight": [0] }, { "label": "chance", "values": [0.14, 0.13, 0.12, 0.11], "highlight": [0] } ], "vars": { "text": "A study by Brennan et al. (2019)" } },
+    { "caption": "The finding. \"found that\" is near certain; the number is another flat guess. It picks 12%. Everything written so far is now part of the text, and every later token will stay consistent with it.", "line": 3, "arrays": [ { "label": "next", "values": ["12%", "15%", "10%", "8%"], "highlight": [0] }, { "label": "chance", "values": [0.09, 0.08, 0.08, 0.07], "highlight": [0] } ], "vars": { "text": "A study by Brennan et al. (2019) found that ... scored 12% higher" } },
+    { "caption": "The finished sentence reads smoothly, and the confident steps (format words) and the guessed steps (author, year, number) look exactly the same on the page. Three of the facts were picked from chances below 0.15.", "arrays": [ { "label": "piece", "values": ["A study by", "Brennan", "et al.", "(2019)", "found that", "12%"], "mark": [0, 2, 4], "highlight": [1, 3, 5] }, { "label": "chance", "values": [0.62, 0.07, 0.81, 0.14, 0.93, 0.09], "mark": [0, 2, 4], "highlight": [1, 3, 5] } ], "vars": { "confident steps": 3, "guessed facts": 3 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>What the model really knew was what a reference looks like. That knowledge was solid, which is why the result is convincing. The facts inside were filled in like any other blank.</p>
+
+<x-callout type="key">
+<p>A model writes what is likely, not what is checked. When it knows a fact, likely and true coincide. When it does not, it still writes something likely, in the same confident tone.</p>
+</x-callout>
+
+<h2>The main causes</h2>
+
+<ul>
+<li><strong>Rare facts are stored weakly.</strong> A fact seen thousands of times in training gets sharp, confident chances. A fact seen once or twice, like a small company's founding year or a minor paper's author, leaves only a blurry trace. Specific details (names, numbers, dates, quotes, URLs) are the most at risk.</li>
+<li><strong>Every step commits.</strong> Once a wrong token is written, it becomes part of the text the model reads. Later tokens stay consistent with it, so one bad guess can grow into a detailed, coherent false story.</li>
+<li><strong>Guessing can be rewarded.</strong> If training or evaluation scores answers only as right or wrong, a confident guess sometimes scores and "I'm not sure" never does. Researchers point to this as one reason models tend to guess rather than hold back.</li>
+<li><strong>The answer is not in the text it has.</strong> Questions about your private documents, recent events after its cut-off, or something it was never told cannot be answered from knowledge, so a plausible answer is all it can produce.</li>
+<li><strong>False premises.</strong> "Why did the city ban bicycles in 2015?" assumes it happened. A good continuation of that question is an explanation, so the model may supply one.</li>
+</ul>
+
+<p>To be accurate about what is known: research suggests models often carry some internal signal of how sure they are, and for simple facts that signal is partly reliable. Training can teach a model to say "I don't know" more often. But that signal does not reliably show up in the wording, and no current method removes hallucinations completely. Treat any specific factual claim as unverified until you check it.</p>
+
+<h2>What actually reduces it</h2>
+
+<p>The strongest fix is to stop asking the model to remember, and ask it to read instead. Put the source material in the prompt and ask for answers grounded in it.</p>
+
+<x-prompt label="Asking it to remember" tone="weak">
+<x-user>
+What is the notice period in our office lease?
+</x-user>
+<x-model>
+Most commercial office leases have a notice period of 3 to 6 months. Your lease likely requires written notice of 3 months before the end of the term.
+</x-model>
+</x-prompt>
+
+<x-prompt label="Asking it to read" tone="good">
+<x-user>
+Using only the lease text below, answer: what is the notice period for ending the lease?
+Quote the sentence your answer is based on. If the text does not say, reply "Not stated in the lease".
+
+<lease>
+[full lease text]
+</lease>
+</x-user>
+<x-model>
+The notice period is 90 days, given in writing.
+
+Quote: "Either party may terminate this agreement at the end of the initial term by giving not less than ninety (90) days' written notice to the other party."
+</x-model>
+</x-prompt>
+
+<p>The second prompt does three things: it supplies the facts, it asks for a quote you can check in seconds, and it gives the model an honest way out. Systems that look up documents automatically and add them to the prompt use the same idea; see <a href="/ai/rag-basics.html">RAG Basics</a>. Letting the model run a search or a calculator through <a href="/ai/tool-use.html">tools</a> helps for the same reason.</p>
+
+<p>The last line of defence is you. Check names, numbers, dates, quotes and links before they leave your hands, in proportion to what a mistake would cost. <a href="/ai/verifying-ai-output.html">Verifying AI Output</a> turns this into a routine.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Asking &quot;Are you sure?&quot; as a check">
+<p>The reply to "are you sure?" is produced by the same process as the original answer. The model may confirm a wrong answer, or abandon a right one because the question hints that it is wrong. Check against a source instead.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Trusting details because they are specific">
+<p>A page number, a DOI or a URL feels like evidence, but formats are exactly what the model is best at producing. Specific-looking details are where you should look first, not last.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Turning the temperature down to fix it">
+<p>As <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> showed, low temperature makes the top choice more likely. If the model does not know the fact, its top choice is still a guess. You get the same wrong answer more consistently.</p>
+</x-callout>
+
+<h2>Try it yourself</h2>
+
+<x-tryit title="Ground the answer">
+<x-task>
+<p>This prompt invites a hallucination: the model has never seen the meeting. Rewrite it so the answer must come from material you provide, can be checked, and has an honest way to say something is missing.</p>
+</x-task>
+<x-start>
+What did we decide about the launch date in Tuesday's product meeting?
+</x-start>
+<x-answer>
+<x-prompt label="Rewritten prompt" tone="good">
+<x-user>
+Below are my notes from Tuesday's product meeting. Using only these notes, tell me what was decided about the launch date.
+
+- If a date was decided, give it and quote the line it comes from.
+- If it was discussed but not decided, say so and list the options mentioned.
+- If the notes do not mention it, reply "Not in the notes".
+
+<notes>
+[paste meeting notes]
+</notes>
+</x-user>
+</x-prompt>
+<p>Why it works: the original asks the model to recall something it never saw, so any answer would be invented. The rewrite gives it the source, restricts it to that source, asks for a quote you can check, and spells out what to say in each case, including "not decided" and "not mentioned", so a guess is never the easiest continuation.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Which of these is a model most likely to get wrong without a source?",
+      "options": [
+        { "text": "The boiling point of water at sea level", "why": "This appears in a huge amount of text, so the model's chances are sharp and correct." },
+        { "text": "The founding year of a small local business", "correct": true, "why": "Rare facts leave a weak trace in training, so the model fills in a plausible year." },
+        { "text": "How to format a list in Markdown", "why": "Formats are common and consistent in training text. This is a strength, not a weakness." }
+      ]
+    },
+    {
+      "question": "Why does a hallucinated reference look as convincing as a real one?",
+      "options": [
+        { "text": "The model is trying to deceive you", "why": "There is no intent. The same process writes real and invented details." },
+        { "text": "The model knows the format well and fills in the details with plausible guesses", "correct": true, "why": "Right. Format tokens are confident and correct; the facts inside them may be guesses, and both look the same on the page." },
+        { "text": "The model copied it from a real list of references", "why": "Models do not retrieve documents. They generate text that fits." }
+      ]
+    },
+    {
+      "question": "What is the most reliable way to get a correct answer about a specific document?",
+      "options": [
+        { "text": "Ask the model to be accurate", "why": "Telling it to be accurate does not give it the facts it is missing." },
+        { "text": "Set temperature to 0", "why": "That only makes the top guess more consistent, not more correct." },
+        { "text": "Put the document in the prompt and ask for an answer with a quote", "correct": true, "why": "The model reads instead of recalling, and the quote lets you check the answer quickly." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>You now know what happens inside a model when it writes. The <a href="/ai/prompting-basics.html">Prompting Basics</a> lesson starts putting that to work, and <a href="/ai/verifying-ai-output.html">Verifying AI Output</a> shows how to check answers quickly when the stakes are real.</p>

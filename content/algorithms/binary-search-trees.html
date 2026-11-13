@@ -1,0 +1,281 @@
+<!--
+{
+  "title": "Binary Search Trees",
+  "description": "Keep values in a tree where smaller goes left and bigger goes right, so search, insert and delete each follow one path. Traced, with JS and Python code.",
+  "minutes": 16,
+  "tags": ["trees", "searching"]
+}
+-->
+<p>A game server keeps its players sorted by score, so it can show each player the rival ranked just above them. A sorted array is great for that: <a href="/algorithms/binary-search.html">binary search</a> finds any score in about 20 steps among a million players. But players finish games all the time, and every new score has to be squeezed into the right place. In an array, that means shifting every item after it one slot to the right. Up to a million moves, for one insert.</p>
+
+<p>You want the fast search of a sorted array without the expensive shifting. A binary search tree gives you both, as long as it keeps a sensible shape.</p>
+
+<h2>The rule: smaller left, bigger right</h2>
+
+<p>A binary search tree (BST) is a <a href="/algorithms/binary-trees.html">binary tree</a> with one rule, which holds at every node:</p>
+
+<ul>
+<li>every value in the node's <strong>left subtree</strong> is smaller than the node's value, and</li>
+<li>every value in its <strong>right subtree</strong> is bigger.</li>
+</ul>
+
+<p>Look at the root. Everything smaller than it is somewhere on the left, everything bigger is on the right. So one comparison at the root throws away a whole side of the tree. That is binary search, built into the shape of the data instead of into array indexes.</p>
+
+<p>You have already met one consequence. An <a href="/algorithms/tree-traversals.html">inorder traversal</a> visits the left subtree, then the node, then the right subtree. In a BST that means smaller values, then this one, then bigger values: the whole tree in sorted order.</p>
+
+<h2>Search and insert follow one path</h2>
+
+<p>To find a value, start at the root and compare. Equal: found. Smaller: go left. Bigger: go right. If you step onto an empty child, the value is not in the tree.</p>
+
+<p>Insert is the same walk. You search for the new value, and when you fall off the tree, the empty spot where you landed is exactly where it belongs. No other node moves.</p>
+
+<x-tracer title="Insert 35">
+<script type="application/json">
+{
+  "code": [
+    "insert(node, val):",
+    "  if node is empty: return new node(val)",
+    "  if val < node.val: node.left = insert(node.left, val)",
+    "  if val > node.val: node.right = insert(node.right, val)",
+    "  return node"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Start at the root, 40. 35 is smaller, so it belongs somewhere on the left. The whole right side is ruled out.", "line": 3, "tree": { "values": [40, 20, 60, 10, 30, 50, 70], "highlight": [0] }, "vars": { "val": 35, "comparisons": 1 } },
+    { "caption": "At 20. 35 is bigger, so go right. 10 is ruled out too.", "line": 4, "tree": { "values": [40, 20, 60, 10, 30, 50, 70], "highlight": [1], "dim": [2, 5, 6] }, "vars": { "val": 35, "comparisons": 2 } },
+    { "caption": "At 30. 35 is bigger again, so go right.", "line": 4, "tree": { "values": [40, 20, 60, 10, 30, 50, 70], "highlight": [4], "dim": [2, 3, 5, 6] }, "vars": { "val": 35, "comparisons": 3 } },
+    { "caption": "30 has no right child. This empty spot is where 35 belongs: bigger than 30, smaller than 40.", "line": 2, "tree": { "values": [40, 20, 60, 10, 30, 50, 70, null, null, null, 35], "mark": [10], "dim": [2, 3, 5, 6] }, "vars": { "val": 35, "comparisons": 3 } },
+    { "caption": "3 comparisons in a tree of 7, one per level. A search for 33 would walk the same path, step left from 35 onto an empty child, and report \"not found\".", "tree": { "values": [40, 20, 60, 10, 30, 50, 70, null, null, null, 35], "mark": [0, 1, 4, 10] }, "vars": { "comparisons": 3, "nodes": 8 } }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+// TreeNode is the same class as in Binary Trees.
+function contains(node, val) {
+  while (node !== null) {
+    if (val === node.val) return true;
+    node = val < node.val ? node.left : node.right; // throw away one side
+  }
+  return false;
+}
+
+// Returns the root of the tree with val added.
+function insert(node, val) {
+  if (node === null) return new TreeNode(val); // found the empty spot
+  if (val < node.val) node.left = insert(node.left, val);
+  else if (val > node.val) node.right = insert(node.right, val);
+  return node; // a duplicate is ignored
+}
+
+let root = null;
+for (const v of [40, 20, 60, 10, 30, 50, 70, 35]) root = insert(root, v);
+contains(root, 35); // true
+contains(root, 33); // false
+</pre>
+<pre lang="py">
+# TreeNode is the same class as in Binary Trees.
+def contains(node, val):
+    while node is not None:
+        if val == node.val:
+            return True
+        node = node.left if val < node.val else node.right  # throw away one side
+    return False
+
+# Returns the root of the tree with val added.
+def insert(node, val):
+    if node is None:
+        return TreeNode(val)  # found the empty spot
+    if val < node.val:
+        node.left = insert(node.left, val)
+    elif val > node.val:
+        node.right = insert(node.right, val)
+    return node  # a duplicate is ignored
+
+root = None
+for v in [40, 20, 60, 10, 30, 50, 70, 35]:
+    root = insert(root, v)
+contains(root, 35)  # True
+contains(root, 33)  # False
+</pre>
+</x-code>
+
+<p><code>insert</code> returns the root of the updated subtree and the parent stores it back with <code>node.left = …</code>. That one habit handles the empty tree, where the new node becomes the root, with no special case.</p>
+
+<p>Two more questions come free. The smallest value is the leftmost node: keep going left until you cannot. The largest is the rightmost.</p>
+
+<h2>Delete: three cases</h2>
+
+<p>Removing a value is the only tricky operation, because the tree must stay valid. First find the node, then look at how many children it has.</p>
+
+<ol>
+<li><strong>No children</strong>: just remove it.</li>
+<li><strong>One child</strong>: the child moves up into its place. Everything under it was already on the correct side of the parent, so the rule still holds.</li>
+<li><strong>Two children</strong>: you cannot leave a hole with two subtrees hanging from it. Instead, find the <em>next bigger value</em>, called the successor. It is the leftmost node of the right subtree. Copy it into this node, then delete it from the right subtree. The successor has no left child (otherwise it would not be leftmost), so that second delete is case 1 or 2.</li>
+</ol>
+
+<x-tracer title="Delete 20, which has two children">
+<script type="application/json">
+{
+  "code": [
+    "find the node with val",
+    "if it has 0 or 1 child: replace it with that child",
+    "else:",
+    "  next = leftmost node of its right subtree",
+    "  copy next.val into the node",
+    "  delete next.val from the right subtree"
+  ],
+  "codeLang": "text",
+  "steps": [
+    { "caption": "Find 20: it is smaller than 40, so go left.", "line": 1, "tree": { "values": [40, 20, 60, 10, 30, 50, 70, null, null, null, 35], "highlight": [0] } },
+    { "caption": "Found it. 20 has two children, 10 and 30, so it cannot simply be cut out.", "line": 3, "tree": { "values": [40, 20, 60, 10, 30, 50, 70, null, null, null, 35], "highlight": [1] } },
+    { "caption": "Find the successor: step right once to 30, then go left as far as possible. 30 has no left child, so 30 is the next bigger value after 20.", "line": 4, "tree": { "values": [40, 20, 60, 10, 30, 50, 70, null, null, null, 35], "highlight": [1, 4] } },
+    { "caption": "Copy 30 into the node that held 20. It fits there: bigger than everything on the left (10), smaller than everything else on the right (35). Now 30 appears twice.", "line": 5, "tree": { "values": [40, 30, 60, 10, 30, 50, 70, null, null, null, 35], "highlight": [1, 4] } },
+    { "caption": "Delete the old 30 from the right subtree. It has one child, 35, which moves up into its place.", "line": 6, "tree": { "values": [40, 30, 60, 10, 35, 50, 70], "highlight": [4] } },
+    { "caption": "Done. Inorder still reads 10, 30, 35, 40, 50, 60, 70: sorted, so the tree is still a valid BST.", "tree": { "values": [40, 30, 60, 10, 35, 50, 70], "mark": [0, 1, 2, 3, 4, 5, 6] } }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code>
+<pre lang="js">
+// Returns the root of the tree with val removed.
+function remove(node, val) {
+  if (node === null) return null; // val is not in the tree
+  if (val < node.val) node.left = remove(node.left, val);
+  else if (val > node.val) node.right = remove(node.right, val);
+  else {
+    if (node.left === null) return node.right; // 0 or 1 child:
+    if (node.right === null) return node.left; // the child moves up
+    let next = node.right;                     // 2 children: find the
+    while (next.left !== null) next = next.left; // next bigger value
+    node.val = next.val;                       // copy it here
+    node.right = remove(node.right, next.val); // and remove the copy
+  }
+  return node;
+}
+
+root = remove(root, 20); // inorder: 10, 30, 35, 40, 50, 60, 70
+</pre>
+<pre lang="py">
+# Returns the root of the tree with val removed.
+def remove(node, val):
+    if node is None:
+        return None  # val is not in the tree
+    if val < node.val:
+        node.left = remove(node.left, val)
+    elif val > node.val:
+        node.right = remove(node.right, val)
+    else:
+        if node.left is None:   # 0 or 1 child:
+            return node.right   # the child moves up
+        if node.right is None:
+            return node.left
+        nxt = node.right        # 2 children: find the
+        while nxt.left is not None:  # next bigger value
+            nxt = nxt.left
+        node.val = nxt.val      # copy it here
+        node.right = remove(node.right, nxt.val)  # and remove the copy
+    return node
+
+root = remove(root, 20)  # inorder: 10, 30, 35, 40, 50, 60, 70
+</pre>
+</x-code>
+
+<h2>Cost depends on the height</h2>
+
+<p>Search, insert and delete each walk one path from the root down, so each costs O(h), where <code>h</code> is the height. In a bushy tree, h is about log₂ n: 20 levels for a million values. That beats the sorted array, whose search is O(log n) but whose insert is O(n).</p>
+
+<p>The catch: a BST's shape depends on the order you insert values. Insert 10, 20, 30, 40, 50 in that order and each new value is bigger than everything so far, so it always goes right. You get the stick from <a href="/algorithms/binary-trees.html">Binary Trees</a>, with height n. Searching it is no faster than scanning a list.</p>
+
+<x-complexity>
+<script type="application/json">
+{
+  "rows": [
+    { "name": "Sorted array", "time": "O(log n) search, O(n) insert", "space": "O(n)", "note": "Insert and delete shift items over." },
+    { "name": "BST, bushy shape", "time": "O(log n)", "space": "O(n)", "note": "Search, insert and delete walk one path of about log₂ n nodes." },
+    { "name": "BST, worst shape", "time": "O(n)", "space": "O(n)", "note": "Sorted inserts build a stick, and the path is the whole tree." }
+  ]
+}
+</script>
+</x-complexity>
+
+<x-callout type="key">
+<p>Every BST operation walks one root-to-leaf path. It is fast exactly when the tree is short.</p>
+</x-callout>
+
+<p>Fixing that worst case is the job of <a href="/algorithms/balanced-trees.html">balanced trees</a>, which reshape themselves after each change so the height stays O(log n) whatever the insert order.</p>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Checking only a node's direct children">
+<p>A tree can pass "left child smaller, right child bigger" at every node and still break the rule. In the figure below, 45 is a fine right child of 20, but it sits in 40's left subtree, where everything must be smaller than 40. A search for 45 goes right at the root and never finds it. To validate a BST, pass down the allowed range: going left lowers the upper limit, going right raises the lower limit. Or check that the inorder traversal is strictly increasing.</p>
+</x-callout>
+
+<x-figure caption="Every parent-child pair looks right, but 45 is in the left subtree of 40, so this is not a BST.">
+<svg viewBox="0 0 440 200" aria-label="Root 40 with left child 20 and right child 60. 20 has a right child 45, drawn in red. A note says 45 is bigger than 20, which is fine, but bigger than 40, which breaks the rule.">
+  <line x1="200" y1="40" x2="120" y2="100" class="s-line" stroke-width="2"/>
+  <line x1="200" y1="40" x2="280" y2="100" class="s-line" stroke-width="2"/>
+  <line x1="120" y1="100" x2="170" y2="160" class="s-line" stroke-width="2"/>
+  <circle cx="200" cy="40" r="20" class="f-surface s-line"/><text x="200" y="45" text-anchor="middle">40</text>
+  <circle cx="120" cy="100" r="20" class="f-surface s-line"/><text x="120" y="105" text-anchor="middle">20</text>
+  <circle cx="280" cy="100" r="20" class="f-surface s-line"/><text x="280" y="105" text-anchor="middle">60</text>
+  <circle cx="170" cy="160" r="20" class="f-bad-soft s-bad"/><text x="170" y="165" text-anchor="middle" class="t-bold">45</text>
+  <text x="200" y="157" class="t-sans t-small f-good">45 &gt; 20: fine as 20's right child</text>
+  <text x="200" y="175" class="t-sans t-small f-bad t-bold">45 &gt; 40: not allowed left of 40</text>
+</svg>
+</x-figure>
+
+<x-callout type="mistake" title="Forgetting to store the returned subtree">
+<p>Writing <code>insert(node.left, val)</code> without <code>node.left = …</code> builds the new node and then drops it. The same goes for <code>root = insert(root, val)</code> at the top: without it, the first insert into an empty tree is lost.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Not deciding about duplicates">
+<p>The code above ignores a value that is already there, which is right for a set. If you need counts, store a count in each node. Do not let equal values go to either side at random, or searches will miss them.</p>
+</x-callout>
+
+<x-callout type="real-world">
+<p>You rarely write a BST by hand at work. Ordered maps such as Java's <code>TreeMap</code> and C++'s <code>std::map</code> are balanced BSTs underneath. You reach for one when you need a sorted collection that changes often, with questions like "smallest key above 500".</p>
+</x-callout>
+
+<h2>Check yourself</h2>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "In the tree from the first trace (root 40, then 20 and 60, then 10, 30, 50, 70), where does 55 go?",
+      "options": [
+        { "text": "Left child of 50", "why": "55 is bigger than 50, so it goes right of 50, not left." },
+        { "text": "Right child of 50", "correct": true, "why": "55 &gt; 40: go right to 60. 55 &lt; 60: go left to 50. 55 &gt; 50: go right, which is empty. Place it there." },
+        { "text": "Left child of 70", "why": "At 60, 55 is smaller, so the walk goes left to 50 and never reaches 70." }
+      ]
+    },
+    {
+      "question": "You insert the values 1, 2, 3, …, 1,000 into an empty BST in that order. How many comparisons does a search for 1,000 take?",
+      "options": [
+        { "text": "About 10", "why": "That would be true for a bushy tree. Sorted inserts always go right, so the tree is a stick." },
+        { "text": "About 1,000", "correct": true, "why": "Each value became the right child of the previous one. The tree is a path of 1,000 nodes, and 1,000 is at the bottom." },
+        { "text": "1", "why": "The root is 1, the first value inserted, not 1,000." }
+      ]
+    },
+    {
+      "question": "You delete a node with two children. Which value replaces it?",
+      "options": [
+        { "text": "Its right child's value", "why": "The right child may have a smaller value below it on the left. Then the rule breaks." },
+        { "text": "The smallest value in its right subtree", "correct": true, "why": "That is the next bigger value. It is larger than everything on the left and smaller than everything else on the right." },
+        { "text": "The largest value in its right subtree", "why": "Everything else on the right would then be smaller than the new value, but it sits on the right side." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>A BST answers "is this value here?" and "what comes next in order?". Often you only care about the smallest or the most urgent item. For that there is a simpler, faster structure: <a href="/algorithms/heaps-and-priority-queues.html">Heaps and Priority Queues</a>.</p>
