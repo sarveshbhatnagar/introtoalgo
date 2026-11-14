@@ -1,0 +1,271 @@
+<!--
+{
+  "title": "Transactions and Isolation",
+  "description": "ACID in plain words, the race conditions isolation levels stop, locking choices, and how sagas and the outbox pattern replace distributed transactions.",
+  "minutes": 18,
+  "tags": ["transactions", "databases", "distributed systems"]
+}
+-->
+<p>A concert has one ticket left. Two fans press "buy" in the same 10 ms. Both requests read <code>remaining = 1</code>, both charge a card, both write <code>remaining = 0</code>. Two people paid for one seat, and the database never reported an error.</p>
+
+<p>Each request was correct on its own; the bug is in how they overlapped. Isolation levels decide which overlaps the database allows.</p>
+
+<h2>The idea</h2>
+
+<p>A <strong>transaction</strong> groups several reads and writes so the database treats them as one unit. ACID names its four promises:</p>
+
+<ul>
+<li><strong>Atomic:</strong> all of the writes happen, or none do. A crash halfway leaves nothing behind.</li>
+<li><strong>Consistent:</strong> your rules hold before and after. Mostly your job; constraints such as <code>UNIQUE</code> and <code>CHECK (stock &gt;= 0)</code> help.</li>
+<li><strong>Isolated:</strong> concurrent transactions do not see each other's half-done work. How strictly is set by the <em>isolation level</em>; the default is rarely the strictest.</li>
+<li><strong>Durable:</strong> once committed, the data survives a crash, because it is in a log on disk (and often on replicas).</li>
+</ul>
+
+<p>Stricter isolation means more waiting or more retries. Choose the weakest level that stops the races your data can have.</p>
+
+<h2>Three races to know</h2>
+
+<p>Two users, T1 and T2, and time going down the page.</p>
+
+<h3>Dirty read: seeing work that is later undone</h3>
+
+<table>
+<thead><tr><th>T1 (payment job)</th><th>T2 (statement)</th></tr></thead>
+<tbody>
+<tr><td>balance 100 → 20, not committed</td><td></td></tr>
+<tr><td></td><td>reads balance: 20, emails "low balance"</td></tr>
+<tr><td>fails, rolls back to 100</td><td></td></tr>
+</tbody>
+</table>
+
+<p>T2 acted on a value that never existed.</p>
+
+<h3>Lost update: read, modify, write, collide</h3>
+
+<table>
+<thead><tr><th>T1</th><th>T2</th></tr></thead>
+<tbody>
+<tr><td>reads likes = 10</td><td>reads likes = 10</td></tr>
+<tr><td>writes likes = 11, commits</td><td></td></tr>
+<tr><td></td><td>writes likes = 11, commits</td></tr>
+</tbody>
+</table>
+
+<p>Two likes, count up by one. The concert ticket is this race.</p>
+
+<h3>Write skew: two valid writes, one broken rule</h3>
+
+<p>Rule: a team always keeps at least one admin. Ana and Ben are the only two.</p>
+
+<table>
+<thead><tr><th>T1 (Ana)</th><th>T2 (Ben)</th></tr></thead>
+<tbody>
+<tr><td>counts admins: 2, so leaving is fine</td><td>counts admins: 2, so leaving is fine</td></tr>
+<tr><td>sets Ana's row to member</td><td>sets Ben's row to member</td></tr>
+<tr><td>commits</td><td>commits</td></tr>
+</tbody>
+</table>
+
+<p>Zero admins. Each updated a different row, so row-level checks see no conflict. Only serializable isolation, or a lock on something both touch, catches it.</p>
+
+<h2>Isolation levels</h2>
+
+<table>
+<thead><tr><th>Level</th><th>Dirty read</th><th>Lost update</th><th>Write skew</th></tr></thead>
+<tbody>
+<tr><td>Read uncommitted</td><td>possible</td><td>possible</td><td>possible</td></tr>
+<tr><td>Read committed</td><td>prevented</td><td>possible</td><td>possible</td></tr>
+<tr><td>Snapshot (repeatable read in some databases)</td><td>prevented</td><td>depends on the database</td><td>possible</td></tr>
+<tr><td>Serializable</td><td>prevented</td><td>prevented</td><td>prevented</td></tr>
+</tbody>
+</table>
+
+<p>Read committed is a common default. Snapshot isolation gives each transaction a frozen view as of its start; some databases also abort a transaction whose row changed underneath it, others let the later write win. Names differ between products, so check what yours does. Serializable means the result equals some one-at-a-time order, at the cost of more aborts to retry.</p>
+
+<h3>Stopping a lost update</h3>
+
+<x-tradeoffs caption="Three ways to make read-modify-write safe">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Atomic conditional update", "good": "One statement, no race window: <code>UPDATE … SET remaining = remaining - 1 WHERE remaining &gt; 0</code>.", "bad": "Only works when the change fits in one statement on one row.", "pick": "Counters and stock. The ticket fix.", "default": true },
+    { "name": "Optimistic (version check)", "good": "No locks held while the user thinks. Cheap when conflicts are rare.", "bad": "Every conflict is a retry; on a hot row most attempts fail.", "pick": "Edits to documents, profiles, carts: low contention, longer think time." },
+    { "name": "Pessimistic (lock the row)", "good": "<code>SELECT … FOR UPDATE</code> makes others wait instead of fail.", "bad": "Waiting adds latency; locks taken in different orders deadlock.", "pick": "Hot rows with complex logic between read and write, kept short." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<x-code single title="Optimistic locking with a version column">
+<pre lang="sql">
+-- read: title = 'Draft', version = 7
+UPDATE docs
+SET    title = 'Final', version = 8
+WHERE  id = 42 AND version = 7;
+-- 1 row updated: you won.
+-- 0 rows updated: someone wrote first. Re-read and retry, or show a conflict.
+</pre>
+</x-code>
+
+<p>For write skew, make the transactions collide on purpose: lock the team row (<code>SELECT … FOR UPDATE</code> on <code>teams</code>) before counting admins, or run that one transaction as serializable.</p>
+
+<h2>Across services: 2PC and sagas</h2>
+
+<p>An order touches the orders database, payments and inventory. No single transaction spans them.</p>
+
+<p><strong>Two-phase commit (2PC)</strong> adds a coordinator. Phase 1: it asks every participant to <em>prepare</em> (do the work, hold the locks, promise to commit). Phase 2: if all voted yes, it tells them to commit; otherwise to abort. It is atomic, but if the coordinator dies after "prepare", participants hold their locks until it returns. It costs two round trips per transaction, and every participant must support it.</p>
+
+<p>A <strong>saga</strong> gives up atomicity across services. It runs a chain of local transactions, each publishing an event that triggers the next. If a step fails, <em>compensating</em> actions undo earlier steps: refund the card, release the seat. Others can see the middle states ("paid, not yet reserved"), so design for them.</p>
+
+<p>Each step must update its database <em>and</em> publish an event. As two separate writes, a crash between them loses one. The <strong>outbox pattern</strong> fixes this: write the event into an <code>outbox</code> table in the same local transaction, and let a relay publish rows from the outbox afterwards.</p>
+
+<x-tracer title="A saga with an outbox: a failure and its compensation">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Shopper", "kind": "client", "col": 0, "row": 0 },
+      { "id": "order", "label": "Order service", "kind": "service", "col": 1, "row": 0 },
+      { "id": "odb", "label": "Orders DB + outbox", "kind": "database", "col": 1, "row": 2 },
+      { "id": "bus", "label": "Event stream", "kind": "queue", "col": 2, "row": 1 },
+      { "id": "pay", "label": "Payment service", "kind": "service", "col": 3, "row": 0 },
+      { "id": "inv", "label": "Inventory service", "kind": "service", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "order" },
+      { "from": "order", "to": "odb" },
+      { "from": "odb", "to": "bus", "label": "relay", "style": "async" },
+      { "from": "bus", "to": "order", "style": "async" },
+      { "from": "bus", "to": "pay", "style": "async", "arrow": "both" },
+      { "from": "bus", "to": "inv", "style": "async", "arrow": "both" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The shopper places order 501. One local transaction inserts the order as PENDING and an <code>OrderPlaced</code> row in the outbox. Both or neither.",
+      "arch": { "active": ["client", "order", "odb", ["client", "order"], ["order", "odb"]], "notes": { "odb": "PENDING + event" } },
+      "vars": { "order 501": "PENDING" }
+    },
+    {
+      "caption": "The relay reads the outbox and publishes <code>OrderPlaced</code>. If it crashes before marking the row sent, it publishes again later: at-least-once.",
+      "arch": { "active": ["bus", ["odb", "bus"]] },
+      "vars": { "order 501": "PENDING" }
+    },
+    {
+      "caption": "Payment charges $60 and publishes <code>PaymentTaken</code> through its own outbox.",
+      "arch": { "active": ["pay", ["bus", "pay"]], "notes": { "pay": "charged $60" } },
+      "vars": { "order 501": "PENDING", "charged": "$60" }
+    },
+    {
+      "caption": "Inventory tries to reserve the item. It sold out a moment ago, so it publishes <code>ReservationFailed</code>.",
+      "arch": { "active": ["inv", ["bus", "inv"]], "fail": ["inv"], "notes": { "inv": "out of stock" } },
+      "vars": { "order 501": "PENDING", "charged": "$60" }
+    },
+    {
+      "caption": "Compensation: payment hears the failure and refunds $60. Across services there is no rollback, only a new action that undoes the old one.",
+      "arch": { "active": ["pay", ["inv", "bus"], ["bus", "pay"]], "notes": { "pay": "refund $60" } },
+      "vars": { "order 501": "PENDING", "charged": "$0" }
+    },
+    {
+      "caption": "The order service marks the order CANCELLED. The shopper briefly saw \"paid\". Reserving stock before charging would have avoided this refund.",
+      "arch": { "active": ["order", "odb", ["bus", "order"], ["order", "odb"]], "mark": ["odb"] },
+      "vars": { "order 501": "CANCELLED", "charged": "$0" }
+    },
+    {
+      "caption": "After a crash the relay re-sends <code>OrderPlaced</code>. Payment has already seen order 501 and ignores it. Every consumer must be idempotent.",
+      "arch": { "active": ["bus", "pay", ["odb", "bus"], ["bus", "pay"]], "notes": { "pay": "seen 501, skip" } },
+      "vars": { "order 501": "CANCELLED", "charged": "$0" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The usual default across services is a saga with outboxes and <a href="/system-design/idempotency-and-retries.html">idempotent consumers</a>. Reach for 2PC only when the participants are a few databases that support it, in one data center, and a visible in-between state is unacceptable.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>A short transaction on one database: about 1 to 10 ms. Locks held that long are cheap; locks held across a network call or a user's think time are not.</li>
+<li>2PC adds at least two round trips per transaction, plus a durable log write at each step.</li>
+</ul>
+
+<x-estimate title="Is optimistic locking a good fit?">
+<script type="application/json">
+{
+  "question": "On average, how many other committed updates land on the same row between one transaction's read and its write?",
+  "givens": ["One hot row is updated 200 times a second", "Each transaction takes 10 ms between its read and its write"],
+  "unit": "count",
+  "answer": "2",
+  "accept": ["0.7", "6"],
+  "steps": ["10 ms = 0.01 s", "200 × 0.01 = 2 other updates in each transaction's window"],
+  "note": "With about 2 rivals in every window, most attempts fail their version check and retry. Use an atomic update or a lock for this row."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring this up whenever two users can change the same thing (stock, seats, balances) or one action spans services. Name the race, then the fix: "Two buyers can read the same stock, so I decrement with a conditional update and treat zero rows as sold out."</p>
+
+<x-interview title="Placing an order across services">
+<x-interviewer>Orders, payments and inventory are separate services. How do you keep them consistent?</x-interviewer>
+<x-you>I would not use a distributed transaction here. Each service commits locally and publishes an event through an outbox, so a crash cannot lose the event. If inventory fails after payment, payment refunds. Consumers dedupe by order id, since events can arrive twice.</x-you>
+<x-coach>It names the failure the outbox prevents and the duplicate the dedupe handles. "Use Kafka" alone would say neither.</x-coach>
+<x-interviewer>The user sees "paid" and then "cancelled". Is that okay?</x-interviewer>
+<x-you>It is the cost of a saga. To soften it I would reserve stock first and charge second, so the common failure happens before any money moves.</x-you>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"What if the compensation fails?"</strong> Retry it; it must be idempotent. After several failures, alert a human.</li>
+<li><strong>"Why not publish the event, then write the database?"</strong> A crash between the two leaves an event for an order that does not exist. The outbox makes them one write.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Read in the app, write back the result">
+<p>Reading a counter, adding one in code and writing it back is the lost update. Do the arithmetic in the database, or check a version.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Assuming the default level is serializable">
+<p>Many databases default to read committed. Write skew and lost updates pass through it without an error.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Each of two reviewers checks that the article has another reviewer, then unassigns themselves. Both commit under snapshot isolation. Which anomaly is this?",
+      "options": [
+        { "text": "Dirty read", "why": "Both read committed data. Nothing was rolled back." },
+        { "text": "Lost update", "why": "They wrote different rows, so neither overwrote the other." },
+        { "text": "Write skew", "correct": true, "why": "Each read the same set, then wrote a different row, breaking a rule over the set. Snapshot isolation allows it." }
+      ]
+    },
+    {
+      "question": "A seat counter is decremented 500 times a second during a sale. What is the best fix for lost updates?",
+      "options": [
+        { "text": "Optimistic locking with a version column", "why": "With so many writers, most version checks fail and retry, adding load exactly when it hurts." },
+        { "text": "<code>UPDATE … SET seats = seats - 1 WHERE seats &gt; 0</code>", "correct": true, "why": "One atomic statement with no read-then-write gap; zero rows updated means sold out." },
+        { "text": "Two-phase commit", "why": "2PC coordinates several databases. This is one row in one database." }
+      ]
+    },
+    {
+      "question": "A service writes an order row, then publishes an event in a separate call. What does the outbox pattern change?",
+      "options": [
+        { "text": "Events are delivered exactly once", "why": "The relay can still publish twice after a crash. Consumers must dedupe." },
+        { "text": "The order and its event are committed in one local transaction", "correct": true, "why": "Both rows commit together, so an order can never exist without its event, or the reverse." },
+        { "text": "Consumers can skip idempotency", "why": "Delivery is at-least-once, so idempotent consumers are still required." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Sagas and outboxes run on <a href="/system-design/message-queues-and-streams.html">message queues and streams</a>. For a design where these choices decide the outcome, work through <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>.</p>

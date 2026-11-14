@@ -1,0 +1,230 @@
+<!--
+{
+  "title": "Numbers to Know",
+  "description": "A compact reference of rounded latencies, sizes, time conversions, server capacities and availability nines, each with how it gets used in an estimate.",
+  "minutes": 18,
+  "tags": ["interview", "estimation", "numbers", "latency"]
+}
+-->
+<p>A candidate designs a checkout page with a 200 ms budget. To show a price it calls a tax service, then a stock service, then a fraud service, one after another, and all three live in another region. Each call is a round trip of about 100 ms, so the page takes over 300 ms before it does any work of its own. Nobody computed it until the interviewer asked.</p>
+
+<p>You need about twenty numbers, each right to within a factor of 3, and the habit of using them. Every number below is rounded and approximate: real values depend on hardware, distance and load. State them as assumptions.</p>
+
+<h2>Latency</h2>
+
+<table>
+<thead><tr><th>Operation</th><th>About</th><th>Use it to</th></tr></thead>
+<tbody>
+<tr><td>Read from main memory</td><td>100 ns</td><td>Show an in-process lookup is free next to any network call.</td></tr>
+<tr><td>Random read from an SSD</td><td>100 µs (0.1 ms)</td><td>See that in an indexed read of a few ms, the network and the database's own work cost more than the disk.</td></tr>
+<tr><td>Round trip within one data center</td><td>0.5 ms</td><td>Price a call to a cache or another service nearby.</td></tr>
+<tr><td>Round trip between zones in one region</td><td>1 ms</td><td>Price synchronous replication to another zone.</td></tr>
+<tr><td>Indexed database read, over the network</td><td>1 to 10 ms</td><td>Count how many reads a request can afford.</td></tr>
+<tr><td>Disk seek on a spinning drive</td><td>10 ms</td><td>Explain why spinning disks suit sequential logs and backups, not random reads.</td></tr>
+<tr><td>Round trip between regions or continents</td><td>50 to 150 ms; use 100</td><td>Keep cross-region calls off the request path.</td></tr>
+</tbody>
+</table>
+
+<p>The ratios matter more than the values. A same-region call is about 5,000 memory reads; a cross-region call is about 200 same-region calls. Step through one request and watch where the time goes.</p>
+
+<x-tracer title="Where a request's 200 ms goes">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "App server", "kind": "service", "col": 0, "row": 1 },
+      { "id": "cache", "label": "Cache", "kind": "cache", "col": 1, "row": 0 },
+      { "id": "db", "label": "Database", "kind": "database", "col": 1, "row": 2 },
+      { "id": "local", "label": "Local tax copy", "kind": "database", "col": 2, "row": 2 },
+      { "id": "remote", "label": "Tax service, other region", "kind": "service", "col": 2, "row": 0 }
+    ],
+    "edges": [
+      { "from": "app", "to": "cache", "label": "0.5 ms" },
+      { "from": "app", "to": "db", "label": "5 ms" },
+      { "from": "app", "to": "remote", "label": "100 ms" },
+      { "from": "app", "to": "local", "label": "1 ms" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The clock starts when the request reaches the app server. It checks a config value in its own memory: about 100 ns, which rounds to nothing.",
+      "arch": { "active": ["app"], "dim": ["local"] },
+      "vars": { "elapsed": "0 ms", "budget": "200 ms" }
+    },
+    {
+      "caption": "It asks the cache for the cart, one round trip in the data center. Miss.",
+      "arch": { "active": ["cache", ["app", "cache"]], "dim": ["local"], "notes": { "cache": "miss" } },
+      "vars": { "elapsed": "0.5 ms", "budget": "200 ms" }
+    },
+    {
+      "caption": "It reads the cart from the database, an indexed read of about 5 ms.",
+      "arch": { "active": ["db", ["app", "db"]], "dim": ["local"] },
+      "vars": { "elapsed": "5.5 ms", "budget": "200 ms" }
+    },
+    {
+      "caption": "It calls the tax service in another region: 100 ms. That one call costs about 18 times everything before it.",
+      "arch": { "active": ["remote", ["app", "remote"]], "dim": ["local"] },
+      "vars": { "elapsed": "105.5 ms", "budget": "200 ms" }
+    },
+    {
+      "caption": "Now the link to that region degrades. The call hangs until a 1-second timeout fires, and every checkout misses its budget fivefold.",
+      "arch": { "fail": ["remote", ["app", "remote"]], "dim": ["local"], "notes": { "remote": "no answer" } },
+      "vars": { "elapsed": "1,005.5 ms", "budget": "200 ms" }
+    },
+    {
+      "caption": "The fix: copy the tax tables into this region and read them locally, about 1 ms. The cost: an update reaches this copy after a short delay.",
+      "arch": { "active": ["local", ["app", "local"]], "dim": ["remote"], "mark": ["app"] },
+      "vars": { "elapsed": "6.5 ms", "budget": "200 ms" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-tradeoffs caption="Where to keep data a request needs">
+<script type="application/json">
+{
+  "options": [
+    { "name": "In the app server's memory", "good": "About 100 ns.", "bad": "Each server has its own copy, so updates spread slowly; limited by one server's memory.", "pick": "Small, rarely changing data, or a few extremely hot keys for a few seconds." },
+    { "name": "Shared cache, same region", "good": "About 0.5 ms, and one copy for all servers.", "bad": "Another component to run, and stale entries to manage.", "pick": "Hot reads that many servers share.", "default": true },
+    { "name": "Database in the region", "good": "The source of truth; 1 to 10 ms.", "bad": "The most expensive reads to scale.", "pick": "Anything that must be current, and every cache miss." },
+    { "name": "Another region", "good": "One copy for the world.", "bad": "About 100 ms per round trip, and it fails when the link does.", "pick": "Off the request path only: background sync, replication." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Sizes and throughput</h2>
+
+<ul>
+<li><strong>Small values:</strong> an ASCII character 1 byte, an integer or timestamp 8 bytes, a UUID 16 bytes, a typical metadata row 100 bytes to 1 KB.</li>
+<li><strong>Media:</strong> a compressed photo a few hundred KB to a few MB. Video at 5 Mbit/s is 5 ÷ 8 × 60 ≈ 40 MB a minute.</li>
+<li><strong>Powers of two:</strong> 2<sup>10</sup> ≈ a thousand, 2<sup>20</sup> ≈ a million, 2<sup>30</sup> ≈ a billion. 2<sup>32</sup> ≈ 4.3 billion is where 32-bit IDs run out, so use 64-bit IDs for anything that could pass a few billion rows. The <a href="/system-design/back-of-the-envelope-estimation.html">estimation lesson</a> has the full table.</li>
+<li><strong>Throughput:</strong> memory about 10 GB/s, SSD about 1 GB/s, a 10 Gbit/s network link about 1.25 GB/s. Use these to price copies: rebuilding a replica, a backup, a reshard.</li>
+</ul>
+
+<x-estimate title="Rebuilding a replica">
+<script type="application/json">
+{
+  "question": "A database node dies. How long does copying its 1 TB to a new node take, if the network is the limit?",
+  "givens": ["1 TB of data", "A 10 Gbit/s link, fully used", "1 byte = 8 bits"],
+  "unit": "duration",
+  "answer": "13 minutes",
+  "accept": ["5 minutes", "40 minutes"],
+  "steps": ["10 Gbit/s ÷ 8 = 1.25 GB/s", "10<sup>12</sup> B ÷ 1.25 × 10<sup>9</sup> B/s = 800 s", "800 s ÷ 60 ≈ 13 minutes"],
+  "note": "For those 13 minutes or more, that partition has one fewer copy. It is why you keep three, not two."
+}
+</script>
+</x-estimate>
+
+<h2>Time and capacity</h2>
+
+<p>A day is 86,400 seconds, about 10<sup>5</sup>. A month is about 2.6 million seconds, a year about 31.5 million. So 1 million events a day is about 12 a second; call it 10 and say you rounded down.</p>
+
+<p>Single-server capacities vary by ten times or more with hardware and query shape, so treat these as orders of magnitude to state and check with the interviewer:</p>
+
+<ul>
+<li>A stateless API server: about 1,000 requests a second for typical work.</li>
+<li>A relational database primary: a few thousand writes a second; reads by index into the tens of thousands.</li>
+<li>An in-memory cache node: about 100,000 simple reads a second.</li>
+<li>Open connections on one server (WebSockets): tens of thousands, up to about 100,000 mostly idle ones.</li>
+<li>One large machine: hundreds of GB of memory and a few TB of SSD. If your data set fits, say so: one machine is the simplest design.</li>
+</ul>
+
+<h2>Availability</h2>
+
+<table>
+<thead><tr><th>Target</th><th>Down per 30-day month</th><th>Down per year</th></tr></thead>
+<tbody>
+<tr><td>99%</td><td>7.2 hours</td><td>3.7 days</td></tr>
+<tr><td>99.9%</td><td>43 minutes</td><td>8.8 hours</td></tr>
+<tr><td>99.99%</td><td>4.3 minutes</td><td>53 minutes</td></tr>
+<tr><td>99.999%</td><td>26 seconds</td><td>5.3 minutes</td></tr>
+</tbody>
+</table>
+
+<p>Use it two ways. Parts that must <em>all</em> work multiply: three services at 99.9% each give 0.999<sup>3</sup> ≈ 99.7%, about 2 hours down a month. Redundant copies, where <em>any one</em> is enough, multiply their downtime instead: two copies at 99% give 1 − 0.01<sup>2</sup> = 99.99%, assuming they fail independently, which shared power or a shared bad deploy can break. More in <a href="/system-design/reliability-and-failure.html">reliability and failure</a>.</p>
+
+<x-estimate title="A downtime budget">
+<script type="application/json">
+{
+  "question": "The target is 99.95% availability. How much downtime does that allow in a 30-day month?",
+  "givens": ["30 days × 24 hours × 60 minutes = 43,200 minutes", "Allowed downtime is 100% − 99.95% = 0.05%"],
+  "unit": "duration",
+  "answer": "22 minutes",
+  "accept": ["10 minutes", "45 minutes"],
+  "steps": ["43,200 × 0.0005 = 21.6 minutes"],
+  "note": "A single failover that takes 5 minutes uses almost a quarter of the month's budget, so failover must be automatic."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring a number in whenever a decision rests on speed, size or uptime, and finish with "so":</p>
+
+<ul>
+<li>"A cross-region call is about 100 ms, so it can't be on the checkout path."</li>
+<li>"50 million users at 1 KB each is 50 GB, so the sessions fit in one cache node's memory, with a replica."</li>
+<li>"99.99% is about 4 minutes a month, so no manual step can be in failover."</li>
+</ul>
+
+<x-interview title="Using a number to decide" tone="strong">
+<x-interviewer>Could we keep one database in the US and serve European users from it?</x-interviewer>
+<x-you>Each round trip from Europe is around 100 ms. A page that makes three sequential reads would spend 300 ms just waiting. So I'd serve reads from a European replica and accept a short replication delay, and keep writes in the US if they're rare, sending a user's reads there for a few seconds after they write so they see their own change.</x-you>
+<x-coach>A rounded figure, simple arithmetic, a decision, and its cost.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Why can't cross-region be faster?"</strong> Light in fibre covers about 200 km per ms. New York to London is about 5,600 km, so a round trip takes at least 2 × 5,600 ÷ 200 = 56 ms before any routing.</li>
+<li><strong>"Where does 1,000 requests a second per server come from?"</strong> "It's an assumption for typical work. I'd load test, and the design doesn't change if it's 3,000."</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Adding calls that could run in parallel">
+<p>Three independent 100 ms calls made at once take about 100 ms, not 300. Before you add latencies, say which calls depend on each other.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Quoting numbers as exact facts">
+<p>"An SSD read is 87 µs" invites a debate you cannot win. Say "about 0.1 ms" and that it varies by hardware. The order of magnitude carries the decision.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A page makes 4 sequential calls to a service in another region, and each needs one round trip. Roughly how long does the page spend waiting?",
+      "options": [
+        { "text": "About 2 ms", "why": "That uses the same-data-center figure of 0.5 ms." },
+        { "text": "About 400 ms", "correct": true, "why": "4 × 100 ms. Sequential calls add up." },
+        { "text": "About 100 ms", "why": "That would be true only if the calls ran in parallel." }
+      ]
+    },
+    {
+      "question": "A request needs three services in a chain, each 99.9% available. About how available is the request?",
+      "options": [
+        { "text": "99.9%", "why": "Each one can fail on its own, so the chain is less available than any part." },
+        { "text": "99.7%", "correct": true, "why": "0.999 × 0.999 × 0.999 ≈ 0.997, about 2 hours down a month." },
+        { "text": "99.999%", "why": "That is how redundant copies combine, not parts in a chain." }
+      ]
+    },
+    {
+      "question": "Hot product data is read on every request by 50 app servers and changes a few times a day. Where should it live?",
+      "options": [
+        { "text": "Only in the database, read each time", "why": "That spends 1 to 10 ms on every request for data that barely changes." },
+        { "text": "In a shared cache in the region, about 0.5 ms", "correct": true, "why": "One copy for all servers, fast, and easy to invalidate a few times a day. A copy in each server's memory, refreshed every minute, would also work for data this stable." },
+        { "text": "In a database in another region", "why": "About 100 ms per read, and it fails when the link does." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Put the numbers to work in <a href="/system-design/mock-interview-practice.html">Mock Interview Practice</a>, or see latency drive a full design in <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a>.</p>

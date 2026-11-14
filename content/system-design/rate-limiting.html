@@ -1,0 +1,312 @@
+<!--
+{
+  "title": "Rate Limiting",
+  "description": "Cap how fast each client can call you: fixed and sliding windows, token and leaky buckets, where the limiter lives, and counting across many servers.",
+  "minutes": 16,
+  "tags": ["rate limiting", "building blocks", "algorithms", "abuse"]
+}
+-->
+<p>Your public API is sized for 3,000 requests a second in total. One customer ships a script with a retry bug, and it starts sending 2,500 a second on its own. Latency climbs for everyone and the database starts timing out. Nobody was malicious; that client had no ceiling.</p>
+
+<h2>The idea</h2>
+
+<p>Pick a key (an API key, a user id, an IP address), count that key's requests over time, and reject the ones over the limit with <code>429 Too Many Requests</code> and a <code>Retry-After</code> header saying when to come back. Limits protect capacity, keep customers from hurting each other, enforce plans, and slow attacks such as password guessing.</p>
+
+<p>The cost: a check on every request, shared state across servers, and rejected good traffic if the limit or key is wrong.</p>
+
+<h2>Five ways to count</h2>
+
+<p><strong>Fixed window.</strong> One counter per key per minute, reset each minute. Cheap, but the edges leak: with a limit of 100 a minute, a client can send 100 at 0:59 and 100 more at 1:00, so 200 requests land within about a second, double the limit.</p>
+
+<p><strong>Sliding window log.</strong> Store every request's timestamp, drop those older than a minute, count the rest.</p>
+
+<p><strong>Sliding window counter.</strong> Keep only this minute's and last minute's counts, and weight the old one by how much of it still overlaps the last 60 seconds. With a limit of 100, 80 requests last minute, 30 so far this minute, and 15 seconds into it: 30 + 80 × 45/60 = 30 + 60 = 90, so the request passes. It assumes last minute was evenly spread: an approximation.</p>
+
+<p><strong>Token bucket.</strong> Each key has a bucket that holds up to <em>capacity</em> tokens and refills at <em>rate</em> tokens a second. A request takes one token or is rejected.</p>
+
+<p><strong>Leaky bucket.</strong> Requests join a queue drained at a fixed rate; when it is full, new ones are rejected.</p>
+
+<x-tradeoffs caption="Rate-limiting algorithms">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Token bucket",
+      "good": "Allows bursts up to a set size, holds the average. Two numbers per key.",
+      "bad": "Two settings to tune; a full bucket releases a burst at once.",
+      "pick": "Most API limits. The usual answer.",
+      "default": true
+    },
+    {
+      "name": "Sliding window counter",
+      "good": "Two counters per key, no edge spike.",
+      "bad": "Approximate: assumes the previous window was evenly spread.",
+      "pick": "You want \"N per minute\" without a burst allowance."
+    },
+    {
+      "name": "Sliding window log",
+      "good": "Exact.",
+      "bad": "Memory grows with the limit: one timestamp per request per key.",
+      "pick": "Low limits where precision matters: 5 login attempts per 15 minutes."
+    },
+    {
+      "name": "Fixed window",
+      "good": "One counter per key, trivial to build.",
+      "bad": "Up to twice the limit across a window edge.",
+      "pick": "Coarse quotas where the edge burst does not matter: 10,000 calls a day."
+    },
+    {
+      "name": "Leaky bucket",
+      "good": "Perfectly even output rate.",
+      "bad": "Adds waiting time; bursts are queued rather than served.",
+      "pick": "Feeding a downstream that needs a steady pace, like a third-party API."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>A token bucket, step by step</h2>
+
+<p>Capacity 5, refill 1 token a second. No timer refills buckets: each request works out how many tokens arrived since the last one.</p>
+
+<x-tracer title="Token bucket: capacity 5, refill 1 per second">
+<script type="application/json">
+{
+  "code": [
+    "on request at time now:",
+    "  tokens = min(capacity, tokens + (now - last) * rate)",
+    "  last = now",
+    "  if tokens >= 1:",
+    "    tokens = tokens - 1",
+    "    allow",
+    "  else:",
+    "    reject with 429"
+  ],
+  "steps": [
+    {
+      "caption": "A new client starts with a full bucket: 5 tokens.",
+      "array": { "label": "bucket", "values": ["●", "●", "●", "●", "●"], "mark": [0, 1, 2, 3, 4] },
+      "vars": { "now": 0, "tokens": 5, "allowed": 0, "rejected": 0 }
+    },
+    {
+      "caption": "A request at t = 0. No time has passed, so nothing is added. Take a token and allow it.",
+      "line": 5,
+      "array": { "label": "bucket", "values": ["●", "●", "●", "●", null], "mark": [0, 1, 2, 3], "highlight": [4] },
+      "vars": { "now": 0, "tokens": 4, "allowed": 1, "rejected": 0 }
+    },
+    {
+      "caption": "Four more in the same instant take the last four tokens. A burst of 5 passed: that is what the capacity is for.",
+      "line": 6,
+      "array": { "label": "bucket", "values": [null, null, null, null, null], "highlight": [0, 1, 2, 3] },
+      "vars": { "now": 0, "tokens": 0, "allowed": 5, "rejected": 0 }
+    },
+    {
+      "caption": "A request at t = 0.2. Refill first: 0 + 0.2 × 1 = 0.2 tokens.",
+      "line": 2,
+      "array": { "label": "bucket", "values": [null, null, null, null, null] },
+      "vars": { "now": 0.2, "tokens": 0.2, "allowed": 5, "rejected": 0 }
+    },
+    {
+      "caption": "0.2 is less than 1, so reject with 429. The next token arrives in 0.8 s, so send <code>Retry-After: 1</code>, rounded up to whole seconds.",
+      "line": 8,
+      "array": { "label": "bucket", "values": [null, null, null, null, null] },
+      "vars": { "now": 0.2, "tokens": 0.2, "allowed": 5, "rejected": 1 }
+    },
+    {
+      "caption": "A request at t = 3 refills 0.2 + 2.8 × 1 = 3 tokens.",
+      "line": 2,
+      "array": { "label": "bucket", "values": ["●", "●", "●", null, null], "mark": [0, 1, 2] },
+      "vars": { "now": 3, "tokens": 3, "allowed": 5, "rejected": 1 }
+    },
+    {
+      "caption": "Take one token, pass. 2 left.",
+      "line": 5,
+      "array": { "label": "bucket", "values": ["●", "●", null, null, null], "mark": [0, 1], "highlight": [2] },
+      "vars": { "now": 3, "tokens": 2, "allowed": 6, "rejected": 1 }
+    },
+    {
+      "caption": "A request at t = 10. The refill would be 2 + 7 × 1 = 9, but the bucket holds only 5. Idle time cannot be saved up beyond one full burst.",
+      "line": 2,
+      "array": { "label": "bucket", "values": ["●", "●", "●", "●", "●"], "mark": [0, 1, 2, 3, 4] },
+      "vars": { "now": 10, "tokens": 5, "allowed": 6, "rejected": 1 }
+    },
+    {
+      "caption": "Take one, allow, 4 left. Over 10 seconds: 7 allowed, 1 rejected. No client can ever get more than 5 + 1 × t requests through in t seconds.",
+      "line": 6,
+      "array": { "label": "bucket", "values": ["●", "●", "●", "●", null], "mark": [0, 1, 2, 3], "highlight": [4] },
+      "vars": { "now": 10, "tokens": 4, "allowed": 7, "rejected": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code title="Token bucket (time passed in, in seconds)">
+<pre lang="js">
+class TokenBucket {
+  constructor(capacity, ratePerSec) {
+    this.capacity = capacity;
+    this.rate = ratePerSec;
+    this.tokens = capacity;   // start full
+    this.last = 0;            // time of the last refill
+  }
+
+  allow(now) {
+    const elapsed = now - this.last;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rate);
+    this.last = now;
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return true;
+    }
+    return false;
+  }
+}
+</pre>
+<pre lang="py">
+class TokenBucket:
+    def __init__(self, capacity, rate_per_sec):
+        self.capacity = capacity
+        self.rate = rate_per_sec
+        self.tokens = capacity   # start full
+        self.last = 0            # time of the last refill
+
+    def allow(self, now):
+        elapsed = now - self.last
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+        self.last = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+</pre>
+</x-code>
+
+<h2>Where the limiter lives</h2>
+
+<x-arch caption="The gateway checks a shared counter store before any request reaches a service. The service keeps its own limit on calls to a fragile third party.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "API clients", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway + limiter", "kind": "gateway", "col": 1, "row": 1, "stack": true },
+    { "id": "counters", "label": "Counter store", "kind": "cache", "col": 1, "row": 3 },
+    { "id": "svc", "label": "Order service", "kind": "service", "col": 2, "row": 1 },
+    { "id": "ext", "label": "Payment provider", "kind": "external", "col": 3, "row": 1 }
+  ],
+  "edges": [
+    { "from": "client", "to": "gw", "label": "request" },
+    { "from": "gw", "to": "counters", "label": "take a token" },
+    { "from": "gw", "to": "svc", "label": "if allowed" },
+    { "from": "svc", "to": "ext", "label": "≤ 50/s" }
+  ]
+}
+</script>
+</x-arch>
+
+<ul>
+<li><strong>At the edge</strong>, by IP: cheap protection against floods.</li>
+<li><strong>At the API gateway</strong>, by API key or user: plan quotas and fairness between customers. This is the usual answer.</li>
+<li><strong>Inside a service</strong>: protecting one dependency, like a payment provider that allows 50 calls a second.</li>
+</ul>
+
+<h2>Counting across many servers</h2>
+
+<p>Ten gateway nodes with their own counters each allow the full limit, so a limit of 100 a minute lets 1,000 through. Three fixes:</p>
+
+<ul>
+<li><strong>A central counter store</strong>, an in-memory store such as Redis. Exact, but it costs a hop (about 0.5 ms) per request and adds a dependency. The check and the update must be one atomic operation: if two nodes both read 99 and both write 100, the client got 101. Use an atomic increment or a small script that refills and takes a token in one step.</li>
+<li><strong>Split the limit</strong>: each of the 10 nodes allows 10 a minute. No shared state, but only right if each client's traffic is spread evenly.</li>
+<li><strong>Local counts, synced every second.</strong> Fast; overshoots by what slips through between syncs.</li>
+</ul>
+
+<p>Use the central store for customer quotas, local counters for flood protection. Then decide what happens when the store is down. <strong>Fail open</strong> (allow everything) for a general API, so a limiter outage is not a full outage. <strong>Fail closed</strong>, or fall back to strict local limits, for login and other endpoints attackers target.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>A token bucket is two numbers per key: about 16 bytes plus the key.</li>
+<li>A sliding log is one timestamp (8 bytes) per request in the window, per key.</li>
+</ul>
+
+<x-estimate title="Memory for a sliding window log">
+<script type="application/json">
+{
+  "question": "How much memory does a sliding window log need in the worst case?",
+  "givens": ["1 million active users", "Limit: 100 requests a minute each", "8 bytes per stored timestamp; ignore key overhead"],
+  "unit": "bytes",
+  "answer": "800 MB",
+  "accept": ["300 MB", "3 GB"],
+  "steps": ["Worst case, every user has 100 timestamps stored", "10<sup>6</sup> × 100 × 8 B = 8 × 10<sup>8</sup> B = 800 MB"],
+  "note": "A token bucket for the same users needs 10<sup>6</sup> × 16 B = 16 MB, 50 times less."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Mention a rate limit when an API is public, an endpoint is expensive, or you call a third party with limits. Name the key, algorithm and response: "Per API key, token bucket of 100 with a refill of 10 a second, enforced at the gateway with counters in a shared store, returning 429 with Retry-After."</p>
+
+<x-interview title="Limiting a public API">
+<x-interviewer>How would you stop one customer from overloading the API?</x-interviewer>
+<x-you>A per-API-key token bucket at the gateway. It lets a customer burst briefly while capping the average, and it's two numbers per key. With several gateway nodes, the counters go in a shared in-memory store and the check-and-take is one atomic operation.</x-you>
+<x-interviewer>And if that store goes down?</x-interviewer>
+<x-you>For this API I'd fail open, with each node falling back to a local limit of the total divided by the node count. Losing exact limits for a few minutes is better than rejecting everyone.</x-you>
+<x-coach>It names the key, algorithm, placement, race and failure mode. A weak answer says "add a rate limiter" and stops.</x-coach>
+</x-interview>
+
+<p>Follow-ups to expect:</p>
+
+<ul>
+<li><strong>"Why not limit by IP?"</strong> Offices and mobile networks share IPs, and attackers rotate them. Use IP only before login; use the account or key after.</li>
+<li><strong>"And across regions?"</strong> Give each region its own counter store and a share of the limit. One global store would add a cross-region round trip to every request.</li>
+<li><strong>"What should a client do with a 429?"</strong> Wait for <code>Retry-After</code>, then back off with jitter.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Check, then increment, as two steps">
+<p>Two servers can read the same count and both allow the request. Make the check and the update one atomic operation in the counter store.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Local counters behind a load balancer">
+<p>With N servers each counting alone, a client gets N times its limit. Share the counter, or split the limit and say it is approximate.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A fixed window allows 100 requests per minute. What is the most a client can get through in any 2-second span?",
+      "options": [
+        { "text": "100", "why": "That holds within one window, but a span can straddle two windows." },
+        { "text": "200", "correct": true, "why": "100 at the end of one minute and 100 at the start of the next, both within their window's limit." },
+        { "text": "About 3", "why": "That is the average rate, 100 ÷ 60 × 2. Fixed windows do not enforce the average over short spans." }
+      ]
+    },
+    {
+      "question": "A token bucket has capacity 10 and refills 2 tokens a second. It is empty at t = 0. A request arrives at t = 3. How many tokens are left after it is allowed?",
+      "options": [
+        { "text": "5", "correct": true, "why": "0 + 3 × 2 = 6 tokens, minus 1 for the request = 5." },
+        { "text": "9", "why": "That assumes the bucket refilled to capacity, but only 3 seconds passed." },
+        { "text": "6", "why": "That is the count before the request takes its token." }
+      ]
+    },
+    {
+      "question": "You call a partner API that rejects anything over 50 calls a second, and your own traffic comes in bursts. Which approach fits your outgoing calls?",
+      "options": [
+        { "text": "Token bucket with capacity 500", "why": "A burst of 500 would reach the partner at once and get rejected." },
+        { "text": "Leaky bucket draining at 50 a second", "correct": true, "why": "Bursts queue up and leave at a steady 50 a second, which is exactly what the partner accepts." },
+        { "text": "Fixed window of 50 per second", "why": "Up to 100 calls can land within a second across a window edge." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The full design, with rules per endpoint, a counter store across regions and its failure modes, is in <a href="/system-design/design-a-rate-limiter.html">Design a Rate Limiter</a>. Counters spread over many cache nodes rely on <a href="/system-design/consistent-hashing.html">consistent hashing</a>.</p>

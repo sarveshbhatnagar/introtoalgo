@@ -1,0 +1,388 @@
+<!--
+{
+  "title": "Design a Job Scheduler",
+  "description": "Run millions of delayed and recurring jobs on time: time-bucketed storage, leases, at-least-once execution, worker failure, idempotent jobs and cron.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "scheduling", "leases", "at-least-once", "idempotency"]
+}
+-->
+<p>"Send this user a reminder in 24 hours." "Retry this failed upload in 5 minutes." "Build the sales report every day at 06:00 in Tokyo." Almost every product has work that must happen later, and every team that writes its own timer on one server eventually loses jobs when that server restarts. A shared job scheduler takes the job, stores it safely, and makes sure some worker runs it close to the right time.</p>
+
+<p>Interviewers like this question because "run it later" hides three hard problems: finding the few jobs due right now among millions waiting, handing each one to exactly one worker when workers crash and pause, and being honest that "exactly once" is something you build out of retries and idempotent jobs. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a distributed job scheduler.</x-interviewer>
+<x-you>What kinds of jobs: one-off jobs at a time or after a delay, recurring cron-style schedules, or both? And does the scheduler run the job's code, or hand it to the owning team's workers?</x-you>
+<x-interviewer>Both kinds. Teams run their own workers; you store, schedule and dispatch.</x-interviewer>
+<x-you>How many jobs, and how precise must the timing be?</x-you>
+<x-interviewer>About 100 million job runs a day and a million recurring schedules. Starting within a few seconds of the due time is fine.</x-interviewer>
+<x-you>Then I'll promise: an accepted job is never lost, it starts within 10 seconds of its due time under normal load, and it runs at least once. I'll say plainly that it can run twice, so job handlers must be idempotent. Workflows with dependencies between jobs are out of scope.</x-you>
+<x-coach>Naming "at least once" in the requirements, not in a deep dive, shows the candidate knows exactly-once delivery is not on the menu.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> schedule a one-off job at a time or after a delay; create recurring schedules from a cron expression and time zone; cancel jobs; see a job's status and attempts; retry failures with backoff up to a limit, then park them for a human.</li>
+<li><strong>Non-functional:</strong> no accepted job is lost (durable, replicated storage); jobs start within 10 seconds of due time under normal load; at-least-once execution; no single machine whose loss stops scheduling.</li>
+<li><strong>Out of scope:</strong> running job code ourselves, job dependencies and workflows, priorities beyond a few named queues.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Job runs:</strong> 100 million ÷ 86,400 ≈ 1,200 a second on average.</li>
+<li><strong>Writes:</strong> each run is created, enqueued, claimed and finished: about 4 writes, so about 4,800 a second. Too many for comfort on one database primary at peak; this points to sharding.</li>
+<li><strong>Waiting jobs:</strong> suppose 10% of jobs are scheduled about a week ahead and the rest within the hour. 100 million × 0.1 × 7 days = 70 million waiting at once, at about 1 KB each, 70 GB. Keeping 7 days of finished jobs for debugging adds 100 million × 7 × 1 KB = 700 GB.</li>
+<li><strong>The burst:</strong> if 20% of the million schedules say "every hour, on the hour", then 200,000 jobs are due in the same second at every :00.</li>
+</ul>
+
+<x-estimate title="How long the :00 burst takes to drain">
+<script type="application/json">
+{
+  "question": "Workers can run 1,800 jobs a second in total. At 10:00:00, 200,000 hourly jobs become due at once. Ignoring other traffic, how long until the last one starts?",
+  "givens": ["200,000 jobs due at the same second", "The worker fleet runs 1,800 jobs a second at full speed"],
+  "unit": "duration",
+  "answer": "111 seconds",
+  "accept": ["40 seconds", "5 minutes"],
+  "steps": ["200,000 ÷ 1,800 per second ≈ 111 seconds, almost 2 minutes"],
+  "note": "That breaks the 10-second promise for most of the burst. Starting them all within 10 seconds needs 20,000 a second, about 11 times the fleet, idle for the rest of the hour."
+}
+</script>
+</x-estimate>
+
+<p>Where 1,800 comes from: at 1,200 jobs a second and about 2 seconds per job, 1,200 × 2 = 2,400 jobs run at any moment. Workers run 10 jobs each, so 240 workers are fully busy; with 50% headroom you run 360, which can do 360 × 10 ÷ 2 = 1,800 jobs a second.</p>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the calls a team uses to schedule, cancel and inspect a job, and the calls its workers use to get and finish work. Do workers get pushed jobs or pull them?</p>
+</x-task>
+<x-answer>
+<p>Create a job, create a schedule, cancel, get. Workers pull: they ask for work, get a lease, send heartbeats while running, and report the result with the attempt number they were given.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="Scheduler API">
+<pre lang="text">
+POST /jobs
+  body: { "queue": "emails", "payload": {...}, "run_at": "2026-11-15T10:05:20Z",
+          "max_attempts": 5, "timeout_s": 60, "idempotency_key": "remind-u42-d15"? }
+  201 { "job_id": "j_a8f3c1" }
+  400 run_at too far in the future, or payload over 64 KB
+
+POST /schedules
+  body: { "queue": "reports", "cron": "0 6 * * *", "time_zone": "Asia/Tokyo",
+          "on_overlap": "skip", "on_missed": "run_once" }
+  201 { "schedule_id": "s_311" }
+
+DELETE /jobs/{id}      200 cancelled   409 already running
+GET    /jobs/{id}      200 { "status": "running", "attempt": 2, "last_error": "..." }
+
+Worker side:
+POST /queues/{q}/lease            200 [ { "job_id", "attempt", "lease_until", "payload" } ]
+POST /jobs/{id}/heartbeat         body: { "attempt": 2 }   200, or 409 lease lost
+POST /jobs/{id}/complete          body: { "attempt": 2, "ok": true }   200, or 409 lease lost
+</pre>
+</x-code>
+
+<p>The decision to argue is <strong>pull, not push</strong>. If the scheduler pushed jobs at workers, it would need to know each worker's capacity, and a slow team's workers would back up into the scheduler. When workers pull, each takes only what it can run, and a backlog simply waits in the queue. The <code>attempt</code> number in every worker call is what lets the scheduler reject a worker that has lost its lease.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>Design the job record and its key. The hot query is "which jobs are due now?" among 70 million waiting. How do you make that query small?</p>
+</x-task>
+<x-answer>
+<p>Two records. The job itself, found by its id. And a small "due" index keyed by (shard, minute bucket of the run time), holding only job ids. The dispatcher for a shard reads only the current minute's partition, a few thousand rows, instead of searching one huge index.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Jobs, the due index and schedules">
+<pre lang="sql">
+jobs                            -- one row per job, found by id
+  job_id         VARCHAR(64) PRIMARY KEY   -- random, or "s_311@2026-11-15T06:00" for a schedule run
+  shard          SMALLINT       -- hash(job_id) % 64
+  queue          VARCHAR(64)
+  payload        BLOB           -- up to 64 KB; larger goes to blob storage
+  run_at         TIMESTAMP
+  status         VARCHAR(12)    -- scheduled | enqueued | running | succeeded | cancelled | dead
+  attempt        INT
+  lease_until    TIMESTAMP NULL -- indexed for running jobs, for the lease sweep
+  schedule_id    VARCHAR(32) NULL
+
+due                             -- the timer: which ids are due when
+  shard          SMALLINT
+  bucket         TIMESTAMP      -- run_at rounded down to the minute
+  run_at         TIMESTAMP
+  job_id         VARCHAR(64)
+  PRIMARY KEY ((shard, bucket), run_at, job_id)
+
+schedules
+  schedule_id, cron, time_zone, queue, payload, on_overlap, on_missed, next_run_at
+</pre>
+</x-code>
+
+<p>A job and its due rows hash to the same shard, so creating a job is one local transaction across both tables. The access patterns are: insert a job and its due row; read one (shard, bucket) partition of <code>due</code> in time order; update one job's status with a condition ("only if attempt is still 2"); drop whole old buckets. A retry or a new run time just adds another due row. The dispatcher checks the job's status before enqueuing, so a due row left over from a cancelled or rescheduled job is skipped. Each dispatcher also records, per shard, the last due row it handled, so after a restart or a takeover it resumes from there.</p>
+
+<p>Any store with partitions, sorted keys inside a partition and per-row conditional writes fits: a sharded relational database with the due table partitioned by time, or a wide-column store such as Cassandra. I would pick the sharded relational database because claims and leases are conditional updates, which it does cheaply; the wide-column store wins if write volume grows far past this.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the boxes: where jobs are stored, what finds due jobs, how they reach workers, and how you make sure two scheduler machines do not both scan the same shard.</p>
+</x-task>
+<x-answer>
+<p>An API writes jobs to the sharded job store. Dispatchers each own a set of shards, granted by a coordination service, and scan the current bucket every second. Due job ids go onto a ready queue per job type. Workers pull ids from it and claim, heartbeat and finish jobs in the store.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<x-arch caption="The job store is the source of truth. Dispatchers move due job ids onto a ready queue; workers claim each job in the store before running it.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "teams", "label": "Team services", "kind": "client", "col": 0, "row": 1 },
+    { "id": "api", "label": "Scheduler API", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "coord", "label": "Coordinator", "kind": "service", "col": 1, "row": 0 },
+    { "id": "disp", "label": "Dispatchers", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "store", "label": "Job store (sharded)", "kind": "database", "col": 2, "row": 1 },
+    { "id": "ready", "label": "Ready queues", "kind": "queue", "col": 3, "row": 0 },
+    { "id": "workers", "label": "Team workers", "kind": "worker", "col": 3, "row": 1, "stack": true }
+  ],
+  "edges": [
+    { "from": "teams", "to": "api", "label": "POST /jobs" },
+    { "from": "api", "to": "store", "label": "insert" },
+    { "from": "disp", "to": "coord", "label": "shard leases" },
+    { "from": "disp", "to": "store", "label": "scan due bucket" },
+    { "from": "disp", "to": "ready", "label": "job ids" },
+    { "from": "ready", "to": "workers", "label": "pull" },
+    { "from": "workers", "to": "store", "label": "claim, done" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through one delayed job, including a worker that stalls halfway.</p>
+
+<x-tracer title="A delayed job, a stalled worker, a second attempt">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "teams", "label": "Team services", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Scheduler API", "kind": "service", "col": 1, "row": 1 },
+      { "id": "coord", "label": "Coordinator", "kind": "service", "col": 1, "row": 0 },
+      { "id": "disp", "label": "Dispatchers", "kind": "service", "col": 2, "row": 0 },
+      { "id": "store", "label": "Job store (sharded)", "kind": "database", "col": 2, "row": 1 },
+      { "id": "ready", "label": "Ready queues", "kind": "queue", "col": 3, "row": 0 },
+      { "id": "workers", "label": "Team workers", "kind": "worker", "col": 3, "row": 1 }
+    ],
+    "edges": [
+      { "from": "teams", "to": "api" },
+      { "from": "api", "to": "store" },
+      { "from": "disp", "to": "coord" },
+      { "from": "disp", "to": "store" },
+      { "from": "disp", "to": "ready" },
+      { "from": "ready", "to": "workers" },
+      { "from": "workers", "to": "store" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "At 09:05 a service asks for a reminder at 10:05:20. The API hashes the new id to shard 17 and writes the job, plus a due row in partition (17, 10:05), on three replicas before answering. Accepted means durable.",
+      "arch": { "active": ["teams", "api", "store", ["teams", "api"], ["api", "store"]], "dim": ["coord", "disp", "ready", "workers"], "notes": { "store": "(17, 10:05)" } },
+      "vars": { "status": "scheduled", "attempt": 0 }
+    },
+    {
+      "caption": "Dispatcher D2 holds a lease from the coordinator on shards 16 to 31, renewed every few seconds. Normally only D2 scans shard 17, so each due job is found once.",
+      "arch": { "active": ["disp", "coord", ["disp", "coord"]], "dim": ["teams", "api", "ready", "workers"], "notes": { "disp": "D2: 16-31" } },
+      "vars": { "status": "scheduled", "attempt": 0 }
+    },
+    {
+      "caption": "Every second D2 reads the current minute's partitions for its shards. At 10:05:20 the job is due: D2 moves it from <code>scheduled</code> to <code>enqueued</code> with a conditional update, then puts its id on the <code>emails</code> queue.",
+      "arch": { "active": ["disp", "store", "ready", ["disp", "store"], ["disp", "ready"]], "dim": ["teams", "api", "coord", "workers"], "notes": { "ready": "j_a8f3c1" } },
+      "vars": { "status": "enqueued", "attempt": 0 }
+    },
+    {
+      "caption": "Worker W3 pulls the id and claims the job in the store: status running, attempt 1, lease until 10:05:51. It must heartbeat every 10 seconds to keep the lease.",
+      "arch": { "active": ["workers", "store", ["ready", "workers"], ["workers", "store"]], "dim": ["teams", "api", "coord"], "notes": { "workers": "W3 attempt 1" } },
+      "vars": { "status": "running", "attempt": 1, "lease until": "10:05:51" }
+    },
+    {
+      "caption": "W3 sends the email, then freezes in a 40-second garbage-collection pause before it can report. No heartbeats arrive.",
+      "arch": { "fail": ["workers"], "dim": ["teams", "api", "coord", "ready"], "notes": { "workers": "W3 paused" } },
+      "vars": { "status": "running", "attempt": 1, "lease until": "10:05:51" }
+    },
+    {
+      "caption": "At 10:05:51 the lease has expired. D2's sweep of running jobs with an expired lease finds it, sets it back to <code>enqueued</code> and puts the id on the queue again. From the scheduler's side, W3 might be dead.",
+      "arch": { "active": ["disp", "store", "ready", ["disp", "store"], ["disp", "ready"]], "fail": ["workers"], "dim": ["teams", "api", "coord"], "notes": { "store": "lease expired" } },
+      "vars": { "status": "enqueued", "attempt": 1 }
+    },
+    {
+      "caption": "Worker W5 claims it as attempt 2 and sends the email. The user now has two reminders, because nothing can tell whether W3 finished its side effect.",
+      "arch": { "active": ["workers", "store", ["ready", "workers"], ["workers", "store"]], "dim": ["teams", "api", "coord"], "notes": { "workers": "W5 attempt 2" } },
+      "vars": { "status": "running", "attempt": 2, "emails sent": 2 }
+    },
+    {
+      "caption": "W3 wakes and reports done for attempt 1. The store only accepts the current attempt, so it answers 409. The attempt number is a fencing token: it stops stale writes, not stale side effects.",
+      "arch": { "active": ["store", ["workers", "store"]], "fail": [["workers", "store"]], "dim": ["teams", "api", "coord", "disp", "ready"], "notes": { "store": "409 attempt 1" } },
+      "vars": { "status": "running", "attempt": 2, "emails sent": 2 }
+    },
+    {
+      "caption": "W5 reports done for attempt 2 and the job is marked succeeded. The fix for the double email belongs in the job: send with the idempotency key <code>remind-u42-d15</code> so the email service drops the repeat.",
+      "arch": { "active": [["workers", "store"]], "mark": ["store"], "dim": ["teams", "api", "coord", "disp", "ready"] },
+      "vars": { "status": "succeeded", "attempt": 2 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>Finding due jobs</h3>
+
+<p>Seventy million jobs wait; about 1,200 become due each second. The scheduler must find those 1,200 cheaply, every second, forever.</p>
+
+<x-tradeoffs caption="Ways to find jobs that are due">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "One table, index on run_at",
+      "good": "Simple. Pollers run <code>WHERE run_at &lt;= now() … FOR UPDATE SKIP LOCKED</code> and several can work at once.",
+      "bad": "One database holds everything. Finished rows bloat the index unless cleaned, and 4,800 writes a second, before any peak, strains one primary.",
+      "pick": "Up to a few hundred jobs a second. Most companies should start here."
+    },
+    {
+      "name": "Time-bucketed partitions",
+      "good": "Each scan reads one small (shard, minute) partition. Old due buckets are dropped whole. Shards spread writes.",
+      "bad": "Needs shard ownership so two dispatchers do not scan the same partition. Precision is limited by the scan interval.",
+      "pick": "Millions of jobs a day with a few seconds of tolerance. This design.",
+      "default": true
+    },
+    {
+      "name": "In-memory timer wheel",
+      "good": "Jobs fire within milliseconds of their time. Dispatchers load the next few minutes from the store into memory.",
+      "bad": "Memory is lost on a crash, so the next owner must reload the window; more moving parts.",
+      "pick": "Sub-second precision matters, on top of buckets for durability."
+    },
+    {
+      "name": "The queue's delayed delivery",
+      "good": "No scheduler to build: the message becomes visible at its time.",
+      "bad": "Delays are usually capped, and you cannot easily list, change or cancel a waiting job.",
+      "pick": "Short delays such as retry backoff, where nobody needs to inspect the job."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>With 64 shards, the 200,000-job burst at :00 lands as 200,000 ÷ 64 ≈ 3,125 rows per partition: one quick read each. A dispatcher that falls behind does not skip anything; it reads the older buckets it missed first, so a slow minute delays jobs but never loses them.</p>
+
+<h3>Leases and at-least-once execution</h3>
+
+<p>A worker that claims a job gets a <strong>lease</strong>: the job is theirs until <code>lease_until</code>, extended by heartbeats. If the worker dies, the lease runs out and the job is handed out again. That is the whole recovery story, and it is why execution is <strong>at least once</strong>: a job is never stuck forever, but a worker that only looked dead may still finish its work.</p>
+
+<p>Choosing the lease length is a trade-off. A short lease (30 seconds here) recovers quickly from a crash but re-runs jobs on any worker that pauses for longer. A long lease means fewer duplicates but a dead worker's job waits longer. Heartbeats let you keep the lease short for jobs that run for an hour.</p>
+
+<p>Shard ownership uses the same idea one level up. Each dispatcher holds a lease on its shards from a coordination service built on consensus (see <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>). If a dispatcher stalls, another takes its shards when the lease expires. The stalled one does not know yet, so for a moment two dispatchers can scan one shard. That is safe because every step is conditional: only one of them can move a job from <code>scheduled</code> to <code>enqueued</code>, and a duplicate id on the queue finds the job already running when a worker tries to claim it, and is dropped.</p>
+
+<x-callout type="mistake" title="Ack, then run">
+<p>Marking a job done before running it, so it never runs twice, gives at-most-once: a crash after the mark loses the job silently. For a scheduler whose first promise is "never lost", run first and mark done after, then make the repeat harmless.</p>
+</x-callout>
+
+<h3>The exactly-once illusion</h3>
+
+<p>"Exactly once" in this system can only mean <strong>exactly-once effect</strong>. The tracer shows why: W3 sent the email, then paused, and nothing outside W3 could know whether the send happened. Any scheduler that re-runs jobs from dead workers must sometimes re-run jobs from live ones. Say this plainly in the interview, then give the tools:</p>
+
+<ul>
+<li><strong>Idempotent handlers.</strong> Pass an idempotency key derived from the job (job id, or the caller's own key) to every downstream call, as in <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>.</li>
+<li><strong>Fencing tokens.</strong> Every write the job makes carries its attempt number, and the target rejects older attempts. The store does this for job status; a job can do the same for its own outputs.</li>
+<li><strong>Natural idempotency.</strong> "Set the report for 2026-11-15 to this file" can safely run twice; "append a row to the report" cannot.</li>
+</ul>
+
+<h3>Cron schedules versus one-off jobs</h3>
+
+<p>Store a schedule as a definition, not as a million future jobs. When an occurrence is claimed, create the next one, with an id built from the schedule id and its scheduled time. Insert-if-absent then makes a repeat harmless: two dispatchers trying to create the 07:00 run produce one row. Three policies need a deliberate answer:</p>
+
+<ul>
+<li><strong>Overlap:</strong> the 06:00 run is still going at 07:00. Skip, queue, or run both. Default to skip for reports.</li>
+<li><strong>Missed runs:</strong> the scheduler was down from 02:00 to 05:00. Run once to catch up, run all three, or skip. Default to once.</li>
+<li><strong>Time zones:</strong> compute the next time in the schedule's own zone. On a daylight-saving change, 02:30 can happen twice or not at all, so decide which, and test it.</li>
+</ul>
+
+<p>For the :00 burst, let schedules say "hourly, any minute" and pick a stable minute from a hash of the schedule id. The 200,000 hourly jobs then arrive at about 200,000 ÷ 3,600 ≈ 56 a second instead of all at once, and the fleet you already have keeps the 10-second promise.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, a billion runs a day, about 12,000 a second: add shards to the store (64 to 512), split dispatcher ownership finer, and expect the burst to dominate. Ready queues are per job type, so one team's flood of jobs does not delay another team's; the team that floods its own queue scales its own workers.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A worker</td><td>Its leases run out after up to 30 seconds.</td><td>The sweep re-enqueues the jobs; another worker runs them as the next attempt.</td></tr>
+<tr><td>A dispatcher</td><td>Its shards are not scanned until its shard lease expires.</td><td>Another dispatcher takes the shards and reads the buckets it missed. Jobs start late, none are lost.</td></tr>
+<tr><td>The coordinator</td><td>No shard leases can be renewed or moved.</td><td>Run it on 3 or 5 nodes with consensus. Dispatchers stop scanning when their lease lapses. A paused dispatcher may overlap with the new owner for a moment; the conditional updates make that harmless.</td></tr>
+<tr><td>A job store shard</td><td>Jobs in that shard cannot be created, claimed or finished.</td><td>Replicas take over; the API sends new jobs to other shards by picking a different id.</td></tr>
+<tr><td>A ready queue</td><td>Enqueued ids may be lost.</td><td>Sweep jobs stuck in <code>enqueued</code> for over a minute and enqueue them again. The store is the truth.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Stores jobs in a database and has workers poll for due ones; with prompting, handles a worker that crashes.</td></tr>
+<tr><td>Mid</td><td>Uses leases and heartbeats, explains at-least-once, partitions jobs by time and handles retries with backoff.</td></tr>
+<tr><td>Senior</td><td>Sizes the :00 burst and changes the schedule semantics to spread it, owns shards with leases from a consensus service, uses attempt numbers as fencing tokens, and is precise that exactly-once is an effect built from idempotent jobs.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Running a job exactly once" tone="weak">
+<x-interviewer>Can you guarantee each job runs exactly once?</x-interviewer>
+<x-you>Yes. I'd take a distributed lock on the job id before running it, so only one worker can have it.</x-you>
+<x-coach>A lock with an expiry is a lease, and it has the same hole: a paused worker keeps running after its lock expires. The answer promises something no design can give.</x-coach>
+</x-interview>
+
+<x-interview title="Running a job exactly once" tone="strong">
+<x-interviewer>Can you guarantee each job runs exactly once?</x-interviewer>
+<x-you>Not execution, no. If a worker goes quiet, I can't tell dead from paused, so I re-run the job, and sometimes both finish. What I guarantee is at least once, plus tools for exactly-once effect: every attempt gets a number that the store uses as a fencing token, and every job gets a stable key to pass to the services it calls.</x-you>
+<x-interviewer>So who is responsible for duplicates?</x-interviewer>
+<x-you>Shared: the scheduler keeps duplicates rare and visible with attempt numbers, and job owners make their handlers idempotent. I'd put that in the scheduler's documentation on day one.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you cancel a job that is due in a minute?</h3>
+<p>Set its status to cancelled with a conditional update that only succeeds while it is still scheduled or enqueued. A worker's claim checks status, so a cancelled id that is already in the queue is dropped. Once running, cancellation becomes a request the job may honour.</p>
+
+<h3>How do retries work?</h3>
+<p>A failed attempt gets a new run time, now plus exponential backoff with jitter, and a new due row in the matching bucket. After <code>max_attempts</code> the job goes to a dead-letter status for a human, so one broken job cannot retry forever.</p>
+
+<h3>One team schedules 10 million jobs for midnight. What protects everyone else?</h3>
+<p>Per-queue rate limits on dispatch and separate ready queues per team. Their jobs start late; everyone else's keep their 10-second promise.</p>
+
+<h3>How would you add priorities?</h3>
+<p>Give each priority its own ready queue and let workers pull from high before low. Keep priority out of the store's key, so finding due jobs stays one partition read.</p>
+
+<h3>How do you know the scheduler is healthy?</h3>
+<p>Track scheduling lag (start time minus due time) per queue, the age of the oldest due job not yet enqueued, lease expiries per minute and dead-letter counts. Lag is the number users feel; alert on it.</p>
+
+<x-checklist title="Self-review: job scheduler">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked about one-off versus recurring jobs and who runs the code", "I stated at-least-once and the timing promise as requirements", "I asked how precise the start time must be"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated the average rate and the burst at the top of the hour", "I chose pull over push and explained why", "I gave workers an attempt number on every call"] },
+    { "title": "Design and depth", "items": ["I indexed due jobs by shard and time bucket so finding them is a small read", "I used leases with heartbeats and chose a lease length with a reason", "I owned shards with leases from a consensus service", "I explained why exactly-once is an effect and how idempotent jobs and fencing get it", "I handled overlap, missed runs and time zones for cron"] },
+    { "title": "Failure", "items": ["I said what happens when a worker, a dispatcher and the coordinator each die", "I spread the :00 burst instead of buying a fleet for one second an hour"] }
+  ]
+}
+</script>
+</x-checklist>

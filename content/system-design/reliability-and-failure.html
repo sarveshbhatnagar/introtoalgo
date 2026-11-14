@@ -1,0 +1,205 @@
+<!--
+{
+  "title": "Reliability and Failure",
+  "description": "Availability as arithmetic, redundancy and failover, circuit breakers, bulkheads, graceful degradation, load shedding and multi-region basics.",
+  "minutes": 17,
+  "tags": ["reliability", "availability", "failure", "building blocks"]
+}
+-->
+<p>A checkout request calls five services one after another: cart, pricing, inventory, payment, orders. Each is up 99.9% of the time, which sounds excellent. But checkout needs all five, so it works only 0.999<sup>5</sup> ≈ 99.5% of the time. Over a 30-day month that is about 216 minutes of failed checkouts instead of 43.</p>
+
+<p>Every dependency you add in a chain multiplies in its failures. Reliability is the craft of making the whole stay up when parts do not.</p>
+
+<h2>The idea</h2>
+
+<p><strong>Availability</strong> is the share of time (or of requests) that the system does its job. Two rules of arithmetic drive every design choice:</p>
+
+<ul>
+<li><strong>In series, multiply availabilities.</strong> Five parts at 99.9% each: 99.5% together. More hops, lower availability.</li>
+<li><strong>In parallel, multiply the failure chances.</strong> Two copies that each fail 1% of the time are both down 0.01 × 0.01 = 0.01% of the time, so 99.99% together. This assumes they fail independently, which is a simplification: a shared power feed, a bad deploy or the same bug takes both down at once.</li>
+</ul>
+
+<p>So: put redundant copies of everything critical, keep the critical path short, and make sure a failure in one part cannot drag the rest down with it.</p>
+
+<table>
+<thead><tr><th>Availability</th><th>Downtime per 30-day month</th><th>Downtime per year</th></tr></thead>
+<tbody>
+<tr><td>99% ("two nines")</td><td>7.2 hours</td><td>3.65 days</td></tr>
+<tr><td>99.9%</td><td>43 minutes</td><td>8.8 hours</td></tr>
+<tr><td>99.99%</td><td>4.3 minutes</td><td>53 minutes</td></tr>
+<tr><td>99.999%</td><td>26 seconds</td><td>5.3 minutes</td></tr>
+</tbody>
+</table>
+
+<p>Each extra nine cuts downtime tenfold and usually costs much more effort than the last one. At four nines, a human cannot even be paged and log in before the month's budget is gone: recovery must be automatic.</p>
+
+<h2>Redundancy and failover</h2>
+
+<p>Stateless servers are easy: run several behind a <a href="/system-design/load-balancing.html">load balancer</a>, and health checks remove a dead one in seconds. State is harder. A database leader with a standby needs <strong>failover</strong>: notice the leader is gone, promote the standby, point traffic at it. Downtime is detection plus promotion: with a health check every 5 seconds and 3 misses required, detection alone takes 15 seconds. Detect too eagerly and a slow leader gets replaced while still alive, which is how split brain starts (see <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>).</p>
+
+<h2>Stopping one failure from spreading</h2>
+
+<p>The worst outages are cascades: one slow dependency ties up its callers, which then fail their own callers. A product page that calls a recommendations service shows how the patterns fit together.</p>
+
+<x-tracer title="A slow dependency, contained">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "user", "label": "Shoppers", "kind": "client", "col": 0, "row": 1 },
+      { "id": "page", "label": "Product page", "kind": "service", "col": 1, "row": 1, "stack": true },
+      { "id": "catalog", "label": "Catalog service", "kind": "service", "col": 2, "row": 0 },
+      { "id": "recs", "label": "Recommendations", "kind": "service", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "user", "to": "page" },
+      { "from": "page", "to": "catalog", "label": "product data" },
+      { "from": "page", "to": "recs", "label": "\"you may like\"" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Normal day: 1,000 page views a second. Each calls catalog (20 ms) and recommendations (50 ms) in parallel.",
+      "arch": { "active": ["user", "page", "catalog", "recs", ["user", "page"], ["page", "catalog"], ["page", "recs"]] },
+      "vars": { "views/s": 1000, "recs latency": "50 ms" }
+    },
+    {
+      "caption": "Recommendations slows to 5 seconds. Calls in flight = rate × wait = 1,000 × 5 = 5,000. The page fleet has 2,000 threads, so every thread is soon stuck waiting.",
+      "arch": { "active": ["recs", ["page", "recs"]], "fail": ["page"], "notes": { "page": "5,000 waiting" } },
+      "vars": { "views/s": 1000, "recs latency": "5 s" }
+    },
+    {
+      "caption": "Now the whole page fails, even though catalog is healthy. A minor feature has taken down a major one: a cascade.",
+      "arch": { "fail": ["page", "user"], "dim": ["catalog"], "notes": { "user": "errors" } },
+      "vars": { "views/s": 1000, "recs latency": "5 s" }
+    },
+    {
+      "caption": "Fix 1, a timeout: give up on recommendations after 300 ms. In flight drops to 1,000 × 0.3 = 300 calls.",
+      "arch": { "active": ["page", ["page", "recs"]], "notes": { "page": "timeout 300 ms" } },
+      "vars": { "views/s": 1000, "in flight to recs": 300 }
+    },
+    {
+      "caption": "Fix 2, a bulkhead: recommendations calls get their own pool of 400 threads. If it fills, those calls fail at once; the other 1,600 threads stay free for catalog.",
+      "arch": { "active": ["page", "catalog", ["page", "catalog"]], "notes": { "page": "recs pool: 400" } },
+      "vars": { "views/s": 1000, "in flight to recs": 300 }
+    },
+    {
+      "caption": "Fix 3, a circuit breaker: more than half the calls in the last 10 seconds failed, so the breaker opens. The page stops calling recommendations at all.",
+      "arch": { "fail": [["page", "recs"]], "dim": ["recs"], "active": ["page"], "notes": { "page": "breaker open" } },
+      "vars": { "views/s": 1000, "in flight to recs": 0 }
+    },
+    {
+      "caption": "Graceful degradation: the page shows a cached \"popular items\" list instead. Shoppers still see products and can buy. Recommendations gets no load and can recover.",
+      "arch": { "active": ["user", "page", "catalog", ["user", "page"], ["page", "catalog"], ["page", "user"]], "dim": ["recs"], "mark": ["user"], "notes": { "page": "fallback list" } },
+      "vars": { "views/s": 1000, "in flight to recs": 0 }
+    },
+    {
+      "caption": "After 30 seconds the breaker goes half-open and lets a few trial calls through. Recommendations has recovered, the trials succeed in 50 ms, and the breaker closes.",
+      "arch": { "active": ["recs", ["page", "recs"]], "mark": ["recs"], "notes": { "page": "breaker closed" } },
+      "vars": { "views/s": 1000, "recs latency": "50 ms" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Two more patterns protect a service from its own callers. <strong>Load shedding</strong>: when a server is past what it can handle, it rejects extra requests at once with <code>503</code>, instead of accepting everything and timing out on all of it. Shed the least important work first: browsing before checkout, background refreshes before user clicks. <strong>Rate limits</strong> do the same per client (see <a href="/system-design/rate-limiting.html">rate limiting</a>). And retries must be limited, or they multiply load on a service that is already struggling (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
+
+<h2>Multi-region basics</h2>
+
+<p>Within one region, spread copies across several zones (separate buildings and power), which covers most hardware failures. Going multi-region guards against losing a whole region, and it is expensive. Two numbers frame the choice: <strong>RPO</strong>, how much recent data you can lose, and <strong>RTO</strong>, how long recovery may take.</p>
+
+<x-tradeoffs caption="How far to spread">
+<script type="application/json">
+{
+  "options": [
+    { "name": "One region, several zones", "good": "Survives a building or rack failure. Synchronous replication is cheap at zone distances.", "bad": "A region-wide outage takes you down.", "pick": "Most systems, and the starting point in an interview.", "default": true },
+    { "name": "Active-passive regions", "good": "A second region holds an async copy and can take over. Simple data model: still one writer.", "bad": "Failover takes minutes; RPO is the replication lag; the standby must be tested or it will not work.", "pick": "A region outage must cost minutes, not hours, and some seconds of data loss is acceptable." },
+    { "name": "Active-active regions", "good": "Users are served nearby, and every region already takes live traffic, so there is no untested standby.", "bad": "Writes in two regions can conflict, so each record needs a home region or conflict resolution. Users homed in a lost region can still lose recent unreplicated writes.", "pick": "Global latency matters and the data can be partitioned by user or region." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>I start with one region across three zones. What changes my mind: a stated requirement to survive a region outage, which moves me to active-passive, or users on several continents who need low latency, which moves me to active-active with each user's data homed in one region.</p>
+
+<x-estimate title="Monthly downtime of a path">
+<script type="application/json">
+{
+  "question": "A request passes through three services in series, then a database pair where either copy can serve it. About how many minutes a month is the path down?",
+  "givens": ["Each service: 99.95% available", "Each database copy: 99.9% available, failing independently", "A 30-day month is 43,200 minutes"],
+  "unit": "duration",
+  "answer": "65 minutes",
+  "accept": ["25 minutes", "200 minutes"],
+  "steps": ["Services in series: 0.9995<sup>3</sup> ≈ 0.9985", "Database pair: 1 − 0.001 × 0.001 = 0.999999", "Path: 0.9985 × 0.999999 ≈ 0.9985, so down 0.15% of the time", "0.0015 × 43,200 ≈ 65 minutes"],
+  "note": "The redundant database barely matters; the three single services in a row dominate. Fix the chain first."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Reliability questions come after the main design: "What happens if this dies?" Answer per component with what the user sees and what you do. Say the availability target with its arithmetic: "99.9% is 43 minutes a month, so failover must be automatic and under a minute."</p>
+
+<x-interview title="When a dependency is slow">
+<x-interviewer>Your feed calls an ads service. The ads service starts taking 10 seconds. What happens?</x-interviewer>
+<x-you>Feed requests call ads with a 200 ms timeout from a separate small connection pool, so slow ads cannot use up the threads the feed needs. If more than half of ad calls fail over 10 seconds, a breaker opens and the feed is served without ads. Users lose ads for a while, not the feed.</x-you>
+<x-coach>The answer ranks features: the feed is critical, ads are optional. Degrading the optional part is the judgement being tested.</x-coach>
+<x-interviewer>And if the feed itself is overloaded?</x-interviewer>
+<x-you>It sheds load: past its concurrency limit it returns 503 at once for background refreshes first, so foreground requests keep getting answers.</x-you>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"How do you test this?"</strong> Kill instances and inject latency in a test environment, then carefully in production. A failover never exercised will not work when needed.</li>
+<li><strong>"Why not five nines?"</strong> 26 seconds a month means no human in the loop, and every dependency must be better still. Most products do not need it.</li>
+<li><strong>"What is your RPO for payments?"</strong> Zero: replicate payment writes synchronously to another zone before confirming.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Redundant copies that fail together">
+<p>Two replicas in the same rack, behind the same switch, running the same new deploy, are not independent. Spread copies across zones and roll out changes gradually.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Waiting forever on an optional dependency">
+<p>No timeout on a call to a minor service lets it take down a major one. Every network call gets a timeout, and every optional feature gets a fallback.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Two independent servers are each up 99%. Requests succeed if either is up. What is the availability?",
+      "options": [
+        { "text": "98.01%", "why": "That is 0.99 × 0.99: both must be up. That is the series rule." },
+        { "text": "99.99%", "correct": true, "why": "Both are down 0.01 × 0.01 = 0.01% of the time, so 1 − 0.0001 = 99.99%." },
+        { "text": "99.5%", "why": "Redundancy improves on a single copy; it does not average them." }
+      ]
+    },
+    {
+      "question": "A circuit breaker is open. What does the caller do with a new request?",
+      "options": [
+        { "text": "Calls the dependency with a longer timeout", "why": "That is what the breaker exists to stop: it would pile more waiting on a failing service." },
+        { "text": "Fails fast or uses a fallback, without calling", "correct": true, "why": "Open means skip the call, protect yourself and give the dependency room to recover." },
+        { "text": "Retries three times with backoff", "why": "Retries add load. An open breaker means no calls at all until half-open." }
+      ]
+    },
+    {
+      "question": "A service receives 2,000 requests a second and each call to a dependency waits 2 seconds. How many calls are in flight?",
+      "options": [
+        { "text": "1,000", "why": "That divides instead of multiplying. In flight = rate × wait." },
+        { "text": "4,000", "correct": true, "why": "2,000 a second × 2 seconds = 4,000 calls waiting at once." },
+        { "text": "2,000", "why": "That ignores how long each call waits." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>You cannot react to a failure you have not noticed: <a href="/system-design/observability.html">observability</a> is next. To work through failures component by component, try <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>

@@ -1,0 +1,141 @@
+{
+  "slug": "stockroom-quorum-read",
+  "title": "Stockroom Quorum Read",
+  "topic": "system-design-blocks",
+  "difficulty": "easy",
+  "pattern": "simulation",
+  "aka": "Quorum Read",
+  "order": 4,
+  "story": [
+    "<p>A hardware shop keeps the stock count for each item on 3 replicas. Every write carries a version number one higher than the last, and a write counts as done once 2 replicas have stored it (W = 2). A read asks all 3 and waits for the first 2 answers (R = 2). Because 2 + 2 &gt; 3, the replicas that answer a read always include at least one that stored the latest completed write, so the newest version among the answers is at least that fresh. A replica that is slow or down simply never answers.</p>",
+    "<p>This is the quorum read used by leaderless key-value stores (see <a href=\"/system-design/replication.html\">Replication</a> and <a href=\"/system-design/design-a-key-value-store.html\">Design a Key-Value Store</a>). It only works if the read picks the <em>newest</em> answer, not the first one.</p>"
+  ],
+  "task": [
+    "<p>Write <code>quorumRead(replies, r)</code>. <code>replies</code> lists what each replica sent, in the order the replies arrive. Each entry is <code>[version, value]</code>, or <code>null</code> for a replica that timed out.</p>",
+    "<p>The coordinator takes the first <code>r</code> entries that are not <code>null</code>, and ignores everything after them, even a newer version, because it has already answered. Return <code>[version, value]</code> for the highest version among those <code>r</code> replies. If fewer than <code>r</code> replicas answered, the read fails: return an empty list.</p>",
+    "<p>Two replies with the same version always carry the same value.</p>"
+  ],
+  "constraints": [
+    "1 ≤ replies.length ≤ 7",
+    "1 ≤ r ≤ replies.length",
+    "1 ≤ version ≤ 1,000,000,000",
+    "−1,000,000 ≤ value ≤ 1,000,000"
+  ],
+  "examples": [
+    {
+      "args": [[[4, 12], null, [5, 9]], 2],
+      "expected": [5, 9],
+      "explanation": "The first reply is version 4 (12 in stock). The second replica timed out, so the coordinator keeps waiting. The third reply is version 5 (9 in stock). That makes 2 replies, and version 5 is newer, so the answer is 9. Returning the first reply, 12, would show stock that was already sold."
+    },
+    {
+      "args": [[[7, 30], [6, 31], [8, 29]], 2],
+      "expected": [7, 30],
+      "explanation": "The first two replies, versions 7 and 6, already make a quorum of 2, so the coordinator answers with version 7. Version 8 arrives too late to be seen. That is allowed: R + W &gt; N only promises that the read sees the latest write that had finished, and a write still on its way to its second replica has not finished."
+    },
+    {
+      "args": [[null, [3, 5], null], 2],
+      "expected": [],
+      "explanation": "Only one replica answered, and the read needs 2. Returning version 3 anyway would drop the overlap guarantee, so the read fails and the caller can retry."
+    }
+  ],
+  "hints": [
+    "Which replies does the coordinator actually look at? What happens to a reply that arrives after it already has <code>r</code> answers?",
+    "Walk the replies in order, skip the <code>null</code>s, and stop as soon as you have counted <code>r</code> real replies.",
+    "While you walk, remember the reply with the highest version so far. Do not sort the whole list: the order of arrival is part of the input.",
+    "If the walk ends with fewer than <code>r</code> replies counted, return <code>[]</code>. Otherwise return the remembered <code>[version, value]</code>."
+  ],
+  "bruteForce": [
+    "<p>A tempting shortcut is to return the highest version in the whole list. That is wrong, not slow: the coordinator answers as soon as it has <code>r</code> replies, so replies after that never reach it (the second example).</p>",
+    "<p>Another is to return the first reply that is not <code>null</code>. That is a read with R = 1, and with W = 2 on 3 replicas it can miss the latest write entirely (the first example).</p>"
+  ],
+  "signature": {
+    "function": "quorumRead",
+    "params": [
+      {
+        "name": "replies",
+        "type": "int[][]"
+      },
+      {
+        "name": "r",
+        "type": "int"
+      }
+    ],
+    "returns": "int[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {(number[]|null)[]} replies [version, value] or null, in arrival order",
+      " * @param {number} r replies needed",
+      " * @return {number[]} [version, value], or [] if the read fails",
+      " */",
+      "function quorumRead(replies, r) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def quorum_read(replies: list[list[int] | None], r: int) -> list[int]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [[[1, 40]], 1], "expected": [1, 40], "note": "one replica"},
+    {"args": [[null], 1], "expected": [], "note": "one replica, timed out"},
+    {"args": [[[2, 10], [9, 3], [5, 7]], 1], "expected": [2, 10], "note": "R = 1 takes the first reply, even if a later one is newer"},
+    {"args": [[[2, 10], [9, 3], [5, 7]], 3], "expected": [9, 3], "note": "R = N sees everything"},
+    {"args": [[[6, 1], [6, 1], [6, 1]], 2], "expected": [6, 1], "note": "all replicas agree"},
+    {"args": [[null, null, [4, 0], [7, -5], [3, 2]], 2], "expected": [7, -5], "note": "nulls first; negative value"},
+    {"args": [[null, null, null], 2], "expected": [], "note": "everyone timed out"},
+    {"args": [[[3, 8], null, [3, 8], [9, 1]], 2], "expected": [3, 8], "note": "tie on version; the newer reply comes too late"},
+    {"args": [[[1000000000, 1000000], [999999999, -1000000]], 2], "expected": [1000000000, 1000000], "note": "largest versions and values"},
+    {"args": [[[5, 50], [4, 40], null, [3, 30], null, [8, 80], [2, 20]], 4], "expected": [8, 80], "note": "seven replicas, R = 4"},
+    {"args": [[[5, 50], [4, 40], null, [3, 30], null, null, [2, 20]], 5], "expected": [], "note": "only four answered, five needed"},
+    {"args": [[[1, 9], [2, 8], [3, 7], [4, 6], [5, 5]], 3], "expected": [3, 7], "note": "versions increase with arrival"},
+    {"args": [[[5, 5], [4, 6], [3, 7], [2, 8], [1, 9]], 3], "expected": [5, 5], "note": "newest version arrives first"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function quorumRead(replies, r) {",
+      "  let best = null, counted = 0;",
+      "  for (const reply of replies) {",
+      "    if (reply === null) continue;          // timed out: never answered",
+      "    if (best === null || reply[0] > best[0]) best = reply;",
+      "    counted++;",
+      "    if (counted === r) return [best[0], best[1]]; // quorum reached: answer now",
+      "  }",
+      "  return []; // fewer than r replicas answered",
+      "}"
+    ],
+    "py": [
+      "def quorum_read(replies, r):",
+      "    best, counted = None, 0",
+      "    for reply in replies:",
+      "        if reply is None:  # timed out: never answered",
+      "            continue",
+      "        if best is None or reply[0] > best[0]:",
+      "            best = reply",
+      "        counted += 1",
+      "        if counted == r:  # quorum reached: answer now",
+      "            return [best[0], best[1]]",
+      "    return []  # fewer than r replicas answered"
+    ],
+    "walkthrough": [
+      "<p>Simulate the coordinator: read replies in arrival order, skip timeouts, keep the newest so far, and answer the moment the count reaches <code>r</code>.</p>",
+      "<p>Trace the first example, r = 2:</p>",
+      "<ol>",
+      "<li><code>[4, 12]</code>: best is version 4, counted 1.</li>",
+      "<li><code>null</code>: skipped, still 1.</li>",
+      "<li><code>[5, 9]</code>: 5 &gt; 4, so best is version 5. Counted 2 = r: return <code>[5, 9]</code>.</li>",
+      "</ol>",
+      "<p>Know what this does not give you. R + W &gt; N makes a read see the latest <em>completed</em> write, as long as both quorums are drawn from the same N replicas. It does not order concurrent writes, and a read that overlaps an unfinished write may see it while a later read does not. Real stores narrow that gap with read repair: the coordinator sends the newest value back to the stale replicas it heard from.</p>"
+    ],
+    "time": "O(n)",
+    "timeWhy": "One pass over at most n replies, stopping early at the quorum.",
+    "space": "O(1)",
+    "spaceWhy": "Only the best reply and a counter.",
+    "takeaway": "With N replicas, W write acknowledgements and R read replies, R + W &gt; N makes every read overlap every completed write, but only if the read returns the highest version it saw, and only once it has heard from R replicas."
+  },
+  "related": ["replication", "cap-and-consistency", "design-a-key-value-store"]
+}

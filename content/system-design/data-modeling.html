@@ -1,0 +1,257 @@
+<!--
+{
+  "title": "Data Modeling",
+  "description": "Model data from the access patterns: list the queries first, choose keys and partition keys that answer each in one place, and denormalize on purpose.",
+  "minutes": 17,
+  "tags": ["interview", "data modeling", "partitioning", "schema"]
+}
+-->
+<p>A team builds the reservation system from <a href="/system-design/requirements-and-scope.html">requirements and scope</a>. They split the reservations table across 8 database partitions by a hash of the reservation id, so rows spread perfectly evenly. Then two diners book table 7 at 19:30 at the same moment. Their two new reservations hash to different partitions, each partition checks only its own rows, both find no conflict, and both commit. The table is double-booked, the one thing the requirements forbade.</p>
+
+<p>The partitioning was wrong for this system because nobody first asked which queries run, and which of them must see each other's writes.</p>
+
+<h2>Access patterns first</h2>
+
+<p>Entities are the easy part: restaurants, tables, time slots, reservations, diners. Draw them in a minute. Then list every way the system reads and writes them, with a rough rate, before choosing a single key. The rates come from the estimates (20 million searches and 1 million bookings a day, so about 1,000 searches and 50 bookings a second at peak).</p>
+
+<table>
+<thead><tr><th>Access pattern</th><th>Peak rate</th><th>Looked up by</th></tr></thead>
+<tbody>
+<tr><td>Open slots at one restaurant on one date, for a party size</td><td>1,000/s</td><td>restaurant, date</td></tr>
+<tr><td>Book a slot, never twice</td><td>50/s</td><td>restaurant, table, time</td></tr>
+<tr><td>A restaurant's bookings for tonight</td><td>low</td><td>restaurant, date</td></tr>
+<tr><td>A diner's upcoming reservations</td><td>moderate</td><td>diner, time</td></tr>
+<tr><td>Restaurants by city and cuisine</td><td>with search</td><td>text and filters</td></tr>
+</tbody>
+</table>
+
+<p>Read the right-hand column: almost everything starts from a restaurant, one pattern starts from a diner, and the last belongs in a <a href="/system-design/search-systems.html">search index</a>, not this database.</p>
+
+<h2>A worked schema</h2>
+
+<x-code single title="Reservation tables">
+<pre lang="sql">
+restaurants (restaurant_id PK, name, city, cuisine, timezone)
+
+tables      (restaurant_id, table_id, seats,
+             PRIMARY KEY (restaurant_id, table_id))
+
+slots       (restaurant_id, slot_date, slot_time, table_id, seats,
+             reservation_id NULL,          -- NULL means free
+             PRIMARY KEY (restaurant_id, slot_date, slot_time, table_id))
+
+reservations (restaurant_id, reservation_id, table_id, slot_date, slot_time,
+              user_id, party_size, status, created_at,
+              PRIMARY KEY (restaurant_id, reservation_id))
+
+user_reservations (user_id, slot_date, slot_time, reservation_id,
+                   restaurant_name,        -- copied on purpose
+                   PRIMARY KEY (user_id, slot_date, slot_time, reservation_id))
+</pre>
+</x-code>
+
+<p>Why each piece is there:</p>
+
+<ul>
+<li><strong>A row per slot.</strong> "Is table 7 free at 19:30?" becomes one row, and booking becomes a conditional update: set <code>reservation_id</code> only where it is still <code>NULL</code>. If zero rows change, someone else won, and the API returns 409. The database does the check and the write as one step, so there is no race.</li>
+<li><strong>Every restaurant table starts with <code>restaurant_id</code>.</strong> The slot update and the reservation insert share a partition key, so they commit in one local transaction, and an open-slots query reads one contiguous range.</li>
+<li><strong><code>user_reservations</code> repeats data.</strong> The diner's page needs reservations sorted by time with the restaurant's name. Keyed by <code>user_id</code>, that is one range read with no join.</li>
+</ul>
+
+<p>Size it. Slots for 50,000 restaurants × 20 tables × 8 sittings a day × 60 days ahead = 480 million rows; at about 50 bytes each, 24 GB. Reservations at 1 million a day × 365 × 200 bytes = 73 GB a year. Both fit one server, and about 1,050 operations a second at peak suits one primary with read replicas. You may never shard. Pick the partition key anyway: if you ever do, it decides which transactions stay on one machine.</p>
+
+<h2>Normalize, then copy on purpose</h2>
+
+<p><strong>Normalized</strong> means each fact lives in one place: the restaurant's name only in <code>restaurants</code>. Updates are simple and nothing disagrees, but reads join. <strong>Denormalized</strong> means you copy facts next to where they are read, so reads are one lookup, and every change must reach every copy.</p>
+
+<x-tradeoffs caption="Where the restaurant name lives">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Normalized only",
+      "good": "One copy, always correct. Easy to change.",
+      "bad": "The diner's page joins reservations to restaurants, and across partitions that is many lookups.",
+      "pick": "One database node, or data that changes often."
+    },
+    {
+      "name": "Copy into the read view",
+      "good": "The diner's page is one partition read.",
+      "bad": "A renamed restaurant shows the old name until the copies are updated.",
+      "pick": "Data read far more than it changes, where brief staleness is harmless. This case.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The rule: start normalized and denormalize one access pattern at a time, each with a named reason and a named way to keep the copy in step.</p>
+
+<h2>Choosing the partition key</h2>
+
+<p>When data outgrows one machine, the partition key decides which machine holds each row (the mechanics are in <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>). A good key puts everything a frequent query or a transaction needs on one partition, and spreads load evenly. Those two goals pull against each other.</p>
+
+<x-tradeoffs caption="Partition key for slots and reservations">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "restaurant_id",
+      "good": "Booking checks, open-slot reads and tonight's list each touch one partition.",
+      "bad": "A very popular restaurant concentrates its traffic on one partition.",
+      "pick": "Most queries and every transaction start from a restaurant. This case.",
+      "default": true
+    },
+    {
+      "name": "Hash of reservation_id",
+      "good": "Perfectly even spread.",
+      "bad": "No query starts from a reservation id except \"get by id\". Booking checks span partitions: the hook's double booking.",
+      "pick": "Reads are almost always by the item's own id."
+    },
+    {
+      "name": "user_id",
+      "good": "A diner's list is local.",
+      "bad": "Two diners booking the same table land on different partitions.",
+      "pick": "As the key of the separate per-diner view only."
+    },
+    {
+      "name": "city",
+      "good": "City searches are local.",
+      "bad": "A few big cities hold most of the load: badly uneven partitions.",
+      "pick": "Rarely. Low-cardinality keys make hot spots."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>What would change the choice: if one restaurant could take thousands of bookings a second (a stadium, say), its partition would run hot and you would split its slots by date or section. At 50 bookings a second for the whole system, that is not this problem.</p>
+
+<h2>How a booking flows through the model</h2>
+
+<x-tracer title="One booking, two partitions, one lagging view">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "diner", "label": "Diner", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Reservation API", "kind": "service", "col": 1, "row": 1 },
+      { "id": "rest", "label": "By restaurant_id", "kind": "database", "col": 2, "row": 0, "stack": true },
+      { "id": "user", "label": "By user_id", "kind": "database", "col": 3, "row": 0, "stack": true },
+      { "id": "queue", "label": "Booking events", "kind": "queue", "col": 2, "row": 2 },
+      { "id": "worker", "label": "View updater", "kind": "worker", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "diner", "to": "api" },
+      { "from": "api", "to": "rest", "label": "book" },
+      { "from": "api", "to": "queue", "style": "async" },
+      { "from": "queue", "to": "worker", "style": "async" },
+      { "from": "worker", "to": "user", "label": "upsert" },
+      { "from": "api", "to": "user", "label": "my list", "route": "hv" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A diner books table 7 at 19:30 at restaurant 42. The API routes by <code>restaurant_id</code> 42 to one partition.",
+      "arch": { "active": ["diner", "api", ["diner", "api"]], "dim": ["user", "queue", "worker"] }
+    },
+    {
+      "caption": "On that partition, one transaction: the slot update (only if still free) and the reservation insert. Same partition key, so no cross-machine coordination.",
+      "arch": { "active": ["rest", ["api", "rest"]], "dim": ["user", "queue", "worker"], "notes": { "rest": "slot → r-5521" } }
+    },
+    {
+      "caption": "It commits and the diner gets <code>201</code>. The booking is now final, whatever happens next.",
+      "arch": { "active": [["api", "diner"]], "mark": ["rest", "diner"], "dim": ["user", "queue", "worker"] }
+    },
+    {
+      "caption": "A <code>booked</code> event goes on the queue. (In production, write the event to an outbox table in the booking transaction and let a relay publish it, so a crash cannot lose it.)",
+      "arch": { "active": ["queue", ["api", "queue"]], "mark": ["rest"], "dim": ["user", "worker"] }
+    },
+    {
+      "caption": "The view updater writes a row into <code>user_reservations</code> on the diner's partition, with the restaurant name copied in. It upserts, so an event delivered twice is harmless.",
+      "arch": { "active": ["worker", "user", ["queue", "worker"], ["worker", "user"]], "mark": ["rest"], "notes": { "user": "u-9: r-5521" } }
+    },
+    {
+      "caption": "The diner opens \"My reservations\": one range read on one partition by <code>user_id</code>, already sorted by date and time.",
+      "arch": { "active": ["user", ["api", "user"], ["api", "diner"]], "mark": ["diner"], "dim": ["rest", "queue", "worker"] }
+    },
+    {
+      "caption": "Now the updater is down. New bookings still succeed and stay correct; only the diner's list lags. The app shows the booking from the 201 reply until the view catches up.",
+      "arch": { "fail": ["worker"], "active": ["rest", "queue", ["api", "rest"], ["api", "queue"]], "notes": { "queue": "events waiting" } }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>In the interview</h2>
+
+<p>Spend about 3 minutes here, as in <a href="/system-design/a-framework-for-any-design.html">the framework</a>, and let the access patterns pick the store: single-key lookups suggest a key-value store, transactions and constraints suggest a relational database (see <a href="/system-design/choosing-a-database.html">choosing a database</a>). Here that is a relational database, because a booking is a conditional update plus an insert in one transaction. Phrases that show judgment:</p>
+
+<ul>
+<li>"Before picking keys, here are the five queries and how often each runs."</li>
+<li>"Booking must be atomic with the availability check, so both live under the same partition key."</li>
+<li>"The diner's list is a denormalized view, updated from events. It can lag a few seconds; the booking itself cannot."</li>
+</ul>
+
+<x-interview title="Choosing the partition key" tone="strong">
+<x-interviewer>How would you partition the reservations?</x-interviewer>
+<x-you>By restaurant. The booking check, the open-slot query and the restaurant's own view all start from a restaurant, so each is one partition. The cost is the diner's list, which starts from the user, so I keep a separate copy keyed by user id.</x-you>
+<x-interviewer>What about a hugely popular restaurant?</x-interviewer>
+<x-you>It's at most a few hundred slots a night, so the volume is small; the issue is contention on the same rows when bookings open. The conditional update keeps it correct, and a queue in front of that restaurant's booking page would smooth the burst.</x-you>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Why not a secondary index on <code>user_id</code>?"</strong> On one node, that is simpler and fine. On a partitioned store, a global secondary index is a separately partitioned copy. Depending on the store it updates asynchronously (the same lag, with less control) or in a cross-partition transaction (slower bookings).</li>
+<li><strong>"How do you handle time zones?"</strong> Store the slot in the restaurant's local date and time plus its time zone, since that is how diners and staff think about it.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Designing tables before queries">
+<p>A tidy entity diagram tells you nothing about keys. List the access patterns with rates first; the keys fall out of them.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Choosing a partition key for even spread alone">
+<p>A hashed id spreads load perfectly and puts related rows on different machines. Check that every transaction and every frequent query stays on one partition first, then check the spread.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Slots are stored as one row per table per sitting: 50,000 restaurants, 20 tables each, 8 sittings a day, 60 days ahead, about 50 bytes a row. About how big is the table?",
+      "options": [
+        { "text": "About 400 MB", "why": "That forgets the 60 days ahead." },
+        { "text": "About 24 GB", "correct": true, "why": "5 × 10<sup>4</sup> × 20 × 8 × 60 = 4.8 × 10<sup>8</sup> rows, × 50 B = 24 GB." },
+        { "text": "About 2.4 TB", "why": "Off by 100 times; recheck the bytes per row." }
+      ]
+    },
+    {
+      "question": "Why is <code>user_id</code> a poor partition key for the slots table?",
+      "options": [
+        { "text": "There are too many users", "why": "Many distinct values spread well. The issue is which rows end up together." },
+        { "text": "Two diners booking the same table would be checked on different partitions", "correct": true, "why": "The rows that must see each other's writes belong under the same key, and here that is the restaurant." },
+        { "text": "User ids are not unique", "why": "They are unique; that is not the problem." }
+      ]
+    },
+    {
+      "question": "What does copying <code>restaurant_name</code> into <code>user_reservations</code> cost?",
+      "options": [
+        { "text": "Bookings can be double-booked", "why": "Booking correctness lives on the slots row, which is unaffected by the copy." },
+        { "text": "A renamed restaurant shows its old name in diners' lists until the copies are updated", "correct": true, "why": "Every denormalized copy must be kept in step, and between updates it can be stale." },
+        { "text": "Nothing; copies are free", "why": "Each copy costs storage and an update path." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practice next</h2>
+
+<p>See how indexes make each access pattern fast in <a href="/system-design/indexing.html">Indexing</a>, then practice the whole module on <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>, where the same no-double-booking rule shapes the data.</p>

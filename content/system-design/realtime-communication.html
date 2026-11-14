@@ -1,0 +1,256 @@
+<!--
+{
+  "title": "Realtime Communication",
+  "description": "Push updates to users the moment they happen: polling, long polling, server-sent events and WebSockets, and how open connections reshape the design.",
+  "minutes": 15,
+  "tags": ["realtime", "websockets", "building blocks", "pub/sub"]
+}
+-->
+<p>A chat app has 1 million people with the app open. To see new messages, each phone asks the server "anything new?" every 5 seconds. That is 1,000,000 ÷ 5 = 200,000 requests a second. About 2,000 new messages arrive a second in total, so at most 2,000 of those 200,000 answers carry anything: 99% of the work returns "no". And a message still waits 2.5 seconds on average before anyone sees it.</p>
+
+<p>The fix is to turn the direction around: keep a connection open and let the server speak first. That is cheap for the network and expensive for your architecture, because now your servers remember who is connected to them.</p>
+
+<h2>The idea</h2>
+
+<p>HTTP is built for the client to ask and the server to answer. Realtime features need the server to send when something happens. There are four ways to get there, from "ask often" to "hold a two-way pipe open":</p>
+
+<ul>
+<li><strong>Short polling</strong>: the client asks on a timer.</li>
+<li><strong>Long polling</strong>: the client asks, and the server holds the request open until there is news or about 30 seconds pass. Then the client asks again at once. Messages that arrive between two polls must be fetched with a cursor ("everything after message 9001"), or they are missed.</li>
+<li><strong>Server-sent events (SSE)</strong>: one HTTP response that never ends; the server writes events into it as they happen. One direction only, server to client, text only. Browsers reconnect automatically and send the last event id they saw, so a server that tags events with ids can resume.</li>
+<li><strong>WebSocket</strong>: starts as an HTTP request asking to upgrade, then becomes a two-way channel of messages over the same TCP connection. Nothing is built in for reconnecting or replaying missed messages; you write that.</li>
+</ul>
+
+<x-tradeoffs caption="Getting updates from server to client">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Short polling",
+      "good": "Plain HTTP requests; works with every cache, proxy and server.",
+      "bad": "Mostly empty responses, and updates arrive up to one interval late.",
+      "pick": "Updates are rare and a delay is fine: a report finishing, every 30 seconds."
+    },
+    {
+      "name": "Long polling",
+      "good": "Near-instant delivery over plain HTTP, through any proxy.",
+      "bad": "A new request after every message, and gaps between polls need a cursor.",
+      "pick": "A fallback where WebSockets and SSE are blocked."
+    },
+    {
+      "name": "Server-sent events",
+      "good": "Simple server push over HTTP, with reconnect and resume built into browsers.",
+      "bad": "Server to client only. On HTTP/1.1, browsers cap open connections per host at a handful.",
+      "pick": "One-way feeds: notifications, live scores, streaming text."
+    },
+    {
+      "name": "WebSocket",
+      "good": "Low-overhead messages both ways over one connection.",
+      "bad": "You build heartbeats, reconnects and replay yourself; some networks block it.",
+      "pick": "Two-way and frequent: chat, multiplayer, collaborative editing.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>For chat, pick WebSockets: both sides talk often. Pick SSE when the client only listens. Keep short polling for things that change every few minutes; a million open connections for one update an hour is waste too.</p>
+
+<h2>How open connections change the design</h2>
+
+<p>With request and response, any server can answer any request. With a WebSocket, Ben's connection lives on one particular server for hours. When Ana sends Ben a message, it lands on Ana's server, and something must get it to Ben's. That one fact reshapes the system:</p>
+
+<ul>
+<li><strong>Connection servers</strong> become their own tier. They hold sockets and pass messages through, nothing else, so business logic can be deployed without dropping a million connections.</li>
+<li><strong>Pub/sub routes messages between servers.</strong> When Ben connects, his server subscribes to a channel <code>user:ben</code>. Anyone with a message for Ben publishes to that channel. The alternative is a registry ("Ben is on server 7") in a shared store. Pub/sub keeps that registry for you: a dead server's subscriptions vanish with it.</li>
+<li><strong>The database stays the source of truth.</strong> Basic pub/sub delivers only to whoever is subscribed at that moment, at most once. Store the message first, so a client that was offline can catch up.</li>
+</ul>
+
+<x-arch caption="Connection servers hold the sockets. Messages go to the chat service to be stored, then through pub/sub to whichever connection server holds the recipient.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "clients", "label": "Phones and browsers", "kind": "client", "col": 0, "row": 0 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 0 },
+    { "id": "conn", "label": "Connection servers", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "pubsub", "label": "Pub/sub", "kind": "queue", "col": 3, "row": 0 },
+    { "id": "chat", "label": "Chat service", "kind": "service", "col": 2, "row": 2 },
+    { "id": "db", "label": "Message store", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "clients", "to": "lb", "label": "WebSocket", "arrow": "both" },
+    { "from": "lb", "to": "conn", "arrow": "both" },
+    { "from": "conn", "to": "chat", "label": "new message" },
+    { "from": "chat", "to": "db", "label": "store" },
+    { "from": "chat", "to": "pubsub", "label": "publish" },
+    { "from": "pubsub", "to": "conn", "label": "deliver" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="Ana messages Ben, then Ben's server dies">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "ana", "label": "Ana", "kind": "client", "col": 0, "row": 0 },
+      { "id": "ben", "label": "Ben", "kind": "client", "col": 0, "row": 2 },
+      { "id": "cs1", "label": "Conn server 1", "kind": "service", "col": 1, "row": 0 },
+      { "id": "cs2", "label": "Conn server 2", "kind": "service", "col": 1, "row": 2 },
+      { "id": "chat", "label": "Chat service", "kind": "service", "col": 2, "row": 0 },
+      { "id": "pubsub", "label": "Pub/sub", "kind": "queue", "col": 2, "row": 2 },
+      { "id": "db", "label": "Message store", "kind": "database", "col": 3, "row": 0 }
+    ],
+    "edges": [
+      { "from": "ana", "to": "cs1", "arrow": "both" },
+      { "from": "ben", "to": "cs2", "arrow": "both" },
+      { "id": "reconnect", "from": "ben", "to": "cs1", "arrow": "both" },
+      { "from": "cs1", "to": "chat" },
+      { "from": "chat", "to": "db" },
+      { "from": "chat", "to": "pubsub" },
+      { "from": "pubsub", "to": "cs2" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Ana's socket is on server 1 and Ben's on server 2. When Ben connected, server 2 subscribed to <code>user:ben</code>.",
+      "arch": { "active": ["ana", "ben", "cs1", "cs2", ["ana", "cs1"], ["ben", "cs2"]], "hide": [["ben", "cs1"]], "notes": { "cs2": "sub user:ben" } }
+    },
+    {
+      "caption": "Ana sends \"lunch?\" over her open socket: no new connection, no handshake.",
+      "arch": { "active": ["ana", "cs1", ["ana", "cs1"]], "hide": [["ben", "cs1"]] },
+      "vars": { "last id Ben saw": 9000 }
+    },
+    {
+      "caption": "Server 1 hands it to the chat service, which stores it as message 9001 before anything else. If delivery fails later, the message still exists.",
+      "arch": { "active": ["chat", "db", ["cs1", "chat"], ["chat", "db"]], "hide": [["ben", "cs1"]], "notes": { "db": "9001 stored" } },
+      "vars": { "last id Ben saw": 9000 }
+    },
+    {
+      "caption": "The chat service publishes 9001 to <code>user:ben</code>. It does not need to know which server Ben is on.",
+      "arch": { "active": ["pubsub", ["chat", "pubsub"]], "hide": [["ben", "cs1"]], "notes": { "pubsub": "user:ben" } },
+      "vars": { "last id Ben saw": 9000 }
+    },
+    {
+      "caption": "Server 2 is the only subscriber to that channel, so it receives 9001 and pushes it down Ben's socket.",
+      "arch": { "active": ["cs2", "ben", ["pubsub", "cs2"], ["cs2", "ben"]], "mark": ["ben"], "hide": [["ben", "cs1"]] },
+      "vars": { "last id Ben saw": 9001 }
+    },
+    {
+      "caption": "Server 2 crashes. Ben's socket drops, and nobody is subscribed to <code>user:ben</code> any more. Ana's next message, 9002, is stored, but the publish reaches no one.",
+      "arch": { "fail": ["cs2", ["ben", "cs2"]], "active": ["chat", "db", "pubsub", ["chat", "db"], ["chat", "pubsub"]], "hide": [["ben", "cs1"]], "notes": { "db": "9002 stored", "pubsub": "no subscriber" } },
+      "vars": { "last id Ben saw": 9001 }
+    },
+    {
+      "caption": "Ben's app waits a random 0 to 30 seconds, then reconnects through the load balancer and lands on server 1. Server 1 subscribes to <code>user:ben</code> before the app asks for history, so nothing can slip between the two.",
+      "arch": { "fail": ["cs2"], "active": ["ben", "cs1", "reconnect"], "dim": [["ben", "cs2"]], "notes": { "cs1": "sub user:ben" } },
+      "vars": { "last id Ben saw": 9001 }
+    },
+    {
+      "caption": "The app sends \"give me everything after 9001\". The store returns 9002, and Ben misses nothing. The app drops any id it already has. The store, not pub/sub, made delivery reliable.",
+      "arch": { "fail": ["cs2"], "active": ["db", "chat", "cs1", "ben", ["cs1", "chat"], ["chat", "db"], "reconnect"], "mark": ["ben"], "dim": [["ben", "cs2"]], "notes": { "db": "after 9001" } },
+      "vars": { "last id Ben saw": 9002 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The random wait in step 7 matters. Server 2 may have held 50,000 sockets. If all reconnect in the same second, they hit the rest of the fleet like a small attack. Spread over 30 seconds, it is 50,000 ÷ 30 ≈ 1,700 a second.</p>
+
+<p>Long-lived connections bring two chores. <strong>Heartbeats</strong>: send a small ping every 30 seconds or so, because a phone that loses signal does not close its socket, and idle connections get cut by proxies. <strong>Deploys</strong>: drain a server by telling clients to reconnect elsewhere, a slice at a time, instead of killing it with everyone attached.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Polling load = users ÷ interval in seconds.</li>
+<li>An idle connection costs memory, not CPU. Assume a scenario number such as 50,000 per server and say you would load test it.</li>
+<li>Heartbeat load = connections ÷ heartbeat interval: 2 million connections pinging every 30 seconds is about 67,000 small messages a second.</li>
+</ul>
+
+<x-estimate title="Connection servers for a chat app">
+<script type="application/json">
+{
+  "question": "How many connection servers do you need for the peak number of open connections?",
+  "givens": ["10 million daily active users", "At peak, 20% of them have the app open", "Assume 50,000 connections per server"],
+  "unit": "count",
+  "answer": "40",
+  "accept": ["15", "120"],
+  "steps": ["Open connections at peak: 10 million × 0.2 = 2 million", "Servers: 2,000,000 ÷ 50,000 = 40", "Add spare capacity so one dying server's clients have somewhere to go"]
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring this up as soon as a requirement says "instantly", "live" or "as it happens": chat, notifications, a driver's position, a shared document. Pick the transport, then spend your time on the hard part, which is routing and recovery. Phrases that show judgement: "Users both send and receive, so WebSockets." "Connection servers are stateful, so I keep them thin." "Pub/sub is fire-and-forget, so the store is the truth and clients resync by last message id."</p>
+
+<x-interview title="Routing a message" tone="weak">
+<x-interviewer>How does a message reach the recipient?</x-interviewer>
+<x-you>The server sends it over the recipient's WebSocket.</x-you>
+<x-coach>It skips the hard part. With many servers, sender and recipient usually sit on different ones, and this answer never says how the message crosses.</x-coach>
+</x-interview>
+
+<x-interview title="Routing a message" tone="strong">
+<x-interviewer>How does a message reach the recipient?</x-interviewer>
+<x-you>The sender's connection server passes it to the chat service, which stores it and publishes to the recipient's channel. Whichever connection server holds the recipient is subscribed and pushes it down. If they're offline, nobody's subscribed, and they fetch it from the store by last id when they reconnect.</x-you>
+<x-coach>It covers many servers and offline users, and says where the delivery guarantee comes from.</x-coach>
+</x-interview>
+
+<p>Follow-ups to expect:</p>
+
+<ul>
+<li><strong>"A user has a phone and a laptop."</strong> Two connections, possibly on two servers, both subscribed to the same user channel, so both get the message.</li>
+<li><strong>"How do you balance WebSocket traffic?"</strong> Least connections, long idle timeouts on the balancer, and draining on deploy.</li>
+<li><strong>"Are messages in order?"</strong> Within one conversation, yes: the store gives each message the next id in that conversation and clients sort by it. Global order is not needed.</li>
+<li><strong>"What if a publish is lost while Ben is online?"</strong> His app sees a gap, 9003 after 9001, and fetches 9002 from the store. A lost last message leaves no gap, so apps also sync when opened.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Treating pub/sub as delivery">
+<p>Basic pub/sub drops messages when no one is subscribed. Store first, publish second, and let reconnecting clients ask for everything after their last id.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Reconnecting all at once">
+<p>Clients that retry immediately turn one crashed server into a wave that can knock over the next. Use exponential backoff with random jitter.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "300,000 users keep a dashboard open that polls every 10 seconds. How many requests a second is that?",
+      "options": [
+        { "text": "3,000", "why": "That divides by 100. Each user sends one request every 10 seconds." },
+        { "text": "30,000", "correct": true, "why": "300,000 ÷ 10 = 30,000 a second, nearly all answered \"nothing new\"." },
+        { "text": "3,000,000", "why": "That multiplies by the interval instead of dividing." }
+      ]
+    },
+    {
+      "question": "A sports site shows live scores in the browser. Readers never send anything back. Which transport fits best?",
+      "options": [
+        { "text": "WebSocket", "why": "It works, but you would build reconnects and resume yourself for a channel that only goes one way." },
+        { "text": "Server-sent events", "correct": true, "why": "One-way push over plain HTTP, with reconnect and resume built into browsers." },
+        { "text": "Short polling every minute", "why": "Scores would arrive up to a minute late." }
+      ]
+    },
+    {
+      "question": "A connection server holding 60,000 sockets dies. Clients wait a random 0 to 30 seconds before reconnecting. About how many reconnects a second hit the other servers?",
+      "options": [
+        { "text": "About 2,000", "correct": true, "why": "60,000 ÷ 30 = 2,000 a second, spread evenly by the jitter." },
+        { "text": "About 60,000", "why": "That is what happens without jitter: everyone in the same second." },
+        { "text": "About 200", "why": "That spreads them over 300 seconds, not 30." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Open connections invite abuse and floods, which is where <a href="/system-design/rate-limiting.html">Rate Limiting</a> comes in. To put all of this into a full design, work through <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>

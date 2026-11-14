@@ -17,10 +17,13 @@ const FONTS = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz
 // Runs before first paint: applies saved theme + code language, marks JS on.
 const BOOT = `<script>(function(){var d=document.documentElement;d.classList.add('js');try{var t=localStorage.getItem('ia:theme');if(t==='light'||t==='dark')d.setAttribute('data-theme',t);var l=localStorage.getItem('ia:lang');if(l==='py'||l==='js')d.setAttribute('data-lang',l);}catch(e){}})();</script>`;
 
-const NAV = [
-  { id: 'algorithms', href: '/algorithms/', label: 'Algorithms', icon: 'graph' },
-  { id: 'practice', href: '/practice/', label: 'Practice', icon: 'code' },
-  { id: 'ai', href: '/ai/', label: 'AI', icon: 'brain' },
+// short: the label on narrow phones, where four full labels do not fit
+// (below 360px the "Sys " prefix is dropped too).
+export const NAV = [
+  { id: 'algorithms', href: '/algorithms/', label: 'Algorithms', short: 'Algos', icon: 'graph' },
+  { id: 'system-design', href: '/system-design/', label: 'System Design', short: '<span class="site-nav__pre">Sys </span>Design', icon: 'stack' },
+  { id: 'practice', href: '/practice/', label: 'Practice', short: 'Practice', icon: 'code' },
+  { id: 'ai', href: '/ai/', label: 'AI', short: 'AI', icon: 'brain' },
 ];
 
 export function header(active) {
@@ -29,7 +32,7 @@ export function header(active) {
   <div class="site-header__inner">
     <a class="logo" href="/" aria-label="introtoalgo home"><span class="logo__prompt" aria-hidden="true">&gt;_</span><span class="logo__name">introtoalgo</span></a>
     <nav class="site-nav" aria-label="Main">
-      ${NAV.map((n) => `<a href="${n.href}" class="site-nav__link site-nav__link--${n.id}"${active === n.id ? ' aria-current="page"' : ''}>${n.label}</a>`).join('\n      ')}
+      ${NAV.map((n) => `<a href="${n.href}" class="site-nav__link site-nav__link--${n.id}"${active === n.id ? ' aria-current="page"' : ''}>${n.short === n.label ? n.label : `<span class="site-nav__full">${n.label}</span><span class="site-nav__short">${n.short}</span>`}</a>`).join('\n      ')}
     </nav>
     <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch to dark theme" title="Switch theme">${icon('sun', 'icon theme-toggle__sun')}${icon('moon', 'icon theme-toggle__moon')}</button>
   </div>
@@ -41,10 +44,10 @@ export function footer() {
   <div class="site-footer__inner">
     <div class="site-footer__brand">
       <a class="logo logo--small" href="/"><span class="logo__prompt" aria-hidden="true">&gt;_</span>introtoalgo</a>
-      <p>Free lessons and practice for algorithms and AI. Your progress stays in this browser.</p>
+      <p>Free lessons and practice for algorithms, system design and AI. Your progress stays in this browser.</p>
     </div>
     <nav class="site-footer__nav" aria-label="Footer">
-      <div><h2>Learn</h2><a href="/algorithms/">Algorithms</a><a href="/practice/">Practice</a><a href="/ai/">AI</a></div>
+      <div><h2>Learn</h2>${NAV.map((n) => `<a href="${n.href}">${n.label}</a>`).join('')}</div>
       <div><h2>Site</h2><a href="/archive.html">Archive</a><a href="/about.html">About</a><a href="/sitemap.xml">Sitemap</a></div>
     </nav>
   </div>
@@ -53,7 +56,7 @@ export function footer() {
 }
 
 /**
- * opts: title, fullTitle, description, path, track (algorithms|practice|ai|home|other),
+ * opts: title, fullTitle, description, path, track (algorithms|system-design|practice|ai|home|other),
  * main (HTML), scripts (module paths), jsonLd (object), ogType, bodyClass, wide
  */
 export function page(opts) {

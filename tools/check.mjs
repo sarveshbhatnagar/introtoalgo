@@ -3,7 +3,7 @@
 // it at the same time.
 //
 //   node tools/check.mjs                         check everything in content/
-//   node tools/check.mjs content/practice/x.json content/algorithms/y.html
+//   node tools/check.mjs content/practice/x.json content/system-design/y.html
 //   node tools/check.mjs --no-run ...            skip running solutions (schema only)
 //   node tools/check.mjs --quiet ...             only print files with problems
 //
@@ -36,21 +36,21 @@ export function checkAll(fileList, { run = true, quiet = false, log = console.lo
   fileList = [...new Set(fileList)];
   if (!fileList.length) {
     fileList = [
-      ...listFiles(join(CONTENT, 'algorithms'), '.html').map((f) => join(CONTENT, 'algorithms', f)),
-      ...listFiles(join(CONTENT, 'ai'), '.html').map((f) => join(CONTENT, 'ai', f)),
+      ...cur.trackIds.flatMap((t) => listFiles(join(CONTENT, t), '.html').map((f) => join(CONTENT, t, f))),
       ...listFiles(join(CONTENT, 'practice'), '.json').map((f) => join(CONTENT, 'practice', f)),
     ];
   }
   let nErr = 0, nWarn = 0;
   const orders = new Map();
   const results = [];
+  const lessonDir = new RegExp(`content/(${cur.trackIds.join('|')})/`);
   for (const file of fileList) {
     const rel = relative(ROOT, file);
     let res;
     if (!existsSync(file) || !statSync(file).isFile()) res = { errors: [{ line: null, msg: 'File not found.' }], warnings: [] };
     else if (file.endsWith('.json') && file.includes(`${'content'}/practice/`)) res = checkProblemFile(file, cur, { run });
-    else if (file.endsWith('.html') && /content\/(algorithms|ai)\//.test(file)) res = checkLessonFile(file, cur, resolveLink);
-    else res = { errors: [{ line: null, msg: 'Not a lesson (content/algorithms|ai/*.html) or problem (content/practice/*.json).' }], warnings: [] };
+    else if (file.endsWith('.html') && lessonDir.test(file)) res = checkLessonFile(file, cur, resolveLink);
+    else res = { errors: [{ line: null, msg: `Not a lesson (content/{${cur.trackIds.join(',')}}/*.html) or problem (content/practice/*.json).` }], warnings: [] };
     if (res.problem) {
       const key = `${res.problem.topic}#${res.problem.order}`;
       if (orders.has(key)) res.warnings.push({ line: null, msg: `"order" ${res.problem.order} in topic ${res.problem.topic} is also used by ${orders.get(key)}.` });

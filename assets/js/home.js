@@ -1,4 +1,4 @@
-// home.js — home page: hero tracer, continue strip, progress on the three doors.
+// home.js — home page: hero tracer, continue strip, progress on the four doors.
 import * as store from './store.js';
 import { initAll } from './components.js';
 import { paintTrackProgress } from './progress.js';
@@ -26,7 +26,7 @@ function paintContinue() {
     const slug = r.url.split('/').pop().replace('.html', '');
     const status = r.kind === 'Problem' ? probs[slug]?.status : null;
     const kind = r.kind === 'Problem' ? (status === 'solved' ? 'Solved problem' : 'Keep solving') : `Continue ${r.kind.toLowerCase()}`;
-    const cls = r.track === 'ai' ? 't-ai' : r.kind === 'Problem' ? 't-prac' : 't-algo';
+    const cls = r.kind === 'Problem' ? 't-prac' : ({ ai: 't-ai', 'system-design': 't-sd' })[r.track] || 't-algo';
     return `<li><a class="continue__item ${cls}" href="${esc(r.url)}"><span class="continue__kind">${esc(kind)}</span><span class="continue__title">${esc(r.title)}</span></a></li>`;
   }).join('');
   box.hidden = false;

@@ -1,0 +1,181 @@
+{
+  "slug": "presale-search-cap",
+  "title": "Presale Search Cap",
+  "topic": "system-design-blocks",
+  "difficulty": "easy",
+  "pattern": "design",
+  "aka": "Fixed Window Rate Limiter",
+  "order": 3,
+  "story": [
+    "<p>When concert presale opens, fans hammer the seat search, and a few scripts refresh it hundreds of times a minute. The ticket site caps each fan at a few searches per clock minute: the counter for 10:04 starts at zero at 10:04:00 and is thrown away at 10:05:00. Over the cap, the fan gets an HTTP 429 \"Too Many Requests\" instead of results.</p>",
+    "<p>This is the fixed-window counter from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a>: one small counter per user per window, cheap enough to keep for millions of users in a shared in-memory store. Its known flaw shows up at the window edge, which the examples below make visible.</p>"
+  ],
+  "task": [
+    "<p>Write a class <code>WindowLimiter</code>:</p>",
+    "<ul>",
+    "<li><code>constructor(limit, windowSec)</code>: each fan may make at most <code>limit</code> allowed requests per window.</li>",
+    "<li><code>allow(fan, t)</code>: a request from <code>fan</code> at time <code>t</code> (whole seconds). Return <code>true</code> if it is allowed, <code>false</code> if it is rejected.</li>",
+    "</ul>",
+    "<p>Windows are fixed and aligned to 0: a request at time <code>t</code> falls in window number <code>floor(t / windowSec)</code>, so with <code>windowSec = 60</code> the windows are [0, 59], [60, 119], and so on. A request is allowed if the fan has had fewer than <code>limit</code> allowed requests in the same window. Rejected requests do not count. Each fan has separate counts.</p>"
+  ],
+  "constraints": [
+    "1 ≤ limit ≤ 1,000",
+    "1 ≤ windowSec ≤ 86,400",
+    "0 ≤ t ≤ 1,000,000,000, and t never decreases from one call to the next",
+    "fan is a non-empty string of up to 20 letters and digits",
+    "At most 2,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"],
+      "args": [[3, 60], ["ana", 10], ["ana", 20], ["ana", 30], ["ana", 59], ["ana", 60]],
+      "expected": [null, true, true, true, false, true],
+      "explanation": "Times 10, 20, 30 and 59 are all in window 0 (0 to 59). The first three are allowed, which uses up the limit of 3, so the request at 59 is rejected. Time 60 starts window 1 with a fresh count, so it is allowed."
+    },
+    {
+      "ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"],
+      "args": [[2, 60], ["ben", 58], ["ben", 59], ["cy", 59], ["ben", 60], ["ben", 61]],
+      "expected": [null, true, true, true, true, true],
+      "explanation": "Ben gets 2 requests at 58 and 59 in window 0, then 2 more at 60 and 61 in window 1: 4 requests in 4 seconds, although the limit is 2 per minute. That burst at the edge is the price of fixed windows. Cy has her own count, so her request at 59 is allowed even though Ben used up his."
+    }
+  ],
+  "hints": [
+    "For one fan, which earlier requests can affect whether the request at time <code>t</code> is allowed? Do requests from an earlier window matter at all?",
+    "Only the current window matters. So for each fan you need just two numbers: which window you are counting, and how many allowed requests are in it.",
+    "Keep a hash map from fan to <code>[window, count]</code>. When a request arrives in a different window than the stored one, the old count is useless: reset it to 0 for the new window.",
+    "Compute <code>w = floor(t / windowSec)</code>. If the fan's stored window is not <code>w</code>, store <code>[w, 0]</code>. Then if the count is below the limit, add 1 and return true; otherwise return false without counting."
+  ],
+  "bruteForce": [
+    "<p>Store every allowed request time for each fan, and on each new request count how many stored times fall in the same window. With 2,000 calls that is up to 2,000 × 2,000 = 4 million checks, and the stored history grows forever.</p>",
+    "<p>Since only the current window can matter, a single counter per fan is enough, and both time and memory per fan become constant.</p>"
+  ],
+  "signature": {
+    "class": "WindowLimiter",
+    "init": {
+      "params": [
+        {
+          "name": "limit",
+          "type": "int"
+        },
+        {
+          "name": "windowSec",
+          "type": "int"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "allow",
+        "params": [
+          {
+            "name": "fan",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "bool"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "class WindowLimiter {",
+      "  /**",
+      "   * @param {number} limit allowed requests per window, per fan",
+      "   * @param {number} windowSec window length in seconds",
+      "   */",
+      "  constructor(limit, windowSec) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @param {string} fan @param {number} t seconds @return {boolean} */",
+      "  allow(fan, t) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class WindowLimiter:",
+      "    def __init__(self, limit: int, window_sec: int):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def allow(self, fan: str, t: int) -> bool:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["WindowLimiter", "allow"], "args": [[1, 60], ["solo", 0]], "expected": [null, true], "note": "first request at time 0"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow"], "args": [[1, 60], ["dee", 5], ["dee", 5], ["dee", 59], ["dee", 60]], "expected": [null, true, false, false, true], "note": "limit 1; same second twice"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"], "args": [[2, 10], ["eli", 9], ["eli", 10], ["eli", 19], ["eli", 19], ["eli", 20]], "expected": [null, true, true, true, false, true], "note": "window boundaries at 10 and 20"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow", "allow"], "args": [[2, 60], ["fay", 1], ["fay", 2], ["fay", 3], ["fay", 4], ["fay", 5], ["fay", 61]], "expected": [null, true, true, false, false, false, true], "note": "rejected requests do not count"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow"], "args": [[1, 60], ["gus", 30], ["gus", 300], ["gus", 301], ["gus", 1000000000]], "expected": [null, true, true, false, true], "note": "long gaps skip many windows"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow", "allow"], "args": [[2, 60], ["a1", 0], ["b2", 0], ["a1", 1], ["b2", 1], ["a1", 2], ["b2", 2]], "expected": [null, true, true, true, true, false, false], "note": "two fans interleaved"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow"], "args": [[3, 1], ["hal", 7], ["hal", 7], ["hal", 7], ["hal", 7]], "expected": [null, true, true, true, false], "note": "one-second windows"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow"], "args": [[1000, 86400], ["ivy", 0], ["ivy", 86399], ["ivy", 86400]], "expected": [null, true, true, true], "note": "largest limit and window"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"], "args": [[1, 60], ["jo", 59], ["jo", 60], ["jo", 119], ["jo", 120], ["jo", 120]], "expected": [null, true, true, false, true, false], "note": "one per window at each edge"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow", "allow", "allow"], "args": [[3, 60], ["kim", 100], ["kim", 110], ["lee", 115], ["kim", 119], ["kim", 119], ["lee", 119], ["kim", 120]], "expected": [null, true, true, true, true, false, true, true], "note": "mixed fans in one window"},
+    {"ops": ["WindowLimiter", "allow", "allow", "allow", "allow"], "args": [[2, 7], ["mo", 13], ["mo", 14], ["mo", 20], ["mo", 21]], "expected": [null, true, true, true, true], "note": "window length that does not divide 60"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "class WindowLimiter {",
+      "  constructor(limit, windowSec) {",
+      "    this.limit = limit;",
+      "    this.windowSec = windowSec;",
+      "    this.counts = new Map(); // fan -> { window, count }",
+      "  }",
+      "",
+      "  allow(fan, t) {",
+      "    const w = Math.floor(t / this.windowSec);",
+      "    let c = this.counts.get(fan);",
+      "    if (!c || c.window !== w) {",
+      "      c = { window: w, count: 0 };  // a new window starts from zero",
+      "      this.counts.set(fan, c);",
+      "    }",
+      "    if (c.count >= this.limit) return false; // rejected: not counted",
+      "    c.count++;",
+      "    return true;",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class WindowLimiter:",
+      "    def __init__(self, limit, window_sec):",
+      "        self.limit = limit",
+      "        self.window_sec = window_sec",
+      "        self.counts = {}  # fan -> [window, count]",
+      "",
+      "    def allow(self, fan, t):",
+      "        w = t // self.window_sec",
+      "        c = self.counts.get(fan)",
+      "        if c is None or c[0] != w:",
+      "            c = [w, 0]  # a new window starts from zero",
+      "            self.counts[fan] = c",
+      "        if c[1] >= self.limit:",
+      "            return False  # rejected: not counted",
+      "        c[1] += 1",
+      "        return True"
+    ],
+    "walkthrough": [
+      "<p>Only the current window decides anything, so keep one counter per fan, tagged with the window it belongs to. A request in a new window resets the counter.</p>",
+      "<p>Trace the first example, limit 3, window 60:</p>",
+      "<ol>",
+      "<li>t = 10: window 0. Ana has nothing stored, so start <code>[0, 0]</code>. 0 &lt; 3: count 1, allowed.</li>",
+      "<li>t = 20 and t = 30: still window 0. Counts 2 and 3, both allowed.</li>",
+      "<li>t = 59: window 0, count 3 is not below 3. Rejected, and the count stays 3.</li>",
+      "<li>t = 60: window 1 differs from the stored 0, so reset to <code>[1, 0]</code>. Count 1, allowed.</li>",
+      "</ol>",
+      "<p>The second example shows the weakness: two windows meet at t = 60, so a fan can fit two full windows of requests into a few seconds. If that burst matters, use a sliding window, as in <a href=\"/practice/password-reset-throttle.html\">Password Reset Throttle</a>.</p>"
+    ],
+    "time": "O(1)",
+    "timeWhy": "Each call does one map lookup and a few comparisons.",
+    "space": "O(f)",
+    "spaceWhy": "One small record per fan seen (f fans). A real system lets each record expire at the end of its window.",
+    "takeaway": "A fixed-window limiter is one counter per key per window: tiny and fast, at the cost of allowing up to twice the limit across a window edge. Store the window number next to the count so a new window resets it."
+  },
+  "related": ["rate-limiting", "design-a-rate-limiter"]
+}

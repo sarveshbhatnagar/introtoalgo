@@ -1,0 +1,262 @@
+{
+  "slug": "double-tap-pay-button",
+  "title": "Double-Tap Pay Button",
+  "topic": "system-design-blocks",
+  "difficulty": "medium",
+  "pattern": "design",
+  "aka": "Idempotency Key Store",
+  "order": 10,
+  "story": [
+    "<p>A food delivery app has a \"Pay\" button. People double-tap it, and on a weak connection the app retries a request whose reply was lost, even though the charge went through. To stop double charges, the app sends a random idempotency key with each payment attempt and reuses the same key for every retry of that attempt. The payment service remembers each key: the first request runs, a repeat gets the saved reply, and a repeat that arrives while the first is still running is told to wait.</p>",
+    "<p>This is the idempotency-key store from <a href=\"/system-design/idempotency-and-retries.html\">Idempotency and Retries</a>, used in front of any write that must not happen twice (see <a href=\"/system-design/design-a-payment-system.html\">Design a Payment System</a>).</p>"
+  ],
+  "task": [
+    "<p>Write a class <code>IdempotencyStore</code>. Each key has at most one live record; a record made at time <code>s</code> is live while <code>t &lt; s + ttlMs</code> and is treated as gone from <code>s + ttlMs</code> on.</p>",
+    "<ul>",
+    "<li><code>constructor(ttlMs)</code>.</li>",
+    "<li><code>begin(key, fingerprint, t)</code>: a request arrives at time <code>t</code>. <code>fingerprint</code> summarizes the request body. Return:",
+    "<ul>",
+    "<li><code>\"run\"</code> if the key has no live record. Create one (in progress, made at <code>t</code>); the caller now performs the payment.</li>",
+    "<li><code>\"conflict\"</code> if the live record has a different fingerprint: the same key was reused for a different request.</li>",
+    "<li><code>\"wait\"</code> if the live record has the same fingerprint and is still in progress.</li>",
+    "<li>the saved response if the live record has the same fingerprint and is finished.</li>",
+    "</ul></li>",
+    "<li><code>finish(key, response, t)</code>: the payment finished. If the key has a live record that is in progress, save <code>response</code> on it and mark it finished. Otherwise do nothing.</li>",
+    "<li><code>release(key, t)</code>: the payment failed in a way that is safe to retry. If the key has a live record that is in progress, delete it. Otherwise do nothing.</li>",
+    "</ul>",
+    "<p>Expiry counts from when the record was created by <code>begin</code>, whether or not it has finished.</p>"
+  ],
+  "constraints": [
+    "1 ≤ ttlMs ≤ 1,000,000,000",
+    "0 ≤ t ≤ 1,000,000,000,000, and t never decreases from one call to the next",
+    "Keys and fingerprints are non-empty strings of up to 40 characters.",
+    "Every response starts with a three-digit status code, like \"201 paid #7\", so it never equals \"run\", \"wait\" or \"conflict\".",
+    "At most 2,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["IdempotencyStore", "begin", "begin", "finish", "begin", "begin"],
+      "args": [[60000], ["k1", "pay 45 card 4242", 0], ["k1", "pay 45 card 4242", 100], ["k1", "201 paid #7", 250], ["k1", "pay 45 card 4242", 300], ["k1", "pay 99 card 4242", 400]],
+      "expected": [null, "run", "wait", null, "201 paid #7", "conflict"],
+      "explanation": "The first tap creates the record and runs the payment. The second tap, 100 ms later, finds it still in progress: \"wait\", so the card is not charged twice. At 250 the payment finishes and the reply is saved. A retry at 300 gets that exact reply back without charging again. At 400 the same key arrives with a different amount, which is a bug in the client, so it is refused."
+    },
+    {
+      "ops": ["IdempotencyStore", "begin", "finish", "begin", "begin", "begin", "release", "begin"],
+      "args": [[1000], ["a", "x", 0], ["a", "201 ok", 10], ["a", "x", 999], ["a", "x", 1000], ["b", "y", 1000], ["b", 1005], ["b", "y", 1006]],
+      "expected": [null, "run", null, "201 ok", "run", "run", null, "run"],
+      "explanation": "Key \"a\" was made at 0 with a TTL of 1,000, so at 999 it still replays \"201 ok\", and at 1,000 it is gone and the request runs again. That is why the TTL must be longer than any client keeps retrying. Key \"b\" fails safely and is released, so the retry at 1,006 runs."
+    }
+  ],
+  "hints": [
+    "For one key, list the states a record can be in, and what each kind of repeat request should get back in each state.",
+    "A live record is either in progress or finished, and it carries a fingerprint, a creation time and, once finished, a response. A missing or expired record behaves the same way: as if the key were new.",
+    "Keep a map from key to record. Write one helper, <code>live(key, t)</code>, that returns the record only if <code>t &lt; created + ttlMs</code>, and deletes it otherwise. Use it at the start of all three methods.",
+    "In <code>begin</code>, check in this order: no live record → create it and return \"run\"; different fingerprint → \"conflict\"; in progress → \"wait\"; otherwise return the saved response."
+  ],
+  "bruteForce": [
+    "<p>Without a store, the server could look for an existing payment with the same amount and card in the last minute. That blocks legitimate repeat orders and still double-charges when the two requests arrive at the same moment, because neither finds the other's payment yet.</p>",
+    "<p>The key says exactly which requests are the same attempt, and the in-progress record closes the gap between \"started\" and \"finished\". In a real system, <code>begin</code> must be one atomic insert-if-absent in the shared store, or two servers can both see \"no record\" for the same double-tap.</p>"
+  ],
+  "signature": {
+    "class": "IdempotencyStore",
+    "init": {
+      "params": [
+        {
+          "name": "ttlMs",
+          "type": "int"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "begin",
+        "params": [
+          {
+            "name": "key",
+            "type": "string"
+          },
+          {
+            "name": "fingerprint",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "string"
+      },
+      {
+        "name": "finish",
+        "params": [
+          {
+            "name": "key",
+            "type": "string"
+          },
+          {
+            "name": "response",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "void"
+      },
+      {
+        "name": "release",
+        "params": [
+          {
+            "name": "key",
+            "type": "string"
+          },
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "void"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "class IdempotencyStore {",
+      "  /** @param {number} ttlMs how long a record lives after begin */",
+      "  constructor(ttlMs) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @return {string} \"run\", \"wait\", \"conflict\", or the saved response */",
+      "  begin(key, fingerprint, t) {",
+      "  }",
+      "",
+      "  finish(key, response, t) {",
+      "  }",
+      "",
+      "  release(key, t) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class IdempotencyStore:",
+      "    def __init__(self, ttl_ms: int):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def begin(self, key: str, fingerprint: str, t: int) -> str:",
+      "        pass",
+      "",
+      "    def finish(self, key: str, response: str, t: int) -> None:",
+      "        pass",
+      "",
+      "    def release(self, key: str, t: int) -> None:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["IdempotencyStore", "begin"], "args": [[500], ["k", "f", 0]], "expected": [null, "run"], "note": "first request runs"},
+    {"ops": ["IdempotencyStore", "begin", "begin", "begin"], "args": [[500], ["k", "f", 0], ["k", "f", 0], ["k", "g", 0]], "expected": [null, "run", "wait", "conflict"], "note": "in progress: same body waits, different body conflicts"},
+    {"ops": ["IdempotencyStore", "begin", "finish", "finish", "begin"], "args": [[500], ["k", "f", 0], ["k", "200 first", 5], ["k", "200 second", 6], ["k", "f", 7]], "expected": [null, "run", null, null, "200 first"], "note": "a second finish does not overwrite the saved reply"},
+    {"ops": ["IdempotencyStore", "finish", "release", "begin"], "args": [[500], ["k", "200 x", 0], ["k", 1], ["k", "f", 2]], "expected": [null, null, null, "run"], "note": "finish and release on an unknown key do nothing"},
+    {"ops": ["IdempotencyStore", "begin", "finish", "release", "begin"], "args": [[500], ["k", "f", 0], ["k", "201 done", 1], ["k", 2], ["k", "f", 3]], "expected": [null, "run", null, null, "201 done"], "note": "release cannot delete a finished record"},
+    {"ops": ["IdempotencyStore", "begin", "begin", "begin"], "args": [[500], ["k", "f", 0], ["k", "f", 499], ["k", "f", 500]], "expected": [null, "run", "wait", "run"], "note": "an in-progress record expires too, so a crashed worker does not block the key forever"},
+    {"ops": ["IdempotencyStore", "begin", "finish", "begin"], "args": [[500], ["k", "f", 0], ["k", "201 late", 500], ["k", "f", 501]], "expected": [null, "run", null, "run"], "note": "finish after expiry is ignored"},
+    {"ops": ["IdempotencyStore", "begin", "begin", "finish", "begin", "begin"], "args": [[500], ["k", "f", 0], ["k", "f", 600], ["k", "201 second run", 650], ["k", "f", 700], ["k", "g", 1099]], "expected": [null, "run", "run", null, "201 second run", "conflict"], "note": "a new record after expiry has its own fingerprint and time"},
+    {"ops": ["IdempotencyStore", "begin", "begin", "finish", "begin", "begin"], "args": [[1000], ["k1", "f", 0], ["k2", "f", 1], ["k2", "201 two", 2], ["k1", "f", 3], ["k2", "f", 4]], "expected": [null, "run", "run", null, "wait", "201 two"], "note": "keys are independent"},
+    {"ops": ["IdempotencyStore", "begin", "release", "begin", "begin", "finish", "begin"], "args": [[1000], ["k", "f", 0], ["k", 1], ["k", "g", 2], ["k", "f", 3], ["k", "409 nope", 4], ["k", "g", 5]], "expected": [null, "run", null, "run", "conflict", null, "409 nope"], "note": "after release the key may carry a new body"},
+    {"ops": ["IdempotencyStore", "begin", "finish", "begin", "begin"], "args": [[1000000000], ["k", "f", 0], ["k", "201 ok", 1], ["k", "f", 999999999], ["k", "f", 1000000000000]], "expected": [null, "run", null, "201 ok", "run"], "note": "largest TTL and times"},
+    {"ops": ["IdempotencyStore", "begin", "begin", "begin"], "args": [[1], ["k", "f", 0], ["k", "f", 0], ["k", "f", 1]], "expected": [null, "run", "wait", "run"], "note": "TTL of 1 ms"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "class IdempotencyStore {",
+      "  constructor(ttlMs) {",
+      "    this.ttlMs = ttlMs;",
+      "    this.records = new Map(); // key -> { fingerprint, created, response (null while running) }",
+      "  }",
+      "",
+      "  live(key, t) {",
+      "    const r = this.records.get(key);",
+      "    if (r && t >= r.created + this.ttlMs) { this.records.delete(key); return undefined; } // expired",
+      "    return r;",
+      "  }",
+      "",
+      "  begin(key, fingerprint, t) {",
+      "    const r = this.live(key, t);",
+      "    if (!r) {",
+      "      this.records.set(key, { fingerprint, created: t, response: null });",
+      "      return 'run';",
+      "    }",
+      "    if (r.fingerprint !== fingerprint) return 'conflict'; // key reused for another request",
+      "    if (r.response === null) return 'wait';                // first request still running",
+      "    return r.response;                                     // replay the saved reply",
+      "  }",
+      "",
+      "  finish(key, response, t) {",
+      "    const r = this.live(key, t);",
+      "    if (r && r.response === null) r.response = response;",
+      "  }",
+      "",
+      "  release(key, t) {",
+      "    const r = this.live(key, t);",
+      "    if (r && r.response === null) this.records.delete(key);",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class IdempotencyStore:",
+      "    def __init__(self, ttl_ms):",
+      "        self.ttl_ms = ttl_ms",
+      "        self.records = {}  # key -> [fingerprint, created, response or None while running]",
+      "",
+      "    def _live(self, key, t):",
+      "        r = self.records.get(key)",
+      "        if r is not None and t >= r[1] + self.ttl_ms:  # expired",
+      "            del self.records[key]",
+      "            return None",
+      "        return r",
+      "",
+      "    def begin(self, key, fingerprint, t):",
+      "        r = self._live(key, t)",
+      "        if r is None:",
+      "            self.records[key] = [fingerprint, t, None]",
+      "            return \"run\"",
+      "        if r[0] != fingerprint:  # key reused for another request",
+      "            return \"conflict\"",
+      "        if r[2] is None:  # first request still running",
+      "            return \"wait\"",
+      "        return r[2]  # replay the saved reply",
+      "",
+      "    def finish(self, key, response, t):",
+      "        r = self._live(key, t)",
+      "        if r is not None and r[2] is None:",
+      "            r[2] = response",
+      "",
+      "    def release(self, key, t):",
+      "        r = self._live(key, t)",
+      "        if r is not None and r[2] is None:",
+      "            del self.records[key]"
+    ],
+    "walkthrough": [
+      "<p>Each key maps to one record: fingerprint, creation time, and the response once there is one. An empty response means \"in progress\". Every method first drops the record if it has expired, so an expired key behaves exactly like a new one.</p>",
+      "<p>Trace the first example, TTL 60,000:</p>",
+      "<ol>",
+      "<li><code>begin(k1, …, 0)</code>: no record. Store <code>{fp, 0, null}</code> and return \"run\".</li>",
+      "<li><code>begin(k1, same, 100)</code>: live (100 &lt; 60,000), same fingerprint, response still empty: \"wait\".</li>",
+      "<li><code>finish(k1, \"201 paid #7\", 250)</code>: live and in progress, so save the reply.</li>",
+      "<li><code>begin(k1, same, 300)</code>: live, same fingerprint, finished: return \"201 paid #7\".</li>",
+      "<li><code>begin(k1, \"pay 99 …\", 400)</code>: live, fingerprint differs: \"conflict\".</li>",
+      "</ol>",
+      "<p>Be precise about what this buys. It does not make the network deliver a request exactly once; it makes repeats harmless, so the charge takes effect once. One gap remains: if the server charges the card and crashes before <code>finish</code>, the record expires and a later retry runs again. Real systems close it by saving the result in the same transaction as the side effect, or by passing the key on to a payment provider that is itself idempotent. Real stores also give in-progress records a shorter lease than finished ones; this problem uses one TTL for both.</p>"
+    ],
+    "time": "O(1)",
+    "timeWhy": "Each call is one map lookup plus constant work (string comparisons are bounded by 40 characters).",
+    "space": "O(u)",
+    "spaceWhy": "One record per key seen (u keys). Here an expired record is dropped only when its key is touched again; a real store deletes it at expiry, so it holds only the keys used within the TTL.",
+    "takeaway": "An idempotency key turns \"retry and hope\" into \"retry safely\": the first request runs, repeats replay its saved reply, overlapping repeats wait, and a reused key with a different body is rejected. The store must claim the key atomically, and the TTL must outlast the client's retries."
+  },
+  "related": ["idempotency-and-retries", "design-a-payment-system"]
+}

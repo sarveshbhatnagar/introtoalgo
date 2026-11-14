@@ -1,0 +1,383 @@
+<!--
+{
+  "title": "Design a URL Shortener",
+  "description": "Work the classic interview question end to end: requirements, estimates, API, data model, the design, short-code generation, caching and failure.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "read-heavy", "id generation", "caching"]
+}
+-->
+<p>You paste a long link and get back something like <code>sho.rt/008sudj</code>. Anyone who opens the short link lands on the long one. It looks like a weekend project, which is why interviewers like it: a small surface hides a read-heavy workload, an ID scheme that has to work across many servers, a cache that does most of the work, and a database that must never lose a row.</p>
+
+<p>This case study follows the same steps as <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read on. The point is to practise the thinking, not to memorise this answer.</p>
+
+<h2>Clarify the problem</h2>
+
+<p>The prompt is one sentence on purpose. The interviewer wants to see whether you pin down the scope before drawing boxes. Ask about features first, then scale, then what matters most when things go wrong.</p>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a URL shortener.</x-interviewer>
+<x-you>Let me check the scope first. Users submit a long URL and get a short one, and opening the short one redirects. Can users pick a custom alias? Do links expire? Do we need click counts?</x-you>
+<x-interviewer>Custom aliases, yes. Links live forever unless the user sets an expiry. A click count per link is enough; no dashboards.</x-interviewer>
+<x-you>How many links are created, and how often is each one opened?</x-you>
+<x-interviewer>Around 100 million new links a month. Reads are about 100 times the writes.</x-interviewer>
+<x-you>Then this is read-heavy, and the redirect is the path to protect. I'll aim for redirects that add under 20 ms on our side and stay up even when link creation is down. Losing a link once created is not acceptable. I'll leave out accounts, spam scanning and analytics dashboards unless you want them.</x-you>
+<x-coach>The last answer turns the interviewer's facts into priorities: which path is hot, what "fast" means, which part may fail and which must not.</x-coach>
+</x-interview>
+
+<p>Write the result down where the interviewer can see it:</p>
+
+<ul>
+<li><strong>Functional:</strong> create a short link for a long URL, with an optional custom alias and expiry; redirect a short code to its long URL; count clicks per link.</li>
+<li><strong>Non-functional:</strong> redirects are fast (under 20 ms added) and highly available; created links are never lost; codes are short.</li>
+<li><strong>Out of scope:</strong> user accounts, abuse scanning, analytics dashboards.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>Turn the interviewer's numbers into per-second rates and bytes. A month has about 30 × 86,400 ≈ 2.6 million seconds.</p>
+
+<ul>
+<li><strong>Writes:</strong> 100 million ÷ 2.6 million ≈ 40 links a second on average. Assume peaks of 5x: 200 a second.</li>
+<li><strong>Reads:</strong> 100 × 40 = 4,000 redirects a second on average, 20,000 at peak.</li>
+<li><strong>Code length:</strong> with 62 characters (0-9, a-z, A-Z), 6 characters give 62<sup>6</sup> ≈ 57 billion codes and 7 give 62<sup>7</sup> ≈ 3.5 trillion. Five years of links is 6 billion, so 7 characters leave plenty of room.</li>
+</ul>
+
+<x-estimate title="Storage for five years">
+<script type="application/json">
+{
+  "question": "How much storage do the link records need after five years?",
+  "givens": ["100 million new links a month", "About 500 bytes per record (code, long URL, timestamps)", "Nothing is deleted"],
+  "unit": "bytes",
+  "answer": "3 TB",
+  "accept": ["1 TB", "10 TB"],
+  "steps": ["100 million × 12 months × 5 years = 6 billion links", "6 × 10<sup>9</sup> × 500 B = 3 × 10<sup>12</sup> B = 3 TB", "With 3 copies for durability: about 9 TB of disk"],
+  "note": "3 TB is more than you want on one machine, but small for a cluster. It points at partitioning later, not on day one."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Average read rate">
+<script type="application/json">
+{
+  "question": "About how many redirects per second must the system serve on average?",
+  "givens": ["100 million new links a month", "100 reads for every write", "A month is about 2.6 million seconds"],
+  "unit": "count/s",
+  "answer": "4 thousand/s",
+  "accept": ["2 thousand/s", "8 thousand/s"],
+  "choices": ["400/s", "4 thousand/s", "40 thousand/s", "400 thousand/s"],
+  "steps": ["Reads per month: 100 million × 100 = 10 billion", "10 × 10<sup>9</sup> ÷ 2.6 × 10<sup>6</sup> s ≈ 3,900, call it 4,000 a second"]
+}
+</script>
+</x-estimate>
+
+<p>Two more numbers shape the design. Each redirect response is about 500 bytes, so even 20,000 a second is only 10 MB/s of traffic. And if the hottest 10 million links get most clicks, caching them takes 10<sup>7</sup> × 500 B = 5 GB of memory, which fits on one cache node.</p>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the two endpoints before reading on: method, path, request body, and what each returns, including the error cases.</p>
+</x-task>
+<x-answer>
+<p>A create endpoint (<code>POST /api/links</code> with the long URL and optional alias and expiry, returning the code) and the redirect itself (<code>GET /{code}</code>, returning a redirect status with a <code>Location</code> header). The interesting choice is which redirect status, covered next.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+POST /api/links
+  body: { "long_url": "https://...", "alias": "spring-sale"?, "expires_at": "2027-01-01"? }
+  201 Created   { "code": "008sudj", "short_url": "https://sho.rt/008sudj" }
+  400 Bad Request   the URL is not valid
+  409 Conflict      the alias is taken
+
+GET /{code}
+  302 Found   Location: https://the-long-url...
+  404 Not Found     no such code, or it has expired
+</pre>
+</x-code>
+
+<p>The redirect status is a real decision. A <strong>301</strong> (moved permanently) lets browsers cache the redirect, so repeat clicks never reach you: less load, but you cannot count those clicks or change the target later. A <strong>302</strong> (found) is not cached, so every click comes through. We need click counts, so use 302 and accept the extra traffic, which the estimate says is small.</p>
+
+<p>Protect <code>POST</code> with a per-client <a href="/system-design/rate-limiting.html">rate limit</a>; a shortener without one becomes a free tool for spammers within days.</p>
+
+<x-tryit variant="turn" minutes="2" title="Model the data">
+<x-task>
+<p>What does one record hold, how is it looked up, and which kind of database fits that access pattern?</p>
+</x-task>
+<x-answer>
+<p>One record per code. Every read is "give me the row for this code", every write is an insert, and nothing joins. That is a key-value access pattern.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="links">
+<pre lang="sql">
+code        CHAR(7)   PRIMARY KEY   -- "008sudj" or a custom alias
+long_url    TEXT                    -- up to 2 KB
+created_at  TIMESTAMP
+expires_at  TIMESTAMP NULL
+clicks      BIGINT                  -- updated in batches, not per click
+</pre>
+</x-code>
+
+<p>The only query on the hot path is a lookup by primary key. There are no joins, no range scans, and rows never change after they are written (except the click count). A <strong>key-value or wide-column store</strong> (such as DynamoDB or Cassandra) fits this well: it partitions by key out of the box, which we will want at 3 TB and beyond. A relational database also works at this size, with read replicas; say so, and say you would pick it if the team already runs one. What matters is the reason: single-key reads, no joins, easy partitioning by <code>code</code>.</p>
+
+<p>Custom aliases live in the same table. Because <code>code</code> is the primary key, "insert if absent" makes alias claims safe: two users racing for <code>spring-sale</code> cannot both win.</p>
+
+<x-tryit variant="turn" minutes="3" title="High-level design">
+<x-task>
+<p>Sketch the boxes for both paths: what sits between a browser and the database on a redirect, and where does a new code come from?</p>
+</x-task>
+<x-answer>
+<p>Split the read path from the write path so each scales on its own: a stateless redirect service with a cache in front of the store, and a create service that hands out codes. The next section draws it.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>Redirects outnumber creates 100 to 1, so they get their own service and their own cache. Creating a link needs a code that no other server will hand out; a small ID allocator gives each create server a block of numbers to use.</p>
+
+<x-arch caption="Reads and writes take separate paths. The redirect service reads through a cache; the create service takes IDs from a block reserved with the allocator.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Browser or app", "kind": "client", "col": 0, "row": 1 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "redirect", "label": "Redirect service", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "create", "label": "Create service", "kind": "service", "col": 2, "row": 2, "stack": true },
+    { "id": "cache", "label": "Link cache", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "store", "label": "Links store", "kind": "database", "col": 3, "row": 1 },
+    { "id": "alloc", "label": "ID allocator", "kind": "service", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "lb", "label": "HTTPS" },
+    { "from": "lb", "to": "redirect", "label": "GET /{code}" },
+    { "from": "lb", "to": "create", "label": "POST /links" },
+    { "from": "redirect", "to": "cache", "label": "get code" },
+    { "from": "redirect", "to": "store", "label": "on miss" },
+    { "from": "create", "to": "store", "label": "insert" },
+    { "from": "create", "to": "alloc", "label": "next ID block" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through creating a link, then opening it twice.</p>
+
+<x-tracer title="Write path, then read path">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Browser or app", "kind": "client", "col": 0, "row": 1 },
+      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+      { "id": "redirect", "label": "Redirect service", "kind": "service", "col": 2, "row": 0 },
+      { "id": "create", "label": "Create service", "kind": "service", "col": 2, "row": 2 },
+      { "id": "cache", "label": "Link cache", "kind": "cache", "col": 3, "row": 0 },
+      { "id": "store", "label": "Links store", "kind": "database", "col": 3, "row": 1 },
+      { "id": "alloc", "label": "ID allocator", "kind": "service", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "lb" },
+      { "from": "lb", "to": "redirect" },
+      { "from": "lb", "to": "create" },
+      { "from": "redirect", "to": "cache" },
+      { "from": "redirect", "to": "store" },
+      { "from": "create", "to": "store" },
+      { "from": "create", "to": "alloc" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A user submits a long URL. The load balancer sends <code>POST /api/links</code> to any create server; they are all alike.",
+      "arch": { "active": ["client", "create", ["client", "lb"], ["lb", "create"]], "dim": ["redirect", "cache"] }
+    },
+    {
+      "caption": "This server reserved IDs 125,000,000 to 125,000,999 from the allocator earlier, so it takes the next one without asking anyone: 125,000,017.",
+      "arch": { "active": ["create"], "dim": ["redirect", "cache"], "notes": { "create": "id 125,000,017" } }
+    },
+    {
+      "caption": "It writes the number in base 62 and pads it to 7 characters: <code>008sudj</code>.",
+      "arch": { "active": ["create"], "dim": ["redirect", "cache"], "notes": { "create": "008sudj" } },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "It inserts the row into the links store. The store keeps three copies before saying yes, so the link survives a disk failure.",
+      "arch": { "active": ["store", ["create", "store"]], "dim": ["redirect", "cache"], "notes": { "store": "insert 008sudj" } },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "The short URL goes back to the user. One store write, no other coordination.",
+      "arch": { "active": [["create", "lb"], ["lb", "client"]], "mark": ["client", "store"], "dim": ["redirect", "cache"] },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "Someone opens <code>sho.rt/008sudj</code>. The load balancer sends the <code>GET</code> to a redirect server.",
+      "arch": { "active": ["client", "redirect", ["client", "lb"], ["lb", "redirect"]], "dim": ["create", "alloc"] },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "The redirect server asks the cache. The link is new, so it is a miss.",
+      "arch": { "active": ["cache", ["redirect", "cache"]], "dim": ["create", "alloc"], "notes": { "cache": "miss" } },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "It reads the row from the store by primary key, then puts it in the cache. Links never change, so the cached copy cannot go stale; only deletes and expiry need care.",
+      "arch": { "active": ["store", "cache", ["redirect", "store"], ["redirect", "cache"]], "dim": ["create", "alloc"], "notes": { "cache": "set 008sudj" } },
+      "vars": { "code": "008sudj" }
+    },
+    {
+      "caption": "The browser gets <code>302 Found</code> with the long URL in <code>Location</code>, and follows it.",
+      "arch": { "active": [["redirect", "lb"], ["lb", "client"]], "mark": ["client"], "dim": ["create", "alloc"] },
+      "vars": { "code": "008sudj", "status": 302 }
+    },
+    {
+      "caption": "The next click is a cache hit. Most redirects end here and never touch the store, which is why the store can stay small.",
+      "arch": { "active": ["client", "cache", ["client", "lb"], ["lb", "redirect"], ["redirect", "cache"]], "dim": ["create", "alloc", "store"], "notes": { "cache": "hit" } },
+      "vars": { "code": "008sudj", "status": 302 }
+    },
+    {
+      "caption": "If the allocator goes down, create servers keep using the IDs left in their blocks. At 40 writes a second spread over 10 servers, a block of 1,000 lasts about 4 minutes: time to fail over.",
+      "arch": { "fail": ["alloc"], "active": ["create", "store", ["create", "store"]], "dim": ["redirect", "cache"], "notes": { "create": "IDs left: 982" } }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on two or three parts. For this question it is almost always how codes are made, how redirects stay fast, and how clicks are counted without slowing redirects.</p>
+
+<h3>Generating short codes</h3>
+
+<p>Every server must hand out codes that no other server hands out, without a slow check on each request.</p>
+
+<x-tradeoffs caption="Ways to make a short code">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Hash the long URL",
+      "good": "The same URL always gets the same code, so duplicates are free to detect.",
+      "bad": "Taking 7 characters of a hash collides; you must check and re-hash. Two users shortening the same URL share one code, and one link's expiry affects the other.",
+      "pick": "Deduplication matters more than anything else, which is rare."
+    },
+    {
+      "name": "Random code, retry on collision",
+      "good": "No coordination at all. Codes are not guessable.",
+      "bad": "Each create needs an insert-if-absent and the occasional retry. The collision rate grows as the table fills.",
+      "pick": "Codes must not be guessable (private documents, unlisted links)."
+    },
+    {
+      "name": "Counter blocks + base 62",
+      "good": "No collisions, ever. Each server talks to the allocator once per thousand links.",
+      "bad": "Codes are sequential, so anyone can walk through them. Needs a small, highly available allocator.",
+      "pick": "Public links where guessability is fine. A good default.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The arithmetic behind the random option: with 6 billion links stored and 3.5 trillion possible codes, a new random code collides with probability 6 × 10<sup>9</sup> ÷ 3.5 × 10<sup>12</sup> ≈ 0.2%. One retry in 500 creates is fine. If an interviewer worries about guessable codes from the counter, keep the counter and scramble the number with a reversible function before encoding: still no collisions, no longer sequential.</p>
+
+<h3>Keeping redirects fast</h3>
+
+<p>Clicks are lopsided: a few links get most of the traffic. A cache in front of the store, with LRU eviction, serves most redirects in about a millisecond. Because a link never changes after it is created, there is no invalidation problem on writes. Deletes and expiry are the exceptions: delete the cache key when a link is deleted, and check <code>expires_at</code> on every redirect so an expired link is never served from cache. The <a href="/system-design/caching.html">caching</a> lesson covers stampedes, which matter here when a link goes viral.</p>
+
+<h3>Counting clicks without slowing redirects</h3>
+
+<p>Updating a counter row on every click would put a write on the hot path, and a viral link would make one row the hottest spot in the database. Instead, the redirect service publishes a small click event to a queue and returns immediately. A worker reads the events, adds them up per code, and writes one update per link every few seconds.</p>
+
+<x-arch caption="Clicks leave the redirect path as events. A worker batches them, so a link clicked 5,000 times in a minute costs a handful of writes.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "redirect", "label": "Redirect service", "kind": "service", "col": 0, "row": 0 },
+    { "id": "queue", "label": "Click events", "kind": "queue", "col": 1, "row": 0 },
+    { "id": "worker", "label": "Counter worker", "kind": "worker", "col": 2, "row": 0 },
+    { "id": "store", "label": "Links store", "kind": "database", "col": 2, "row": 1 }
+  ],
+  "edges": [
+    { "from": "redirect", "to": "queue", "label": "click 008sudj", "style": "async" },
+    { "from": "queue", "to": "worker", "style": "async" },
+    { "from": "worker", "to": "store", "label": "clicks += 312" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The trade-off to say out loud: counts lag by a few seconds, and if the queue loses events, counts are slightly low. For click counts that is fine. For billing per click it would not be, and you would make the events durable and processing <a href="/system-design/idempotency-and-retries.html">idempotent</a>.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x the traffic (200,000 redirects a second at peak, 30 TB over five years), the redirect servers scale by adding more, since they hold no state. The cache becomes a cluster, split by <a href="/system-design/consistent-hashing.html">consistent hashing</a> so adding a node moves only a small share of keys. The store is partitioned by <code>code</code>, which spreads evenly because codes are spread evenly. The allocator barely notices: blocks of 1,000 at 2,000 writes a second is 2 requests a second.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A redirect or create server</td><td>Requests to it fail until the load balancer notices.</td><td>Health checks remove it in seconds; the others absorb its share.</td></tr>
+<tr><td>A cache node</td><td>Its keys miss and fall through to the store.</td><td>Size the store for the extra reads, or run cache replicas.</td></tr>
+<tr><td>A store node</td><td>Its partition loses one of three copies.</td><td>Reads and writes continue on the other replicas; the node is rebuilt from them.</td></tr>
+<tr><td>The ID allocator</td><td>No new blocks are handed out.</td><td>Servers live on their blocks; run the allocator on three nodes with a consensus store.</td></tr>
+<tr><td>The click queue</td><td>Counts stop updating.</td><td>Redirects are unaffected, which is the point of making counting asynchronous.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="Putting the database on the redirect path for every click">
+<p>Without a cache, every one of the 20,000 peak redirects a second is a database read, and a viral link hammers one partition. The cache is part of the design, not an optimisation for later.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<p>Every level gets to a working design. What differs is how much of it is driven by the numbers and how the trade-offs are argued.</p>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Draws a service and a database, hashes the URL for a code, and gets a working path once prompted about collisions.</td></tr>
+<tr><td>Mid</td><td>Estimates traffic and storage, separates reads from writes, adds a cache with a reason, and compares two code schemes.</td></tr>
+<tr><td>Senior</td><td>Leads with the read/write ratio, chooses 302 because of click counts, takes counting off the hot path, explains what fails first at 10x, and names what they would leave out and why.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Defending the choice" tone="strong">
+<x-interviewer>Why not just hash the URL?</x-interviewer>
+<x-you>I could, but 7 characters of a hash collide, so I would still need a check-and-retry on every insert, and two users would share a code. Counter blocks give me no collisions with one allocator call per thousand links. The cost is guessable codes; if that matters here, I would scramble the number before encoding.</x-you>
+<x-coach>A strong answer names the cost of the option it picks, not only the flaws of the one it rejects.</x-coach>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How would you run this in several regions?</h3>
+<p>Serve redirects from every region with a local cache and a local replica of the store; replication lag only delays brand-new links by a second or two. Give each region its own ID ranges so creates never coordinate across regions.</p>
+
+<h3>The same long URL is submitted twice. Same code?</h3>
+<p>Not by default. Deduplication needs an index on the long URL and lets one user's expiry or deletion affect another's link. Offer it per user if asked.</p>
+
+<h3>How do you stop abuse?</h3>
+<p>Rate limit creates per API key and per IP, check new URLs against a blocklist, and scan them asynchronously so a bad link can be disabled after the fact.</p>
+
+<h3>How do you delete a link quickly?</h3>
+<p>Mark it deleted in the store and delete the cache key. Because redirects use 302, browsers have not cached it, so the next click sees the change.</p>
+
+<h3>What if one link gets a million clicks a minute?</h3>
+<p>That is about 17,000 a second on one key. Keep a copy in each redirect server's memory for a few seconds so the cache node holding it is not overloaded.</p>
+
+<x-checklist title="Self-review: URL shortener">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked about custom aliases, expiry and analytics before designing", "I got the read/write ratio and the number of new links", "I said which path matters most (redirects) and what fast means"] },
+    { "title": "Numbers and interfaces", "items": ["I turned monthly numbers into per-second rates, with peaks", "I estimated storage and the code length from arithmetic", "I wrote both endpoints, including error cases", "I chose 301 or 302 and gave the reason"] },
+    { "title": "Design and depth", "items": ["I separated the read path from the write path", "I justified the cache with the read ratio and skew", "I compared at least two ways to make codes and named the cost of mine", "I kept click counting off the redirect path"] },
+    { "title": "Failure", "items": ["I said what breaks first at 10x", "I said what happens when the cache, the store and the allocator each die"] }
+  ]
+}
+</script>
+</x-checklist>

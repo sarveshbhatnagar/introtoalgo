@@ -1,0 +1,418 @@
+<!--
+{
+  "title": "Design Video Streaming",
+  "description": "Design video upload and playback: resumable chunked uploads, a transcoding job queue, adaptive bitrate with a manifest, and CDN delivery.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "video", "cdn", "blob storage", "job queue"]
+}
+-->
+<p>Someone uploads a 10-minute video from their phone on a shaky train connection. A few minutes later it plays on a TV in full HD, on a laptop in a café, and on a phone in a lift that drops to a lower quality for a few seconds instead of freezing. That is a video streaming service.</p>
+
+<p>Interviewers ask it because the bytes dominate everything. One popular video moves more data in an hour than the metadata database handles in a year, so the design must split the two cleanly: a small, careful system for titles and status, and a huge, dumb, cached system for bytes. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a video streaming service.</x-interviewer>
+<x-you>User uploads and on-demand playback, or live streams too? And are we covering search, comments and recommendations?</x-you>
+<x-interviewer>Uploads and on-demand playback only. Skip live, search and recommendations.</x-interviewer>
+<x-you>How many uploads a day, how long are they, and how much do people watch?</x-you>
+<x-interviewer>About 100,000 uploads a day, 10 minutes on average. 50 million daily viewers, about 30 minutes each.</x-interviewer>
+<x-you>Then playback is the system: it must start within about 2 seconds and rarely stall, on any device and network. Uploads must survive bad connections, and a processed video can be ready a few minutes after upload. An uploaded video is never lost. Most of the cost will be bandwidth, so I'll design around the CDN.</x-you>
+<x-coach>"Most of the cost will be bandwidth" is a senior instinct, stated before any numbers. The estimate will back it up.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> upload a video (resumable); process it into formats every device can play; play it with quality that adapts to the network; show title, status and view count.</li>
+<li><strong>Non-functional:</strong> playback starts in about 2 seconds and stalls rarely; playback is highly available; videos are ready within minutes of upload; uploaded files are never lost; metadata may be eventually consistent (a view count can lag).</li>
+<li><strong>Out of scope:</strong> live streaming, search, recommendations, comments, copy protection.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>Start with what viewers do, because that is where the bytes are.</p>
+
+<ul>
+<li><strong>Concurrent viewers:</strong> 50 million × 30 minutes ÷ 1,440 minutes a day ≈ 1 million watching at any moment on average. Assume an evening peak of 2x: 2 million.</li>
+<li><strong>Uploads:</strong> 100,000 ÷ 86,400 s ≈ 1.2 a second. Assume an original file averages 1 GB: 100 TB a day of uploads, about 1.2 GB/s coming in.</li>
+<li><strong>Processed copies:</strong> five qualities from 240p to 1080p at 0.4 + 0.8 + 1.5 + 3 + 6 = 11.7 Mbit/s together. For 10 minutes: 11.7 × 10<sup>6</sup> × 600 ÷ 8 ≈ 0.88 GB per video, about 88 TB a day.</li>
+<li><strong>Storage per year:</strong> (100 + 88) TB × 365 ≈ 69 PB before replication. Originals are rarely read again, so they can move to cheaper, slower storage.</li>
+<li><strong>Metadata:</strong> 100,000 × 365 = 36.5 million new video rows a year at about 1 KB each: 36.5 GB. Tiny next to the bytes.</li>
+</ul>
+
+<x-estimate title="Playback bandwidth">
+<script type="application/json">
+{
+  "question": "At the average of 1 million concurrent viewers, how much video leaves the system each second?",
+  "givens": ["1 million viewers at any moment", "Average delivered bitrate 4 Mbit/s (a mix of phones and TVs)", "8 bits in a byte"],
+  "unit": "bytes/s",
+  "answer": "500 GB/s",
+  "accept": ["150 GB/s", "1.5 TB/s"],
+  "steps": ["10<sup>6</sup> × 4 × 10<sup>6</sup> bit/s = 4 × 10<sup>12</sup> bit/s = 4 Tbit/s", "4 × 10<sup>12</sup> ÷ 8 = 5 × 10<sup>11</sup> B/s = 500 GB/s", "At the 2x peak: 1 TB/s"],
+  "note": "No data center serves this directly. It has to come from CDN edges close to viewers."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Transcoding compute">
+<script type="application/json">
+{
+  "question": "How many CPU cores are busy transcoding on average?",
+  "givens": ["100,000 uploads a day, 10 minutes each", "Producing all five qualities takes about 10 CPU-minutes per minute of video (an assumption; it depends on codec and settings)", "1,440 minutes in a day"],
+  "unit": "count",
+  "answer": "7 thousand",
+  "accept": ["2 thousand", "20 thousand"],
+  "steps": ["100,000 × 10 minutes × 10 = 10 million CPU-minutes a day", "10<sup>7</sup> ÷ 1,440 ≈ 6,900 cores busy at all times"],
+  "note": "A big but elastic fleet: uploads come in waves, and work can wait in a queue."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="3" title="Define the API">
+<x-task>
+<p>Write the upload endpoints so a dropped connection at 90% does not mean starting over, and the playback calls a player makes.</p>
+</x-task>
+<x-answer>
+<p>Upload in three steps: start a session, send numbered chunks, then complete. A status call lists which chunks arrived so the client resumes. Playback is one metadata call to the API, then plain file requests for a manifest and segments, which a CDN can cache.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+POST /v1/uploads   { "filename", "size_bytes", "sha256" }
+  201 { "upload_id", "chunk_size": 8000000, "chunk_urls": [signed URLs...] }
+PUT  <signed chunk URL n>      (8 MB of bytes, goes straight to object storage)
+  200 { "etag" }    400 checksum mismatch
+GET  /v1/uploads/{id}        -> { "received": [0..111] }   resume from here
+                                (the API asks storage which parts landed)
+POST /v1/uploads/{id}/complete      safe to repeat: same video_id
+  202 Accepted { "video_id", "status": "processing" }
+  409 Conflict   chunks missing
+
+GET  /v1/videos/{id}  -> { title, status, duration_s, "manifest_url" }
+GET  cdn/v/{id}/master.m3u8             manifest: the qualities on offer
+GET  cdn/v/{id}/720p/seg_00042.ts       one 4-second segment
+</pre>
+</x-code>
+
+<p>The decision worth arguing is where the bytes go. Proxying 1.2 GB/s of uploads through API servers ties them up for minutes per request. Instead the API hands out <strong>signed URLs</strong>: short-lived links that let the client write one chunk directly to <a href="/system-design/blob-storage.html">object storage</a>. API servers only handle small JSON. The cost is that the API must check the result at <code>complete</code>, because it never saw the bytes: storage confirms every part arrived with a matching checksum, and the split job, which reads the whole file anyway, verifies the whole-file <code>sha256</code>. <code>complete</code> returns <code>202</code>, not <code>201</code>, because the video is not playable yet.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>List the records for videos, uploads and processing work. Which belong in a database and which are files?</p>
+</x-task>
+<x-answer>
+<p>Video rows, upload sessions and transcode jobs are small and live in a database. Originals, segments and manifests are files in object storage, addressed by a key built from the video ID. Never put video bytes in a database.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Metadata tables">
+<pre lang="sql">
+videos:   video_id BIGINT PRIMARY KEY, owner_id BIGINT, title TEXT,
+          status TEXT,          -- uploading | processing | ready | failed
+          duration_s INT, renditions TEXT, jobs_left INT, created_at TIMESTAMP
+uploads:  upload_id, video_id, size_bytes, storage_upload_id, expires_at
+          -- which parts arrived is asked of object storage, not stored here
+jobs:     job_id, video_id, segment_no INT, rendition TEXT,
+          status TEXT, attempts INT, lease_until TIMESTAMP
+
+-- object storage keys
+originals/{video_id}
+v/{video_id}/master.m3u8, v/{video_id}/{rendition}/index.m3u8
+v/{video_id}/{rendition}/seg_{n}.ts
+</pre>
+</x-code>
+
+<p>The metadata is small (36.5 GB a year), relational and read far more than written, so a <strong>relational database with read replicas</strong> fits. It gives an atomic counter: each finished job decrements <code>jobs_left</code>, and the job that takes it to 0 writes the manifests and then sets <code>ready</code>. View counts are the exception: batch them through a queue, as in the <a href="/system-design/design-a-url-shortener.html">URL shortener's</a> click counting, so a viral video does not turn one row into a hot spot.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Draw the upload path to a playable video, and the playback path. Which boxes see video bytes, and which never do?</p>
+</x-task>
+<x-answer>
+<p>Bytes flow client to object storage, object storage to transcoders and back, and object storage to CDN to viewer. The API, the metadata database and the job queue only ever see IDs and status. That split is the design.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<x-arch caption="Bytes go through object storage and the CDN; the API and database only handle small records. Transcoding runs from a job queue.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "app", "label": "Phone, TV, browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "cdn", "label": "CDN edges", "kind": "cdn", "col": 1, "row": 0 },
+    { "id": "api", "label": "API servers", "kind": "service", "col": 1, "row": 2, "stack": true },
+    { "id": "blob", "label": "Object storage", "kind": "blob-store", "col": 2, "row": 1 },
+    { "id": "meta", "label": "Video metadata", "kind": "database", "col": 2, "row": 2 },
+    { "id": "jobs", "label": "Transcode jobs", "kind": "queue", "col": 2, "row": 3 },
+    { "id": "tx", "label": "Transcoders", "kind": "worker", "col": 3, "row": 2, "stack": true }
+  ],
+  "edges": [
+    { "from": "app", "to": "cdn", "label": "segments" },
+    { "from": "app", "to": "api", "label": "metadata, upload" },
+    { "from": "app", "to": "blob", "label": "PUT chunks" },
+    { "from": "cdn", "to": "blob", "label": "miss" },
+    { "from": "api", "to": "meta" },
+    { "from": "api", "to": "blob", "label": "join parts" },
+    { "from": "api", "to": "jobs", "label": "enqueue", "style": "async" },
+    { "from": "jobs", "to": "tx", "style": "async" },
+    { "from": "tx", "to": "blob", "label": "read, write" },
+    { "from": "tx", "to": "meta", "label": "status" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="From upload to first play">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "Phone, TV, browser", "kind": "client", "col": 0, "row": 1 },
+      { "id": "cdn", "label": "CDN edges", "kind": "cdn", "col": 1, "row": 0 },
+      { "id": "api", "label": "API servers", "kind": "service", "col": 1, "row": 2 },
+      { "id": "blob", "label": "Object storage", "kind": "blob-store", "col": 2, "row": 1 },
+      { "id": "meta", "label": "Video metadata", "kind": "database", "col": 2, "row": 2 },
+      { "id": "jobs", "label": "Transcode jobs", "kind": "queue", "col": 2, "row": 3 },
+      { "id": "tx", "label": "Transcoders", "kind": "worker", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "app", "to": "cdn" },
+      { "from": "app", "to": "api" },
+      { "from": "app", "to": "blob" },
+      { "from": "cdn", "to": "blob" },
+      { "from": "api", "to": "meta" },
+      { "from": "api", "to": "blob" },
+      { "from": "api", "to": "jobs", "style": "async" },
+      { "from": "jobs", "to": "tx", "style": "async" },
+      { "from": "tx", "to": "blob" },
+      { "from": "tx", "to": "meta" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The phone starts an upload of a 1 GB file. The API records an upload session and returns 125 signed URLs, one per 8 MB chunk.",
+      "arch": { "active": ["app", "api", "meta", ["app", "api"], ["api", "meta"]], "dim": ["cdn", "jobs", "tx"] },
+      "vars": { "chunks": "0 / 125" }
+    },
+    {
+      "caption": "The phone sends chunks straight to object storage, four at a time. API servers never touch the bytes.",
+      "arch": { "active": ["blob", ["app", "blob"]], "dim": ["cdn", "jobs", "tx"] },
+      "vars": { "chunks": "112 / 125" }
+    },
+    {
+      "caption": "The train enters a tunnel and the connection drops. Without chunks, 900 MB would be wasted. Here, only the 4 chunks in flight are lost.",
+      "arch": { "fail": [["app", "blob"]], "dim": ["cdn", "jobs", "tx"] },
+      "vars": { "chunks": "112 / 125" }
+    },
+    {
+      "caption": "Back online, the phone asks which chunks arrived; the API asks storage. The phone sends only the missing 13.",
+      "arch": { "active": ["blob", ["app", "api"], ["api", "blob"], ["app", "blob"]], "dim": ["cdn", "jobs", "tx"] },
+      "vars": { "chunks": "125 / 125" }
+    },
+    {
+      "caption": "<code>complete</code>: storage joins the 125 parts after checking each one's checksum. The API marks the video <code>processing</code> and answers <code>202</code>.",
+      "arch": { "active": ["api", "meta", ["app", "api"], ["api", "blob"], ["api", "meta"]], "mark": ["blob"], "dim": ["cdn", "tx"], "notes": { "meta": "processing" } },
+      "vars": { "chunks": "125 / 125" }
+    },
+    {
+      "caption": "It enqueues a split job. A transcoder checks the whole-file checksum, cuts the video into 150 four-second pieces and enqueues 150 × 5 = 750 encode jobs.",
+      "arch": { "active": ["jobs", "tx", ["api", "jobs"], ["jobs", "tx"]], "dim": ["cdn"], "notes": { "jobs": "750 jobs" } },
+      "vars": { "jobs left": 750 }
+    },
+    {
+      "caption": "Hundreds of transcoders take jobs in parallel, each reading a piece and writing one quality of it back to storage.",
+      "arch": { "active": ["tx", "blob", ["jobs", "tx"], ["tx", "blob"]], "dim": ["cdn", "app"] },
+      "vars": { "jobs left": 212 }
+    },
+    {
+      "caption": "One transcoder dies mid-job. Its lease runs out after 2 minutes and another worker redoes that one 4-second piece; output names are fixed, so a redo just replaces the same file.",
+      "arch": { "fail": ["tx"], "active": ["jobs"], "dim": ["cdn", "app"], "notes": { "jobs": "lease expired" } },
+      "vars": { "jobs left": 37 }
+    },
+    {
+      "caption": "The last job takes <code>jobs_left</code> to 0. That worker writes the manifests to storage first, then flips the video to <code>ready</code>, so a ready video always has its manifests.",
+      "arch": { "active": ["meta", ["tx", "blob"], ["tx", "meta"]], "mark": ["blob", "meta"], "dim": ["cdn", "app"], "notes": { "meta": "ready" } },
+      "vars": { "jobs left": 0 }
+    },
+    {
+      "caption": "A viewer opens it. The API returns the title and manifest URL; the player fetches the manifest and segments from the nearest CDN edge.",
+      "arch": { "active": ["app", "cdn", ["app", "api"], ["app", "cdn"]], "dim": ["jobs", "tx"] }
+    },
+    {
+      "caption": "The edge has never seen this video: a miss. It fetches from object storage once, then serves every nearby viewer from its own copy.",
+      "arch": { "active": ["cdn", "blob", ["cdn", "blob"]], "dim": ["jobs", "tx"], "notes": { "cdn": "miss, now cached" } }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on four places: uploads that survive bad networks, the transcoding pipeline, how playback adapts, and the cost of delivery.</p>
+
+<h3>Chunked, resumable upload</h3>
+
+<p>A single 1 GB <code>PUT</code> that fails at 90% throws away 900 MB, and on a phone it will fail. Split the file into fixed 8 MB chunks: 1 GB is 125 of them. Each chunk is uploaded and checksummed on its own, so a failure costs at most the chunks in flight. Object storage services offer this as a <strong>multipart upload</strong>: parts arrive in any order, and a final call joins them into one object.</p>
+
+<p>Pick the chunk size from the network. Too small (say 256 KB) and 4,000 requests each pay a round trip. Too large (say 100 MB) and a retry on a slow phone link takes minutes. 4 to 16 MB is a sound middle; I would pick 8 MB. Expire unfinished sessions after a day or two so abandoned parts do not pile up as storage nobody pays attention to.</p>
+
+<h3>Transcoding as a queue of jobs</h3>
+
+<p>Phones record in formats and bitrates that many devices cannot play and many networks cannot carry, so each upload becomes five qualities. Encoding a 10-minute video into all five takes about 100 CPU-minutes. Done on one machine, the uploader waits over an hour and a half.</p>
+
+<x-tradeoffs caption="How to run the transcoding work">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "One machine per video",
+      "good": "Simplest. No splitting or joining.",
+      "bad": "About 100 minutes per 10-minute video, and a crash at minute 90 starts over.",
+      "pick": "Short clips only."
+    },
+    {
+      "name": "One job per quality",
+      "good": "Five machines in parallel; the low qualities finish first and can go live early.",
+      "bad": "Still bounded by the slowest quality: 1080p takes the largest share of the work.",
+      "pick": "A quick improvement when videos are short."
+    },
+    {
+      "name": "One job per segment and quality",
+      "good": "750 small jobs of about 8 CPU-seconds each on average run in parallel. A failure redoes 4 seconds of video.",
+      "bad": "Needs a split step, a join step, and segment cuts on keyframes so pieces play back to back.",
+      "pick": "Long videos and a ready-within-minutes goal. My pick.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The arithmetic: a 4-second segment takes 4 ÷ 60 × 10 CPU-minutes = 40 CPU-seconds for the whole ladder. With 150 workers free, the 10-minute video is processed in about 40 seconds of wall time instead of 100 minutes, plus queueing. That is a simplification: splitting, uploads to storage and the final step add time, but minutes, not hours.</p>
+
+<p>Make the jobs safe to repeat. Workers lease jobs and write outputs to fixed names, so a job that runs twice, after a lease expires on a slow worker, replaces the same file with an equivalent segment. The finish step must be safe to repeat too: a job decrements <code>jobs_left</code> only when its own row moves from running to done, so a second run cannot count twice. That is <a href="/system-design/idempotency-and-retries.html">idempotency</a> through deterministic output, and it is why the queue only needs at-least-once delivery. "Exactly once" here means exactly one <em>effect</em>, not exactly one run. The <a href="/system-design/message-queues-and-streams.html">queue</a> should also take priorities: a creator with millions of followers waiting should not queue behind a backlog of test uploads.</p>
+
+<h3>Adaptive bitrate streaming</h3>
+
+<p>Each quality is cut into the same 4-second segments, listed in a <strong>manifest</strong>: a small text file naming the qualities and the URL of every segment. (HLS and DASH are the two common manifest formats.) The player downloads segments one at a time and, before each one, picks the quality its measured bandwidth and buffer can sustain. Every segment boundary is a chance to switch, so a slow network means lower quality, not a frozen picture.</p>
+
+<x-tracer title="The player picks a quality for each segment">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "Playback starts at a low quality so the first frame shows fast: 1.5 Mbit/s × 4 s = 0.75 MB for the first segment.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "highlight": [2] },
+      "vars": { "measured": "?", "buffer": "0 s" }
+    },
+    {
+      "caption": "That segment arrived in 0.5 s: 6 Mbit in 0.5 s is 12 Mbit/s. The player steps up one rung to 3 Mbit/s while its buffer is still thin.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "highlight": [3] },
+      "vars": { "measured": "12 Mbit/s", "buffer": "4 s" }
+    },
+    {
+      "caption": "Bandwidth holds at about 11 Mbit/s and the buffer reaches 20 s, so it climbs to the top, keeping a margin. Each 6 Mbit/s segment is 3 MB.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "highlight": [4] },
+      "vars": { "measured": "11 Mbit/s", "buffer": "20 s" }
+    },
+    {
+      "caption": "The lift doors close: bandwidth falls to 2 Mbit/s. A 6 Mbit/s segment would take 12 s to arrive, so the player drops to 1.5 and plays from its 20-second buffer meanwhile.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "highlight": [2], "dim": [3, 4] },
+      "vars": { "measured": "2 Mbit/s", "buffer": "16 s" }
+    },
+    {
+      "caption": "Doors open, bandwidth recovers. The player climbs back one step at a time rather than jumping, so a short burst does not cause a stall.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "highlight": [3] },
+      "vars": { "measured": "9 Mbit/s", "buffer": "18 s" }
+    },
+    {
+      "caption": "The viewer saw lower quality for a few seconds and never a spinner. All the logic ran in the player; the servers only served files.",
+      "array": { "label": "ladder (Mbit/s)", "values": [0.4, 0.8, 1.5, 3, 6], "mark": [4] },
+      "vars": { "stalls": 0 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The point to make out loud: adaptation lives in the client, so the server side is plain static files. That is what lets a CDN cache them.</p>
+
+<h3>CDN delivery and cost</h3>
+
+<p>500 GB/s on average cannot come from one place, and the bill scales with bytes delivered. A <a href="/system-design/cdns.html">CDN</a> keeps segments on edge servers near viewers. If edges answer 95% of requests, origin storage serves 5% of 500 GB/s = 25 GB/s; at 99%, 5 GB/s. Each point of hit rate is a large saving.</p>
+
+<p>Views are lopsided. Popular videos sit in every edge's cache. The long tail of rarely watched videos misses almost every time, so it is cheaper to serve from fewer, larger regional caches than to push it everywhere. A strong answer adds: pre-warm edges for a video you expect to be popular, and make segment URLs identical for every viewer so one cached copy serves them all.</p>
+
+<x-callout type="mistake" title="Streaming video through the application servers">
+<p>Routing segments through API servers puts 500 GB/s on machines built for small JSON requests, and gives the CDN nothing cacheable. Segments are static files at fixed URLs; let the CDN and object storage serve them.</p>
+</x-callout>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x viewing (10 million concurrent, 5 TB/s), delivery is the whole problem: more CDN capacity, a higher hit rate and a regional cache tier to protect origin. At 10x uploads, transcoding needs about 70,000 busy cores, so make the fleet elastic and let the queue absorb bursts. The metadata database is the last thing to feel it: at 20 page loads per viewer a day, 50 million viewers make 10<sup>9</sup> ÷ 86,400 ≈ 11,600 reads a second today and about 116,000 at 10x, which read replicas plus a cache cover.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A CDN edge</td><td>Its viewers' players time out on a segment.</td><td>DNS or anycast steers them to the next edge; the player's buffer hides the switch.</td></tr>
+<tr><td>Object storage in one region</td><td>Edge misses and new uploads fail there.</td><td>Replicate finished segments to a second region and fail over; edges keep serving what they cache.</td></tr>
+<tr><td>A transcoder</td><td>Its job stalls.</td><td>The lease expires and another worker redoes one 4-second piece.</td></tr>
+<tr><td>The job queue</td><td>New videos stay in <code>processing</code>.</td><td>Playback of existing videos is unaffected; run the queue replicated and alert on its age.</td></tr>
+<tr><td>The metadata database primary</td><td>Uploads cannot complete; playback pages still read replicas.</td><td>Promote a replica; clients retry <code>complete</code>, which is safe to repeat.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Stores videos in object storage, puts a CDN in front, and adds transcoding when asked about phones.</td></tr>
+<tr><td>Mid</td><td>Estimates bandwidth, uses chunked uploads and a transcoding queue, and explains manifests and segments.</td></tr>
+<tr><td>Senior</td><td>Separates metadata from bytes from the start, parallelises transcoding per segment with idempotent jobs, explains why adaptation in the player makes the CDN effective, and reasons about cost through hit rate and the long tail.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Defending the transcoding design" tone="strong">
+<x-interviewer>Why split videos into segments for transcoding? It adds a join step.</x-interviewer>
+<x-you>A 10-minute video needs about 100 CPU-minutes for the full ladder. On one machine that is over an hour and a half before it is watchable, and a crash late on starts over. Split into 150 segments and five qualities, it is 750 jobs averaging about 8 CPU-seconds each, so it finishes in minutes and a failure redoes 4 seconds. We need segments for playback anyway, so the join is just writing the manifest.</x-you>
+<x-coach>The answer turns "faster" into numbers and points out that the cost it adds is mostly already paid.</x-coach>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How would live streaming change this?</h3>
+<p>Segments are produced in real time, so transcoding must keep up second by second and the manifest is updated as segments appear. Latency becomes a requirement: shorter segments cut delay but add requests and reduce compression efficiency.</p>
+
+<h3>How do you count views?</h3>
+<p>The player sends a view event after a few seconds of playback, through a queue to a counter that batches updates. Counts lag by seconds and are approximate, which is fine for display.</p>
+
+<h3>How do you stop people downloading paid videos?</h3>
+<p>Signed segment URLs that expire stop link sharing. The edge checks the signature and leaves it out of the cache key, so one cached copy still serves everyone. Real protection needs encrypted segments and licence keys delivered separately (digital rights management), which is a component you buy, not build.</p>
+
+<h3>Can you save storage on old videos?</h3>
+<p>Yes: move originals to archive storage after processing, and drop rarely watched qualities for videos nobody watches, regenerating them on demand if a view arrives.</p>
+
+<h3>What if a creator deletes a video?</h3>
+<p>Mark it deleted in metadata so the API stops returning it, then purge it from the CDN and delete the objects in the background. Edges may serve cached segments until the purge completes, so signed URLs with short expiry help.</p>
+
+<x-checklist title="Self-review: video streaming">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether live streaming is in scope", "I got upload volume, video length and watch time", "I said playback start time and stalls matter most"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated playback bandwidth from concurrent viewers and bitrate", "I estimated storage for originals plus processed copies", "I designed a resumable chunked upload with signed URLs"] },
+    { "title": "Design and depth", "items": ["I kept video bytes out of the API servers and the database", "I ran transcoding as a queue of small, repeatable jobs", "I explained manifests, segments and adaptation in the player", "I reasoned about CDN hit rate, the long tail and cost"] },
+    { "title": "Failure", "items": ["I said delivery is what breaks first at 10x", "I said what happens when an edge, a transcoder and the database each die"] }
+  ]
+}
+</script>
+</x-checklist>

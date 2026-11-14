@@ -1,0 +1,264 @@
+<!--
+{
+  "title": "Consensus and Leader Election",
+  "description": "Why machines struggle to agree, what majority consensus gives you, how leases and fencing tokens stop split brain, and how much to say in an interview.",
+  "minutes": 17,
+  "tags": ["consensus", "leader election", "distributed systems"]
+}
+-->
+<p>A billing scheduler runs on two machines so one can take over if the other dies. Each checks the other with a heartbeat every second and takes over after 5 missed beats. One night the network between them drops for 10 seconds. Each decides the other is dead, both become leader, and both run the nightly billing job. 40,000 customers are charged twice.</p>
+
+<p>Neither machine was wrong given what it could see. Consensus solves this: several machines agree on one answer (who leads, what was written) even when some are slow, dead or cut off.</p>
+
+<h2>Why agreeing is hard</h2>
+
+<p>A machine that stops answering might be dead, overloaded, paused by garbage collection, or behind a broken link. From outside these look the same; no timeout tells them apart. Clocks drift, and messages arrive late, twice, or never.</p>
+
+<p>With two machines, any rule fails: if each waits for the other's vote, a single failure stops everything; if each acts alone, a partition gives you two leaders (<strong>split brain</strong>).</p>
+
+<h2>The idea: majorities</h2>
+
+<p>Use an odd number of nodes, usually 3 or 5, and require a <strong>majority</strong> for every decision. Any two majorities of the same group share at least one node, so two conflicting decisions can never both get a majority. A cut-off minority simply cannot act.</p>
+
+<p>Raft-style consensus (a simplified picture) builds on that:</p>
+
+<ul>
+<li><strong>One leader per term.</strong> Terms are numbered 1, 2, 3… A node becomes leader for a term only with votes from a majority, and each node votes once per term.</li>
+<li><strong>A replicated log.</strong> Every change is appended to the leader's log and copied to followers. An entry is <em>committed</em> once a majority has stored it; only then is it applied and acknowledged.</li>
+<li><strong>Elections on silence.</strong> If followers hear nothing from the leader for a randomised timeout (a few hundred ms), one becomes a candidate for the next term and asks for votes. Nodes vote only for a candidate whose log is at least as complete as theirs, so a new leader always has every committed entry.</li>
+</ul>
+
+<p>The cost: every write waits for a majority, and with 2f + 1 nodes you survive f failures. 3 nodes survive 1, 5 survive 2. 4 nodes still survive only 1 (a majority of 4 is 3), so even sizes buy nothing.</p>
+
+<x-tracer title="A committed write, a leader crash, an election">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Client", "kind": "client", "col": 0, "row": 1 },
+      { "id": "n1", "label": "Node 1", "kind": "database", "col": 1, "row": 1 },
+      { "id": "n2", "label": "Node 2", "kind": "database", "col": 2, "row": 0 },
+      { "id": "n3", "label": "Node 3", "kind": "database", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "n1" },
+      { "from": "client", "to": "n2" },
+      { "from": "n1", "to": "n2", "arrow": "both" },
+      { "from": "n1", "to": "n3", "arrow": "both" },
+      { "from": "n2", "to": "n3", "arrow": "both" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Node 1 is leader for term 3. A client writes <code>owner = A</code>. The leader appends it to its log as entry 7, not yet committed.",
+      "arch": { "active": ["client", "n1", ["client", "n1"]], "dim": [["client", "n2"]], "notes": { "n1": "leader, term 3" } },
+      "vars": { "term": 3, "entry 7 copies": 1 }
+    },
+    {
+      "caption": "It sends entry 7 to both followers.",
+      "arch": { "active": [["n1", "n2"], ["n1", "n3"]], "dim": [["client", "n2"]], "notes": { "n1": "leader, term 3" } },
+      "vars": { "term": 3, "entry 7 copies": 1 }
+    },
+    {
+      "caption": "Node 2 stores it and replies. That is 2 of 3 copies, a majority: entry 7 is committed. Node 3 is slow, which does not matter.",
+      "arch": { "active": [["n2", "n1"]], "mark": ["n1", "n2"], "dim": [["client", "n2"]], "notes": { "n3": "slow" } },
+      "vars": { "term": 3, "entry 7 copies": 2 }
+    },
+    {
+      "caption": "The leader applies it and tells the client: success.",
+      "arch": { "active": [["n1", "client"]], "mark": ["client", "n1", "n2"], "dim": [["client", "n2"]] },
+      "vars": { "term": 3, "entry 7 copies": 2 }
+    },
+    {
+      "caption": "Node 1 crashes. Heartbeats stop.",
+      "arch": { "fail": ["n1"], "dim": [["client", "n2"]] },
+      "vars": { "term": 3, "leader": "none" }
+    },
+    {
+      "caption": "Node 2's random timeout fires first. It starts term 4, votes for itself and asks Node 3.",
+      "arch": { "fail": ["n1"], "active": ["n2", ["n2", "n3"]], "dim": [["client", "n2"]], "notes": { "n2": "candidate, t4" } },
+      "vars": { "term": 4, "votes for 2": 1 }
+    },
+    {
+      "caption": "Node 2's log is at least as complete as Node 3's, so Node 3 votes yes. 2 of 3: Node 2 leads term 4. It has entry 7, because the majority that committed it overlaps the majority that elects.",
+      "arch": { "fail": ["n1"], "active": [["n3", "n2"]], "mark": ["n2"], "dim": [["client", "n2"]], "notes": { "n2": "leader, term 4" } },
+      "vars": { "term": 4, "votes for 2": 2 }
+    },
+    {
+      "caption": "The client retries against Node 2. Failover took well under a second.",
+      "arch": { "fail": ["n1"], "active": ["client", ["client", "n2"]], "mark": ["n2"], "notes": { "n2": "leader, term 4" } },
+      "vars": { "term": 4, "leader": "Node 2" }
+    },
+    {
+      "caption": "Node 1 comes back still thinking it leads term 3. The first message it sees carries term 4, so it steps down. Alone it could never commit: 1 of 3 is not a majority.",
+      "arch": { "active": ["n1", ["n2", "n1"]], "mark": ["n2"], "notes": { "n1": "follower, t4" } },
+      "vars": { "term": 4, "leader": "Node 2" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>One subtlety interviewers like: until it hears of term 4, the old leader may still answer <em>reads</em> from a stale copy. Systems promising fresh reads confirm leadership with a majority first, or use a time-based lease.</p>
+
+<h2>Leases and fencing tokens</h2>
+
+<p>Most systems do not run consensus themselves. They ask a small consensus-backed coordination service (such as ZooKeeper or etcd) for a <strong>lease</strong>: "you are leader for the next 10 seconds; renew before then." If the holder dies, the lease expires and someone else gets it.</p>
+
+<p>A lease alone is not enough. A process paused for 15 seconds wakes believing its lease is valid and writes anyway. The fix is a <strong>fencing token</strong>: a number that grows with every grant, and storage rejects any write carrying a smaller number than one it has seen.</p>
+
+<x-tracer title="A paused leader is fenced off">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "a", "label": "Scheduler A", "kind": "worker", "col": 0, "row": 0 },
+      { "id": "b", "label": "Scheduler B", "kind": "worker", "col": 0, "row": 2 },
+      { "id": "coord", "label": "Coordination service", "kind": "service", "col": 1, "row": 1 },
+      { "id": "store", "label": "Billing store", "kind": "database", "col": 2, "row": 1 }
+    ],
+    "edges": [
+      { "from": "a", "to": "coord", "label": "lease" },
+      { "from": "b", "to": "coord", "label": "lease" },
+      { "from": "a", "to": "store", "label": "write + token" },
+      { "from": "b", "to": "store", "label": "write + token" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A gets a 10-second lease with token 33.",
+      "arch": { "active": ["a", "coord", ["a", "coord"]], "notes": { "a": "token 33" } },
+      "vars": { "store's highest token": 0 }
+    },
+    {
+      "caption": "A starts the billing run and writes with token 33. The store records 33 as the highest token seen.",
+      "arch": { "active": ["store", ["a", "store"]], "mark": ["store"], "notes": { "a": "token 33" } },
+      "vars": { "store's highest token": 33 }
+    },
+    {
+      "caption": "A pauses for 15 seconds (garbage collection). It cannot renew and does not know time passed.",
+      "arch": { "fail": ["a"], "notes": { "a": "paused" } },
+      "vars": { "store's highest token": 33 }
+    },
+    {
+      "caption": "The lease expires. B asks for it and gets token 34.",
+      "arch": { "fail": ["a"], "active": ["b", "coord", ["b", "coord"]], "notes": { "a": "paused", "b": "token 34" } },
+      "vars": { "store's highest token": 33 }
+    },
+    {
+      "caption": "B continues the run and writes with token 34. The store accepts it and now remembers 34.",
+      "arch": { "fail": ["a"], "active": [["b", "store"]], "mark": ["store"], "notes": { "a": "paused", "b": "token 34" } },
+      "vars": { "store's highest token": 34 }
+    },
+    {
+      "caption": "A wakes and writes with token 33, sure it is still leader. 33 is below 34, so the store rejects it. Split brain did no damage.",
+      "arch": { "fail": [["a", "store"]], "active": ["a"], "mark": ["store"], "notes": { "store": "reject 33" } },
+      "vars": { "store's highest token": 34 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-tradeoffs caption="Ways to pick one leader">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Lease from a coordination service", "good": "Proven consensus underneath; you write little code. Gives tokens for fencing.", "bad": "Another cluster to run; the leader must stop when it cannot renew.", "pick": "Schedulers, single-writer workers, shard owners.", "default": true },
+    { "name": "Database with built-in consensus", "good": "Replication, election and failover come with the store.", "bad": "Writes pay a majority round trip; across regions that is tens of ms.", "pick": "The data itself needs automatic failover without losing commits." },
+    { "name": "Lock row in an existing database", "good": "No new system: a row with owner and expiry time.", "bad": "Only as available as that database; you must add fencing yourself.", "pick": "Small systems that already depend on one database." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Where it shows up</h2>
+
+<ul>
+<li>Choosing the single leader of a replicated database, and promoting a new one.</li>
+<li>Metadata stores: which node owns which shard, cluster membership, configuration.</li>
+<li>Locks and "exactly one worker does this job" schedulers.</li>
+</ul>
+
+<p>Keep consensus for small, critical metadata, not every user request: a majority round trip on every request costs too much.</p>
+
+<x-estimate title="Commit latency with five nodes">
+<script type="application/json">
+{
+  "question": "A five-node cluster has its leader in region A. How long does the leader wait before a write is committed?",
+  "givens": ["Round trips from the leader to the other four nodes: 30 ms, 80 ms, 90 ms, 120 ms", "A write commits once a majority of the five nodes have stored it"],
+  "unit": "duration",
+  "answer": "80 ms",
+  "accept": ["40 ms", "240 ms"],
+  "steps": ["Majority of 5 = 3 nodes: the leader plus 2 followers", "The leader waits for the 2 fastest followers: 30 ms and 80 ms", "Commit after the slower of those two: 80 ms"],
+  "note": "Commit latency is set by the majority's slowest member, not the slowest node. Placing two nodes close to the leader cuts it."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Mention consensus when something needs exactly one owner (a leader, a lock, a shard map) or when you promise no lost writes on failover. Keep it to a sentence or two unless pushed: "The shard map lives in a consensus-backed store such as etcd, three nodes, so it survives one failure. Workers hold leases and every write carries a fencing token." Interviewers almost never want Raft on the whiteboard.</p>
+
+<x-interview title="Making the scheduler safe">
+<x-interviewer>How do you make sure only one scheduler runs the billing job?</x-interviewer>
+<x-you>Schedulers take a lease from a coordination service with three nodes, so it survives losing one. The lease is 10 seconds and renewed every 3. The holder runs the job.</x-you>
+<x-interviewer>What if the holder freezes and wakes up after the lease has moved?</x-interviewer>
+<x-you>It would still try to write. So each lease carries a fencing token, and the billing store rejects any write with a token lower than the highest it has seen. I also make each charge idempotent per customer and month, so even a duplicate run cannot bill twice.</x-you>
+<x-coach>A weak answer stops at "use a distributed lock". The strong one names the paused-process case and two independent defences.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Why three nodes and not two?"</strong> Two cannot form a majority after one fails. Three can.</li>
+<li><strong>"What happens on the minority side of a partition?"</strong> It cannot elect a leader or commit, so it refuses writes: consistency over availability.</li>
+<li><strong>"Isn't lease expiry enough on its own?"</strong> No. Clocks drift and processes pause, so a holder can act after its lease ended. Anything that must not happen twice needs fencing.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Heartbeats between two nodes">
+<p>Two nodes that each decide alone will both lead during a partition. Use an odd-sized majority, or a coordination service that has one.</p>
+</x-callout>
+
+<x-callout type="mistake" title="A lock without a fencing token">
+<p>A lock tells a process it may act; it cannot stop a process that has paused and lost the lock without knowing. Only the resource checking a token can.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "How many node failures can a 5-node majority-based cluster survive and still commit writes?",
+      "options": [
+        { "text": "1", "why": "That is a 3-node cluster. A majority of 5 is 3, so 2 can fail." },
+        { "text": "2", "correct": true, "why": "5 − 2 = 3 nodes remain, still a majority of 5." },
+        { "text": "4", "why": "One node alone is not a majority, so it cannot commit." }
+      ]
+    },
+    {
+      "question": "A storage service has seen fencing token 52. A write arrives with token 51. What should happen?",
+      "options": [
+        { "text": "Accept it; the sender holds a lease", "why": "Token 51 belongs to an older lease that has been replaced." },
+        { "text": "Reject it", "correct": true, "why": "A lower token means a newer leader exists. This is the paused old leader." },
+        { "text": "Accept it if it arrived within 10 seconds", "why": "Time checks fail with paused processes and drifting clocks. Tokens do not." }
+      ]
+    },
+    {
+      "question": "Why is a 4-node cluster rarely chosen over 3?",
+      "options": [
+        { "text": "It tolerates the same 1 failure and needs one more vote per write", "correct": true, "why": "A majority of 4 is 3, so losing 2 stops it, as with 3 nodes." },
+        { "text": "Raft forbids even sizes", "why": "It allows them; they just add cost without adding tolerance." },
+        { "text": "It cannot elect a leader", "why": "It can, with 3 of 4 votes." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Consensus often hands out the machine numbers used to build <a href="/system-design/unique-ids.html">unique IDs</a>. To see a lease-based leader in a full design, work through <a href="/system-design/design-a-job-scheduler.html">Design a Job Scheduler</a>.</p>

@@ -1,0 +1,259 @@
+<!--
+{
+  "title": "Caching",
+  "description": "Keep hot data in memory so most reads skip the database: where caches sit, how to keep them fresh, what to evict, and how to talk about it in an interview.",
+  "minutes": 18,
+  "tags": ["caching", "building blocks", "performance"]
+}
+-->
+<p>An online shop's product page reads one row from the database per view. On a normal day that is 400 reads a second. During a sale it is 4,000 a second, each read takes about 5 ms, and the database starts timing out, even though nearly every read asks for one of the same few hundred products.</p>
+
+<p>A cache fixes this by remembering answers: the first request for product 42 goes to the database, and the next few thousand get a copy from memory in about half a millisecond.</p>
+
+<h2>The idea</h2>
+
+<p>A cache is a small, fast store of copies of data that is expensive to fetch or compute. Check it first. If the value is there (a <strong>hit</strong>), return it. If not (a <strong>miss</strong>), read the source and keep a copy for next time.</p>
+
+<p>It works because real traffic is lopsided: a small share of keys gets most of the reads. If 90% of reads hit the cache, the database sees 4,000 × 0.1 = 400 reads a second during the sale, the same load as a quiet day. Average latency drops too: 0.9 × 0.5 ms + 0.1 × (0.5 + 5) ms = 1 ms, against 5 ms with no cache.</p>
+
+<p>The price is that you now have two copies of the data, and they can disagree. Most of caching is deciding how much disagreement you can live with.</p>
+
+<x-arch caption="Caches sit at several layers. The browser and the CDN keep static files; a shared cache beside the database holds hot rows and computed results.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "browser", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "cdn", "label": "CDN", "kind": "cdn", "col": 1, "row": 0 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "cache", "label": "Cache cluster", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "browser", "to": "cdn", "label": "images, JS" },
+    { "from": "browser", "to": "lb", "label": "page request" },
+    { "from": "lb", "to": "app" },
+    { "from": "app", "to": "cache", "label": "get / set" },
+    { "from": "app", "to": "db", "label": "read on miss" }
+  ]
+}
+</script>
+</x-arch>
+
+<h2>Hit, miss and invalidation</h2>
+
+<p>The most common pattern is <strong>cache-aside</strong>: the application talks to both the cache and the database. Step through two reads and a write, and watch what the write must do to the cached copy.</p>
+
+<x-tracer title="Cache-aside: a hit, a miss, a write, a failure">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "shopper", "label": "Shopper", "kind": "client", "col": 0, "row": 0 },
+      { "id": "editor", "label": "Price editor", "kind": "client", "col": 0, "row": 2 },
+      { "id": "app", "label": "App server", "kind": "service", "col": 1, "row": 1 },
+      { "id": "cache", "label": "Cache", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "shopper", "to": "app", "label": "GET product" },
+      { "from": "editor", "to": "app", "label": "PUT price" },
+      { "from": "app", "to": "cache" },
+      { "from": "app", "to": "db" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A shopper asks for product 42.",
+      "arch": { "active": ["shopper", ["shopper", "app"]] },
+      "vars": { "cache hits": 0, "db reads": 0 }
+    },
+    {
+      "caption": "It asks the cache for key <code>p:42</code>. The key is there: a hit, in about 0.5 ms.",
+      "arch": { "active": ["app", "cache", ["app", "cache"]], "notes": { "cache": "hit" } },
+      "vars": { "cache hits": 1, "db reads": 0 }
+    },
+    {
+      "caption": "The page goes back to the shopper. The database was never touched.",
+      "arch": { "active": [["app", "shopper"]], "mark": ["shopper"] },
+      "vars": { "cache hits": 1, "db reads": 0 }
+    },
+    {
+      "caption": "Product 77 is not in the cache: a miss.",
+      "arch": { "active": ["app", "cache", ["app", "cache"]], "notes": { "cache": "miss" } },
+      "vars": { "cache hits": 1, "db reads": 0 }
+    },
+    {
+      "caption": "The app reads product 77 from the database, about 5 ms.",
+      "arch": { "active": ["db", ["app", "db"]], "notes": { "db": "read p:77" } },
+      "vars": { "cache hits": 1, "db reads": 1 }
+    },
+    {
+      "caption": "It stores the row in the cache with a 10-minute time to live (TTL), so the next reads of 77 are hits.",
+      "arch": { "active": ["cache", ["app", "cache"]], "notes": { "cache": "set, TTL 10m" } },
+      "vars": { "cache hits": 1, "db reads": 1 }
+    },
+    {
+      "caption": "An editor changes the price of product 42. The app writes the database first: it is the source of truth.",
+      "arch": { "active": ["editor", "db", ["editor", "app"], ["app", "db"]], "notes": { "db": "p:42 = $18" } },
+      "vars": { "cache hits": 1, "db reads": 1 }
+    },
+    {
+      "caption": "Then it deletes <code>p:42</code> from the cache. Skip this and shoppers see the old price until the TTL runs out.",
+      "arch": { "active": ["cache", ["app", "cache"]], "notes": { "cache": "delete p:42" } },
+      "vars": { "cache hits": 1, "db reads": 1 }
+    },
+    {
+      "caption": "The next read of 42 misses, loads $18 and caches it again.",
+      "arch": { "active": ["db", ["app", "db"]], "mark": ["cache"], "notes": { "cache": "p:42 = $18" } },
+      "vars": { "cache hits": 1, "db reads": 2 }
+    },
+    {
+      "caption": "Now the cache node dies. All 4,000 reads a second land on a database sized for 400. Plan for this with cache replicas and a limit on the traffic that falls through.",
+      "arch": { "fail": ["cache"], "active": ["db", ["app", "db"]], "dim": [["app", "cache"]], "notes": { "db": "4,000 reads/s" } },
+      "vars": { "cache hits": 1, "db reads": "4,000/s" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Four ways to wire a cache</h2>
+
+<p>The options differ in who loads the cache and when writes reach the database.</p>
+
+<x-tradeoffs caption="Read and write strategies">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Cache-aside",
+      "good": "Simple. Only data that is read gets cached. If the cache dies, the app still works, slower.",
+      "bad": "A miss costs three trips. Every write path must remember to invalidate.",
+      "pick": "Read-heavy data. The default answer in an interview.",
+      "default": true
+    },
+    {
+      "name": "Read-through",
+      "good": "The cache loads misses itself; the app reads from one place.",
+      "bad": "The cache must know how to query your database.",
+      "pick": "Your cache library supports it and you want simpler app code."
+    },
+    {
+      "name": "Write-through",
+      "good": "Writes update cache and database together, so reads after a write are fresh.",
+      "bad": "Slower writes. Data never read still fills the cache.",
+      "pick": "Data is read right after it is written (a user's own profile)."
+    },
+    {
+      "name": "Write-behind",
+      "good": "Writes return once the cache has them; the database is updated later in batches.",
+      "bad": "If the cache dies before flushing, acknowledged writes are lost.",
+      "pick": "Huge write rates where losing seconds of data is fine (view counters)."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h3>What to drop when memory is full</h3>
+
+<p>A full cache must evict something. <strong>LRU</strong> (least recently used) drops the key untouched for longest; it is the usual default because recent use predicts the next use. <strong>LFU</strong> (least frequently used) keeps long-term favourites, but last week's hot key can squat in memory. A <strong>TTL</strong> is a different tool: it removes entries too old to trust, even if there is room. Use LRU for space and a TTL as a safety net for any invalidation you miss.</p>
+
+<h3>The stampede</h3>
+
+<p>A popular key expires. Every request that arrives before someone refills it is a miss, and each one runs the same database query. If rebuilding the home page feed takes 200 ms and 4,000 requests arrive a second, about 4,000 × 0.2 = 800 identical queries pile onto the database at once. That is a <strong>cache stampede</strong>, and it can take down the database the cache was protecting.</p>
+
+<p>The fixes make one request rebuild the value while the rest wait or use the old one: a short lock per key in the cache, or request coalescing in each server. Also refresh hot keys a little before they expire, and add random jitter to TTLs so keys written together do not expire together.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Reading memory on the same machine: about 100 ns. A round trip to another machine in the same data center: about 0.5 ms. A networked cache read is mostly that round trip.</li>
+<li>An indexed database read: about 1 to 10 ms, more under load.</li>
+<li>One in-memory cache node: on the order of 100,000 simple reads a second.</li>
+<li>Sizing: hot items × bytes per item. 10 million hot products at 2 KB each is 10<sup>7</sup> × 2 × 10<sup>3</sup> = 20 GB, which fits in one large node or a small cluster.</li>
+</ul>
+
+<x-estimate title="Hit rate and database load">
+<script type="application/json">
+{
+  "question": "With the cache in place, how many reads per second still reach the database at peak?",
+  "givens": ["4,000 product page views a second at peak", "Each view reads one product", "The cache hit rate is 95%"],
+  "unit": "count/s",
+  "answer": "200/s",
+  "accept": ["100/s", "400/s"],
+  "steps": ["Misses are 100% − 95% = 5% of reads", "4,000 × 0.05 = 200 reads a second reach the database"],
+  "note": "Going from 90% to 95% hits halves the database load."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring up a cache when reads dominate (10 per write or more) and some keys are much hotter than others, or when a result is expensive to compute and often requested. Give the numbers and say what staleness you accept. Adding a cache to every box by reflex is a red flag.</p>
+
+<x-interview title="Adding a cache to a product page">
+<x-interviewer>Product pages get slow during sales. What would you change?</x-interviewer>
+<x-you>Reads outnumber writes about 100 to 1 here, and a few hundred products get most of the views, so I'd put a cache-aside layer in front of the product table. Key by product id, 10-minute TTL, and the write path deletes the key when a price changes.</x-you>
+<x-coach>It names the read/write ratio and the skew before the tool. That is the judgement being tested.</x-coach>
+<x-interviewer>A customer sees a stale price at checkout. Is that acceptable?</x-interviewer>
+<x-you>On the listing page, a few seconds of staleness is fine. At checkout, no: checkout reads the price from the database, so the cache can never charge someone the wrong amount.</x-you>
+<x-interviewer>What happens if the cache cluster goes down?</x-interviewer>
+<x-you>Reads fall through at ten times the normal database load. I'd run cache replicas, rate limit the fall-through so the database degrades instead of dying, and warm the cache before it takes full traffic again.</x-you>
+</x-interview>
+
+<p>Follow-ups you should expect, with short answers:</p>
+
+<ul>
+<li><strong>"How do you keep the cache consistent?"</strong> Delete on write, plus a TTL as a safety net. For data that must never be stale, read the database.</li>
+<li><strong>"What if one key is extremely hot?"</strong> Keep a copy in each app server's memory for a few seconds.</li>
+<li><strong>"Why delete instead of updating the cached value on write?"</strong> Two writers updating the cache can finish in the wrong order and leave the older value cached. A delete cannot.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Updating the cache before the database">
+<p>If the database write fails after the cache was updated, readers see a value that never existed. Write the database first, then delete the cache key.</p>
+</x-callout>
+
+<x-callout type="mistake" title="No plan for a cold or dead cache">
+<p>After a cache failure the hit rate is zero. If the database cannot take the full read load, warm the cache first or limit the traffic that falls through.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Reads hit a cache 80% of the time. Each cache read costs 1 ms and each database read 10 ms. What is the average read latency with cache-aside?",
+      "options": [
+        { "text": "2.8 ms", "why": "That is 0.8 × 1 + 0.2 × 10. A miss also pays for the cache lookup that failed." },
+        { "text": "3 ms", "correct": true, "why": "0.8 × 1 + 0.2 × (1 + 10) = 0.8 + 2.2 = 3 ms. Every miss pays for both trips." },
+        { "text": "8.2 ms", "why": "That weights the database read by the hit rate, but hits never reach the database." }
+      ]
+    },
+    {
+      "question": "A popular key expires and 500 requests miss at once, each running the same 300 ms query. Which fix targets this directly?",
+      "options": [
+        { "text": "A larger cache", "why": "The key expired; it was not evicted for lack of space." },
+        { "text": "Let one request rebuild the key while the others wait or get the stale value", "correct": true, "why": "That turns 500 identical queries into one: the stampede fix." },
+        { "text": "Switch from LRU to LFU eviction", "why": "Eviction only matters when memory is full. This key expired." }
+      ]
+    },
+    {
+      "question": "View counters are updated 50,000 times a second and losing a few seconds of counts is fine. Which write strategy fits?",
+      "options": [
+        { "text": "Write-through", "why": "Every increment would wait on the database, the bottleneck you want to avoid." },
+        { "text": "Write-behind", "correct": true, "why": "Increments land in memory and are flushed in batches. A crash loses seconds of counts, which is acceptable." },
+        { "text": "Cache-aside with delete on write", "why": "Deleting the counter on every increment would make every read a miss." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Caches spread across machines need a way to decide which node holds which key: that is <a href="/system-design/consistent-hashing.html">consistent hashing</a>. To see a cache inside a full design, work through <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a>.</p>

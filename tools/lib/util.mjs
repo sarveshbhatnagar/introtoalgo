@@ -79,12 +79,17 @@ export function parseAttrs(str) {
 
 /* ---------- curriculum ---------- */
 
+// Lesson slugs are looked up per track (cur.trackLessons.get(trackId).get(slug)).
+// They are also unique across tracks, so `related`, practice topics and
+// "start here" can name a lesson by slug alone (cur.lessons.get(slug)).
 export function loadCurriculum() {
   const cur = readJSON(join(CONTENT, 'curriculum.json'));
   const lessons = new Map(); // slug -> info
+  const trackLessons = new Map(); // track id -> Map(slug -> info)
   for (const track of cur.tracks) {
     let index = 0;
     track.allLessons = [];
+    trackLessons.set(track.id, new Map());
     track.modules.forEach((mod, mi) => {
       mod.number = mi + 1;
       mod.track = track;
@@ -93,14 +98,16 @@ export function loadCurriculum() {
         info.url = `${track.path}${l.slug}.html`;
         info.file = join(CONTENT, track.id, `${l.slug}.html`);
         info.exists = existsSync(info.file);
-        if (lessons.has(l.slug)) throw new Error(`curriculum.json: lesson slug "${l.slug}" is used twice`);
+        if (lessons.has(l.slug)) throw new Error(`curriculum.json: lesson slug "${l.slug}" is used twice (in ${lessons.get(l.slug).track} and ${track.id})`);
         lessons.set(l.slug, info);
+        trackLessons.get(track.id).set(l.slug, info);
         track.allLessons.push(info);
       });
     });
   }
   const topics = new Map(cur.practiceTopics.map((t, i) => [t.id, { ...t, index: i }]));
-  return { ...cur, lessons, topics };
+  for (const t of cur.practiceTopics) for (const s of t.lessons) if (!lessons.has(s)) throw new Error(`curriculum.json: practice topic "${t.id}" names unknown lesson "${s}"`);
+  return { ...cur, lessons, trackLessons, trackIds: cur.tracks.map((t) => t.id), topics };
 }
 
 export const PROBLEM_DIR = join(CONTENT, 'practice');

@@ -26,7 +26,7 @@ if (article) {
   });
   paint();
 
-  store.pushRecent({ url: location.pathname, title: article.dataset.title, kind: track === 'ai' ? 'AI lesson' : 'Lesson', track });
+  store.pushRecent({ url: location.pathname, title: article.dataset.title, kind: article.dataset.kindLabel || 'Lesson', track });
 
   // highlight the section being read in the side table of contents
   const links = [...document.querySelectorAll('.toc a')];

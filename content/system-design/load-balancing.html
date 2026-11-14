@@ -1,0 +1,264 @@
+<!--
+{
+  "title": "Load Balancing",
+  "description": "Spread requests over many servers and route around dead ones: layer 4 vs 7, algorithms, health checks, sticky sessions and a balancer that stays up.",
+  "minutes": 14,
+  "tags": ["load balancing", "building blocks", "availability", "scaling"]
+}
+-->
+<p>Launch day: the API expects 3,000 requests a second at peak, and one app server handles about 1,000 before its latency climbs. So you need at least three servers. But clients know one address, and when one of those servers crashes mid-afternoon, somebody has to stop sending it traffic.</p>
+
+<h2>The idea</h2>
+
+<p>A load balancer sits in front of many identical servers and owns the public address; it picks a server for each request or connection. That gives you two things at once: <strong>capacity</strong>, because you scale by adding servers behind it, and <strong>availability</strong>, because a dead server is taken out of the pool.</p>
+
+<p>It costs an extra hop (under a millisecond inside a data center), one more component that must not fail, and a rule: any server must be able to handle any request. That rule is what "stateless" means.</p>
+
+<x-arch caption="Clients reach one virtual IP. The active balancer spreads requests over the app servers; the standby takes the IP over if the active one stops sending heartbeats. Session data lives in a shared store, so any server can serve any user.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Clients", "kind": "client", "col": 0, "row": 1 },
+    { "id": "lb1", "label": "Load balancer (active)", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "lb2", "label": "Load balancer (standby)", "kind": "load-balancer", "col": 1, "row": 3 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "sessions", "label": "Session store", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "lb1", "label": "virtual IP" },
+    { "from": "lb1", "to": "lb2", "label": "heartbeat", "arrow": "both" },
+    { "from": "lb1", "to": "app" },
+    { "from": "app", "to": "sessions" },
+    { "from": "app", "to": "db" }
+  ]
+}
+</script>
+</x-arch>
+
+<h2>Spreading requests and surviving a crash</h2>
+
+<p>Run four servers, not three, so losing one still leaves enough. Each then gets 3,000 ÷ 4 = 750 requests a second. Step through round robin, then a crash.</p>
+
+<x-tracer title="Round robin over four servers, then server C dies">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Clients", "kind": "client", "col": 0, "row": 1 },
+      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+      { "id": "a", "label": "Server A", "kind": "service", "col": 2, "row": 0 },
+      { "id": "b", "label": "Server B", "kind": "service", "col": 3, "row": 0 },
+      { "id": "c", "label": "Server C", "kind": "service", "col": 2, "row": 2 },
+      { "id": "d", "label": "Server D", "kind": "service", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "lb" },
+      { "from": "lb", "to": "a" },
+      { "from": "lb", "to": "b" },
+      { "from": "lb", "to": "c" },
+      { "from": "lb", "to": "d" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Request 1 arrives. Round robin hands requests to servers in turn, so it goes to A.",
+      "arch": { "active": ["client", "lb", "a", ["client", "lb"], ["lb", "a"]] },
+      "vars": { "next": "B", "rps per server": 750 }
+    },
+    {
+      "caption": "Requests 2, 3 and 4 go to B, C and D. Each server gets 750 of the 3,000 a second.",
+      "arch": { "active": ["b", "c", "d", ["lb", "b"], ["lb", "c"], ["lb", "d"]], "mark": ["a"] },
+      "vars": { "next": "A", "rps per server": 750 }
+    },
+    {
+      "caption": "Every 5 seconds the balancer calls <code>GET /health</code> on each server. All four answer 200, so all stay in the pool.",
+      "arch": { "active": ["lb", ["lb", "a"], ["lb", "b"], ["lb", "c"], ["lb", "d"]], "mark": ["a", "b", "c", "d"], "notes": { "lb": "health check" } },
+      "vars": { "next": "A", "rps per server": 750 }
+    },
+    {
+      "caption": "Server C's process crashes. The balancer does not know yet, and the next request for C gets <code>connection refused</code>.",
+      "arch": { "fail": ["c"], "active": ["lb", ["lb", "c"]], "notes": { "c": "refused" } },
+      "vars": { "next": "D", "rps per server": 750 }
+    },
+    {
+      "caption": "The request never reached a server, so the balancer can safely retry it on D. A request that timed out after reaching C is different: retry it only if it is <a href=\"/system-design/idempotency-and-retries.html\">idempotent</a>.",
+      "arch": { "fail": ["c"], "active": ["d", ["lb", "d"]], "notes": { "d": "retry" } },
+      "vars": { "next": "A", "rps per server": 750 }
+    },
+    {
+      "caption": "C fails two health checks in a row and is marked down, at most about 10 seconds after the crash. Without retries, a quarter of requests would fail in that window: up to 750 × 10 = 7,500 errors.",
+      "arch": { "fail": ["c"], "dim": [["lb", "c"]], "active": ["lb"], "notes": { "c": "out of pool" } },
+      "vars": { "next": "A", "rps per server": 750 }
+    },
+    {
+      "caption": "Now A, B and D share the load: 3,000 ÷ 3 = 1,000 each, exactly their limit. The fourth server was not waste; it was what kept the site up.",
+      "arch": { "fail": ["c"], "dim": [["lb", "c"]], "active": ["a", "b", "d", ["lb", "a"], ["lb", "b"], ["lb", "d"]], "notes": { "a": "1,000/s", "b": "1,000/s", "d": "1,000/s" } },
+      "vars": { "next": "B", "rps per server": 1000 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Health checks come in two kinds. <strong>Active</strong> checks call an endpoint on a timer, as above. <strong>Passive</strong> checks watch real traffic and eject a server that returns errors or times out, which catches problems faster.</p>
+
+<h2>Layer 4 or layer 7</h2>
+
+<x-tradeoffs caption="What the balancer can see">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Layer 7 (HTTP)",
+      "good": "Reads each request: routes by path or header, terminates TLS, retries, balances each request separately even when they share a connection.",
+      "bad": "More CPU and a little more latency per request. Only works for protocols it understands.",
+      "pick": "Web apps and APIs. The usual answer.",
+      "default": true
+    },
+    {
+      "name": "Layer 4 (TCP/UDP)",
+      "good": "Forwards connections by IP and port without reading them. Very fast, works for any protocol.",
+      "bad": "Cannot route by URL or retry a single request. A long-lived connection stays on one server, however busy it gets.",
+      "pick": "Non-HTTP traffic, huge connection counts, or when TLS must pass through untouched."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Choosing a server</h2>
+
+<x-tradeoffs caption="Balancing algorithms">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Round robin",
+      "good": "Simple and even when requests cost about the same. Weighted round robin gives bigger servers more.",
+      "bad": "Ignores load: a server stuck on slow requests keeps getting its full share.",
+      "pick": "Short, similar requests. The default.",
+      "default": true
+    },
+    {
+      "name": "Least connections",
+      "good": "Sends work to the server with the fewest open connections, so slow requests do not pile up.",
+      "bad": "Needs per-server counts. A new empty server can be flooded at first.",
+      "pick": "Request times vary a lot, or connections are long-lived (WebSockets)."
+    },
+    {
+      "name": "Hash of a key",
+      "good": "The same user or key always lands on the same server, which keeps its local cache warm.",
+      "bad": "Hot keys make hot servers. Adding a server moves keys unless you use consistent hashing.",
+      "pick": "Per-key locality matters: cache shards, a user's in-memory state."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Hashing is where <a href="/system-design/consistent-hashing.html">consistent hashing</a> comes in: with a plain <code>hash % n</code>, going from 4 to 5 servers moves about 4 keys in 5 to a different server.</p>
+
+<h2>Sticky sessions and stateless servers</h2>
+
+<p>If server A keeps your shopping cart in its own memory, every request from you must reach A. Balancers can do that with <strong>sticky sessions</strong>, usually a cookie naming the server. But load gets uneven, and when A dies the carts on it are gone.</p>
+
+<p>The better answer is <strong>stateless</strong> servers: keep session data in a shared store (an in-memory store such as Redis) or in a signed token the client sends. Then any server can handle any request, a crash loses nothing, and you add or remove servers freely.</p>
+
+<h2>When the balancer is the weak point</h2>
+
+<p>One balancer in front of everything is a single point of failure. The usual fix is the pair in the first diagram: an active and a standby that share a virtual IP, with the standby taking the IP when heartbeats stop. At larger scale, run several active balancers and spread clients over them with DNS returning several addresses, or with one address announced from many places (anycast). Managed cloud balancers already do this; say so rather than drawing it.</p>
+
+<p><strong>Reverse proxies and API gateways</strong> sit in the same spot. A reverse proxy receives requests on behalf of servers: it terminates TLS, compresses and caches. A layer 7 load balancer is a reverse proxy that spreads load. An API gateway is a reverse proxy with API concerns added: authentication, <a href="/system-design/rate-limiting.html">rate limiting</a>, and routing <code>/orders</code> and <code>/users</code> to different services. In a diagram, one box labelled "API gateway / load balancer" is fine.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Worst-case detection time is check interval × failures needed: 5 s × 2 = about 10 s.</li>
+<li>Servers needed: peak requests ÷ per-server capacity, rounded up, plus at least one spare.</li>
+</ul>
+
+<x-estimate title="How many app servers">
+<script type="application/json">
+{
+  "question": "How many app servers do you run so the peak is still served after one server fails?",
+  "givens": ["2,000 requests a second on average", "Peak is 3 times the average", "One server handles 500 requests a second at a healthy load"],
+  "unit": "count",
+  "answer": "13",
+  "accept": ["6", "40"],
+  "steps": ["Peak: 2,000 × 3 = 6,000 requests a second", "Servers at peak: 6,000 ÷ 500 = 12", "One spare for a failure: 12 + 1 = 13"],
+  "note": "With several zones, size so losing a whole zone still leaves enough: more spare than one server."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Draw a load balancer as soon as you have more than one server, then name the choices it implies: "Layer 7, round robin, health checks every few seconds, and the app servers are stateless, with sessions in a shared store, so I can scale them freely."</p>
+
+<x-interview title="Sessions behind a balancer" tone="weak">
+<x-interviewer>Users keep getting logged out. Why might that be?</x-interviewer>
+<x-you>We could turn on sticky sessions so each user stays on one server.</x-you>
+<x-coach>It patches the symptom and keeps the real problem: the session lives on one machine, so a deploy or crash still logs users out.</x-coach>
+</x-interview>
+
+<x-interview title="Sessions behind a balancer" tone="strong">
+<x-interviewer>Users keep getting logged out. Why might that be?</x-interviewer>
+<x-you>Sounds like sessions live in each server's memory and the balancer sends the next request elsewhere. I'd move sessions to a shared store, so any server can read them and a server restart loses nothing. Stickiness can stay as a cache-warmth hint, not as the place the data lives.</x-you>
+<x-coach>It names the cause, fixes it at the root, and says what stickiness is still good for.</x-coach>
+</x-interview>
+
+<p>Follow-ups to expect:</p>
+
+<ul>
+<li><strong>"What if the load balancer dies?"</strong> Active-standby pair sharing a virtual IP, or several active ones behind DNS or anycast.</li>
+<li><strong>"How do you deploy without dropping requests?"</strong> Take a server out of the pool, let in-flight requests finish (draining), update it, put it back.</li>
+<li><strong>"WebSockets behind a balancer?"</strong> Least connections, since each connection lasts hours, and plan for clients reconnecting when a server goes away.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Sizing for exactly the peak">
+<p>Three servers for a load that needs three means one crash overloads the other two, and they fall over too. Always add spare capacity for the failure you expect.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Health checks that test everything">
+<p>If <code>/health</code> fails whenever any dependency is slow, one shared hiccup marks every server down at once. Check that this server can work; let the dependencies have their own alarms.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Health checks run every 10 seconds and a server is marked down after 3 failures in a row. It crashes while taking 400 requests a second, and the balancer does not retry. About how many requests fail?",
+      "options": [
+        { "text": "About 4,000", "why": "That counts one check interval, but it takes three failed checks to remove the server." },
+        { "text": "About 12,000", "correct": true, "why": "Detection takes up to 10 × 3 = 30 seconds, and 400 × 30 = 12,000 requests hit the dead server." },
+        { "text": "About 1,200", "why": "That multiplies 400 by the 3 failures, not by the 30 seconds they take." }
+      ]
+    },
+    {
+      "question": "A chat service keeps WebSocket connections open for hours, and some users are much more active than others. Which balancing algorithm fits?",
+      "options": [
+        { "text": "Round robin", "why": "It hands out new connections evenly, but long connections end at different times, so open counts drift apart." },
+        { "text": "Least connections", "correct": true, "why": "Long-lived connections pile up unevenly; sending new ones to the emptiest server keeps the count balanced." },
+        { "text": "Hash of the client IP", "why": "Many users share an IP behind an office or mobile network, so some servers get far more connections." }
+      ]
+    },
+    {
+      "question": "You need to route <code>/api/orders</code> to one service and <code>/api/users</code> to another. What do you need?",
+      "options": [
+        { "text": "A layer 4 balancer", "why": "It sees IPs and ports only, never the URL path." },
+        { "text": "A layer 7 balancer or API gateway", "correct": true, "why": "It reads the HTTP request, so it can route by path." },
+        { "text": "Two DNS names", "why": "That changes the public API instead of routing it." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Once requests reach your servers, the next win is not doing the same work twice: <a href="/system-design/caching.html">Caching</a>. To see a balancer in front of separate read and write paths, work through <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a>.</p>

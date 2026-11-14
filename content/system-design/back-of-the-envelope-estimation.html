@@ -1,0 +1,241 @@
+<!--
+{
+  "title": "Back-of-the-Envelope Estimation",
+  "description": "Turn daily users into requests per second, storage, bandwidth and servers with rounded arithmetic done out loud, and use each number to decide.",
+  "minutes": 18,
+  "tags": ["interview", "estimation", "numbers"]
+}
+-->
+<p>A candidate designing a photo-sharing app is told "10 million daily users". They spend four minutes dividing by 86,400, get 3,472.2 requests a second, and then draw the design they would have drawn for 30 or for 300,000. The interviewer learned nothing about their judgment.</p>
+
+<p>Estimation has one job: find out which numbers are big enough to change the design. You want the right order of magnitude in under four minutes, out loud, and then a sentence that starts "so...".</p>
+
+<h2>The handful of facts you need</h2>
+
+<p>Almost every estimate is built from these conversions. Memorize them.</p>
+
+<table>
+<thead><tr><th>Power of two</th><th>About</th><th>Name</th><th>Bytes</th></tr></thead>
+<tbody>
+<tr><td>2<sup>10</sup> = 1,024</td><td>10<sup>3</sup></td><td>thousand</td><td>KB</td></tr>
+<tr><td>2<sup>20</sup></td><td>10<sup>6</sup></td><td>million</td><td>MB</td></tr>
+<tr><td>2<sup>30</sup></td><td>10<sup>9</sup></td><td>billion</td><td>GB</td></tr>
+<tr><td>2<sup>40</sup></td><td>10<sup>12</sup></td><td>trillion</td><td>TB</td></tr>
+<tr><td>2<sup>50</sup></td><td>10<sup>15</sup></td><td>quadrillion</td><td>PB</td></tr>
+</tbody>
+</table>
+
+<p>The powers of two drift from the powers of ten (2<sup>40</sup> is about 10% more than 10<sup>12</sup>), which never matters at this precision. Interviews use powers of ten: 1 KB = 1,000 bytes.</p>
+
+<ul>
+<li><strong>A day is about 100,000 seconds.</strong> The real figure is 86,400. Dividing by 100,000 gives rates about 14% low; say so once and move on.</li>
+<li><strong>A month is about 2.5 million seconds</strong> (30 × 86,400 ≈ 2.6 million). <strong>A year is about 30 million</strong> (365 × 86,400 ≈ 31.5 million).</li>
+<li><strong>1 million a day is about 10 a second.</strong> 1 billion a month is about 400 a second.</li>
+<li><strong>Sizes:</strong> an ASCII character is 1 byte, an integer or a timestamp 8 bytes, a UUID 16 bytes. A small database row is a few hundred bytes. Photo sizes and server capacity are for the interviewer to give or for you to state as assumptions.</li>
+</ul>
+
+<p>Latency figures (a memory read, a disk seek, a cross-region round trip) live in <a href="/system-design/numbers-to-know.html">numbers to know</a>.</p>
+
+<h2>From daily users to servers</h2>
+
+<p>The core chain: daily users times actions per user gives requests a day; divide by 100,000 for the average rate; multiply by a peak factor; divide by what one server handles. Step through it for the photo app.</p>
+
+<x-tracer title="10 million daily users to a server count">
+<script type="application/json">
+{
+  "code": [
+    "requests/day = daily users × requests per user",
+    "average QPS  = requests/day ÷ 100,000",
+    "peak QPS     = average QPS × peak factor",
+    "servers      = peak QPS ÷ QPS per server ÷ 0.7"
+  ],
+  "steps": [
+    {
+      "caption": "The interviewer gives 10 million daily active users. You ask how active they are and hear: about 30 API requests each a day (loading feed pages, liking, commenting).",
+      "line": 1,
+      "vars": { "daily users": "10 million", "requests each": 30 }
+    },
+    {
+      "caption": "10 million × 30 = 300 million requests a day. Big numbers are easier as powers of ten: 10<sup>7</sup> × 30 = 3 × 10<sup>8</sup>.",
+      "line": 1,
+      "vars": { "daily users": "10 million", "requests each": 30, "requests/day": "3 × 10⁸" }
+    },
+    {
+      "caption": "Divide by 100,000 seconds: 3 × 10<sup>8</sup> ÷ 10<sup>5</sup> = 3,000 a second on average. The exact figure is about 3,500; the rounding is fine for sizing.",
+      "line": 2,
+      "vars": { "requests/day": "3 × 10⁸", "average QPS": "3,000" }
+    },
+    {
+      "caption": "Traffic is not flat: evenings are busier than nights. Assume peak is 3 times average for a consumer app in one country, and say it is an assumption. Peak: 9,000 a second.",
+      "line": 3,
+      "vars": { "average QPS": "3,000", "peak factor": 3, "peak QPS": "9,000" }
+    },
+    {
+      "caption": "Assume one stateless API server handles about 1,000 requests a second (ask, or state it). 9,000 ÷ 1,000 = 9 servers at full load.",
+      "line": 4,
+      "vars": { "peak QPS": "9,000", "per server": "1,000", "servers": 9 }
+    },
+    {
+      "caption": "Never plan to run servers at 100%. At 70% target load: 9 ÷ 0.7 ≈ 13 servers. The decision: this is a small fleet behind a load balancer, not a scaling problem.",
+      "line": 4,
+      "vars": { "peak QPS": "9,000", "per server": "1,000", "servers": 13 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Each number should end with "so": so it fits on one machine, so it needs a CDN, so we must partition.</p>
+
+<h2>Storage, bandwidth and memory</h2>
+
+<p><strong>Storage</strong> is items a day × bytes per item × days kept × copies. <strong>Bandwidth</strong> is requests a second × bytes per response. <strong>Cache memory</strong> is the number of hot items × bytes per item. Try each before opening the answer.</p>
+
+<x-estimate title="Photo storage for one year">
+<script type="application/json">
+{
+  "question": "How much disk do one year of uploaded photos need, counting all copies?",
+  "givens": ["2 million photos uploaded a day", "500 KB per stored photo", "3 copies of every photo for durability"],
+  "unit": "bytes",
+  "answer": "1 PB",
+  "accept": ["300 TB", "3 PB"],
+  "steps": ["Per day: 2 × 10<sup>6</sup> × 5 × 10<sup>5</sup> B = 10<sup>12</sup> B = 1 TB", "Per year: 1 TB × 365 = 365 TB", "Three copies: 365 × 3 ≈ 1,100 TB, about 1 PB"],
+  "note": "A petabyte a year rules out keeping photos in a database. They go to blob storage; the database keeps a small row per photo."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Photo bandwidth">
+<script type="application/json">
+{
+  "question": "How much photo data per second goes out to viewers on average?",
+  "givens": ["10 million daily users", "Each views 50 photos a day", "A displayed photo is 200 KB (a smaller version than the stored original)"],
+  "unit": "bytes/s",
+  "answer": "1 GB/s",
+  "accept": ["300 MB/s", "3 GB/s"],
+  "steps": ["Views a day: 10<sup>7</sup> × 50 = 5 × 10<sup>8</sup>", "Per second: 5 × 10<sup>8</sup> ÷ 10<sup>5</sup> = 5,000 views a second", "5,000 × 200 KB = 10<sup>9</sup> B/s = 1 GB/s"],
+  "note": "1 GB/s is 8 Gbit/s on average and about 24 Gbit/s at a 3x peak. That is a job for a CDN, not for your API servers."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Cache for recent photo metadata">
+<script type="application/json">
+{
+  "question": "You want the metadata of every photo from the last 7 days in memory. About how much memory is that?",
+  "givens": ["2 million photos uploaded a day", "1 KB of metadata per photo (owner, caption, timestamps, storage key)"],
+  "unit": "bytes",
+  "answer": "14 GB",
+  "accept": ["5 GB", "50 GB"],
+  "choices": ["1.4 GB", "14 GB", "140 GB", "1.4 TB"],
+  "steps": ["Photos in 7 days: 2 × 10<sup>6</sup> × 7 = 1.4 × 10<sup>7</sup>", "1.4 × 10<sup>7</sup> × 1 KB = 1.4 × 10<sup>10</sup> B = 14 GB"],
+  "note": "14 GB fits on one cache node. Say that, then add a replica so a node failure does not empty it."
+}
+</script>
+</x-estimate>
+
+<p>Two traps on the way. Network links are quoted in bits a second and storage in bytes: multiply bytes by 8. And durable storage almost always keeps more than one copy, so state your replication factor or the storage figure is a third of the real one.</p>
+
+<h2>How precise to be</h2>
+
+<x-tradeoffs caption="Rounding styles">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Exact arithmetic",
+      "good": "No rounding error.",
+      "bad": "Slow and error-prone at a whiteboard. The extra digits change no decision.",
+      "pick": "Never in an interview."
+    },
+    {
+      "name": "Powers of ten only",
+      "good": "Very fast; good for \"is this big?\" checks.",
+      "bad": "Rounding 3,000 to 1,000 or 10,000 can be off by 3 times, which can flip a decision near a limit.",
+      "pick": "A first sanity check, or when the interviewer asks for a rough order."
+    },
+    {
+      "name": "One or two significant figures",
+      "good": "Fast, rarely off by more than 20%, easy to follow.",
+      "bad": "You must say where you rounded so the interviewer can check you.",
+      "pick": "The default for every estimate.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>What would make you more careful: a number close to a real limit. If peak traffic comes out at 900 a second and your assumed single-server limit is 1,000, the rounding matters; say "that is close to one server's limit, so I'll plan for two or more".</p>
+
+<h2>In the interview</h2>
+
+<p>Estimate after clarifying and before the API, as in <a href="/system-design/a-framework-for-any-design.html">the framework</a>. Ask for the inputs, state any you assume, and compute only what can change the design: usually peak rate, total storage, and bandwidth or cache size.</p>
+
+<ul>
+<li>"I'll round a day to 100,000 seconds, so my rates are a bit low."</li>
+<li>"That's 1 GB a second of images, so images go through a CDN and never touch the API servers."</li>
+<li>"Storage is 1 PB a year, so photos go in blob storage and the database only holds metadata."</li>
+</ul>
+
+<x-interview title="Estimating out loud" tone="strong">
+<x-interviewer>Assume 10 million daily users. How much traffic is that?</x-interviewer>
+<x-you>About 30 requests each is 300 million a day. Over roughly 100,000 seconds that's 3,000 a second, and I'll assume 9,000 at peak. Around 13 API servers at 70% load. So the API tier is not the hard part.</x-you>
+<x-interviewer>Then what is?</x-interviewer>
+<x-you>The photos. 5,000 views a second at 200 KB is 1 GB a second out, and a petabyte a year in. The design is mostly about blob storage and the CDN.</x-you>
+<x-coach>Every number leads to a decision, and the estimate tells the candidate where to spend the rest of the hour.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Where does a peak factor of 3 come from?"</strong> It is an assumption about daily patterns. Say what would raise it: a single time zone, a live event, a launch.</li>
+<li><strong>"How sure are you?"</strong> "Within a factor of 2 or 3, which is enough to choose the architecture."</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Numbers that lead nowhere">
+<p>Computing storage, bandwidth, memory and servers and then saying nothing about them wastes four minutes. Finish every estimate with the decision it drives, or skip it.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Forgetting peak and copies">
+<p>Average rates size nothing: systems fall over at peak. Storage without replication is a third of the disk you will buy. Apply both, out loud.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A chat app has 20 million daily users, each sending 40 messages a day. About how many messages a second is that on average?",
+      "options": [
+        { "text": "About 800", "why": "That divides by a million seconds instead of 100,000." },
+        { "text": "About 8,000", "correct": true, "why": "20 × 10<sup>6</sup> × 40 = 8 × 10<sup>8</sup> a day, ÷ 10<sup>5</sup> = 8,000 a second." },
+        { "text": "About 80,000", "why": "That divides by 10,000 seconds; a day is about 100,000." }
+      ]
+    },
+    {
+      "question": "Your estimate says 8,000 messages a second; the exact figure with 86,400 seconds is about 9,300. What should you do?",
+      "options": [
+        { "text": "Redo the arithmetic exactly", "why": "A 14% difference does not change any design decision at this scale." },
+        { "text": "Note that the rounding makes it a bit low and continue", "correct": true, "why": "Say it once. Precision matters only near a real limit." },
+        { "text": "Double it to be safe", "why": "Safety margins belong in the peak factor and target load, stated as such, not in hidden fudges." }
+      ]
+    },
+    {
+      "question": "Images go out at 1 GB/s on average. What network capacity is that in the units links are sold in?",
+      "options": [
+        { "text": "1 Gbit/s", "why": "Links are quoted in bits; 1 byte is 8 bits." },
+        { "text": "8 Gbit/s", "correct": true, "why": "1 GB/s × 8 bits per byte = 8 Gbit/s, before any peak factor." },
+        { "text": "125 Mbit/s", "why": "That divides by 8 instead of multiplying." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practice next</h2>
+
+<p>Next, turn the requirements into endpoints in <a href="/system-design/api-design.html">API Design</a>. For the estimates in a full case, see <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>, where bandwidth drives everything.</p>

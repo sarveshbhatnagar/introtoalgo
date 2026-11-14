@@ -5,7 +5,8 @@
 //   node tools/build.mjs --no-run   skip running problem solutions (faster)
 //
 // Generated (and committed): index.html, about.html, archive.html, 404.html,
-// algorithms/*, ai/*, practice/*, posts/*.html, redirect pages, sitemap.xml.
+// one folder per track (algorithms/, system-design/, ai/), practice/*,
+// posts/*.html, redirect pages, sitemap.xml.
 // Idempotent: same content in, same bytes out.
 import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -43,7 +44,7 @@ function out(rel, html, { inSitemap = true } = {}) {
 }
 
 // Generated directories are wiped first so removed content disappears.
-for (const d of ['algorithms', 'ai', 'practice']) rmSync(join(ROOT, d), { recursive: true, force: true });
+for (const d of [...cur.trackIds, 'practice']) rmSync(join(ROOT, d), { recursive: true, force: true });
 
 /* ---------------------------------------------------------------------- */
 /* 2. load content                                                         */
@@ -88,7 +89,14 @@ function practiceFor(slug) {
   return [...direct, ...extra].slice(0, 6);
 }
 
-const TRACK_ICON = { algorithms: 'graph', ai: 'brain', practice: 'code' };
+const TRACK_ICON = { algorithms: 'graph', 'system-design': 'stack', ai: 'brain', practice: 'code' };
+// Per-track wording for roadmap pages, lesson labels and the home page.
+const TRACK_META = {
+  algorithms: { eyebrow: 'Algorithms track', hero: 'Algorithms & data structures', seo: 'Algorithms Roadmap: Data Structures and Algorithms', blurb: 'Free, step-by-step lessons with code in JavaScript and Python.', kindLabel: 'Lesson' },
+  'system-design': { eyebrow: 'System design track', hero: 'System design, the way interviews ask it', seo: 'System Design Roadmap: Interview Prep, Building Blocks and Case Studies', blurb: 'Free lessons with architecture diagrams you can step through, estimation drills and worked case studies.', kindLabel: 'System design lesson' },
+  ai: { eyebrow: 'AI track', hero: 'AI, from how it works to how to use it', seo: 'AI Roadmap: Machine Learning, LLMs, Prompting and Agents', blurb: 'Free, step-by-step lessons with code in JavaScript and Python.', kindLabel: 'AI lesson' },
+};
+const kindLabel = (trackId, kind) => (kind === 'design' ? 'Case study' : (TRACK_META[trackId] || {}).kindLabel || 'Lesson');
 const DIFF_LABEL = { easy: 'Easy', medium: 'Medium', hard: 'Hard' };
 const diffBadge = (d) => `<span class="diff diff--${d}">${DIFF_LABEL[d]}</span>`;
 const statusDot = (slug) => `<span class="pstatus" data-pstatus="${slug}" aria-hidden="true"></span>`;
@@ -104,6 +112,7 @@ function lessonPage(l) {
   const pos = existing.findIndex((x) => x.slug === info.slug);
   const prev = existing[pos - 1], next = existing[pos + 1];
   const key = `${track.id}/${info.slug}`;
+  const isDesign = l.kind === 'design';
 
   const side = `<nav class="lnav" aria-label="${esc(track.title)} lessons">
   <a class="lnav__track" href="${track.path}">${icon(TRACK_ICON[track.id])}<span>${esc(track.title)} roadmap</span></a>
@@ -121,12 +130,13 @@ function lessonPage(l) {
 </nav>`;
 
   const tocList = body.toc.map((t) => `<li><a href="#${t.id}">${esc(t.text)}</a></li>`).join('');
-  const practice = track.id === 'algorithms' || practiceFor(info.slug).length ? practiceFor(info.slug) : [];
+  const inTopic = track.id === 'algorithms' || (track.id === 'system-design' && cur.practiceTopics.some((t) => t.lessons.includes(info.slug)));
+  const practice = practiceFor(info.slug);
   const practiceHtml = practice.length
     ? `<section class="endcard endcard--practice"><h2 class="endcard__title">${icon('code')}Practice this</h2><ul class="plist plist--compact">${practice
         .map((p) => `<li class="plist__row">${statusDot(p.slug)}<a href="/practice/${p.slug}.html" class="plist__title">${esc(p.title)}</a><span class="plist__pattern">${esc(p.pattern)}</span>${diffBadge(p.difficulty)}</li>`)
         .join('')}</ul></section>`
-    : track.id === 'algorithms'
+    : inTopic
       ? `<section class="endcard endcard--practice"><h2 class="endcard__title">${icon('code')}Practice this</h2><p class="muted">Problems for this lesson are on the way. Meanwhile, <a href="/practice/">browse all practice problems</a>.</p></section>`
       : '';
   const leg = legacyFor.get(info.slug) || [];
@@ -137,12 +147,12 @@ function lessonPage(l) {
 
   const main = `<div class="lesson-layout">
 <aside class="lesson-layout__side">${side}</aside>
-<article class="lesson" data-lesson="${key}" data-title="${esc(front.title)}">
+<article class="lesson${isDesign ? ' lesson--design' : ''}" data-lesson="${key}" data-title="${esc(front.title)}" data-kind-label="${esc(kindLabel(track.id, l.kind))}">
   <header class="lesson__head">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${track.path}">${esc(track.title)}</a><span aria-hidden="true">/</span><span>Module ${mod.number}: ${esc(mod.title)}</span></nav>
     <h1 class="lesson__title">${esc(front.title)}</h1>
     <p class="lesson__lead">${esc(front.description)}</p>
-    <div class="lesson__meta"><span>${icon('clock')}${front.minutes} min</span><span>Lesson ${info.indexInModule + 1} of ${mod.lessons.length}</span><span class="lesson__done" data-done-badge hidden>${icon('check')}Completed</span></div>
+    <div class="lesson__meta">${isDesign ? `<span class="lesson__kind">${icon('stack')}Case study</span>` : ''}<span>${icon('clock')}${front.minutes} min</span><span>Lesson ${info.indexInModule + 1} of ${mod.lessons.length}</span><span class="lesson__done" data-done-badge hidden>${icon('check')}Completed</span></div>
   </header>
   ${body.toc.length ? `<details class="toc-inline"><summary>On this page</summary><ol>${tocList}</ol></details>` : ''}
   <div class="prose">
@@ -209,8 +219,8 @@ function roadmapPage(track) {
   const keysAll = track.allLessons.filter((l) => lessons.has(l.slug)).map((l) => `${track.id}/${l.slug}`);
   const main = `<div class="wrap">
 <header class="page-hero page-hero--${track.id}">
-  <p class="eyebrow">${icon(TRACK_ICON[track.id])}${track.id === 'ai' ? 'AI track' : 'Algorithms track'}</p>
-  <h1 class="page-hero__title">${esc(track.title === 'AI' ? 'AI, from how it works to how to use it' : 'Algorithms & data structures')}</h1>
+  <p class="eyebrow">${icon(TRACK_ICON[track.id])}${esc(TRACK_META[track.id].eyebrow)}</p>
+  <h1 class="page-hero__title">${esc(TRACK_META[track.id].hero)}</h1>
   <p class="page-hero__lead">${esc(track.description)}</p>
   <div class="progress-block" data-track-progress="${keysAll.join(' ')}" data-total="${total}">
     <div class="progress-block__row"><span class="progress-block__label"><strong data-progress-done>0</strong> of ${total} lessons complete</span><span class="muted">${live} published · ${track.modules.length} modules</span></div>
@@ -225,8 +235,8 @@ ${mods}
 </ol>
 </div>`;
   return page({
-    title: track.title === 'AI' ? 'AI Roadmap: Machine Learning, LLMs, Prompting and Agents' : 'Algorithms Roadmap: Data Structures and Algorithms',
-    description: track.tagline + ' Free, step-by-step lessons with code in JavaScript and Python.',
+    title: TRACK_META[track.id].seo,
+    description: track.tagline + ' ' + TRACK_META[track.id].blurb,
     path: track.path,
     track: track.id,
     main,
@@ -403,7 +413,7 @@ ${groups}
 </div>`;
   return page({
     title: 'Practice Problems: Algorithms and ML in JavaScript and Python',
-    description: `${problems.length} practice problems on arrays, trees, graphs, dynamic programming and ML from scratch. Hints, tests and walkthroughs, right in your browser.`,
+    description: `${problems.length} practice problems on arrays, trees, graphs, dynamic programming, ML from scratch and system design building blocks. Hints, tests and walkthroughs, right in your browser.`,
     path: '/practice/',
     track: 'practice',
     main,
@@ -423,7 +433,7 @@ const HERO_TRACER = {
 };
 
 function homePage() {
-  const algo = cur.tracks.find((t) => t.id === 'algorithms'), ai = cur.tracks.find((t) => t.id === 'ai');
+  const algo = cur.tracks.find((t) => t.id === 'algorithms'), sd = cur.tracks.find((t) => t.id === 'system-design'), ai = cur.tracks.find((t) => t.id === 'ai');
   const liveCount = (t) => t.allLessons.filter((l) => lessons.has(l.slug)).length;
   const keys = (t) => t.allLessons.filter((l) => lessons.has(l.slug)).map((l) => `${t.id}/${l.slug}`).join(' ');
   const door = (id, href, title, text, points, stat, progressAttr) => `<a class="door door--${id}" href="${href}">
@@ -431,7 +441,7 @@ function homePage() {
   <span class="door__title">${title}</span>
   <span class="door__text">${text}</span>
   <ul class="door__points">${points.map((p) => `<li>${p}</li>`).join('')}</ul>
-  <span class="door__foot"><span class="door__stat">${stat}</span><span class="door__go">${icon('arrow')}</span></span>
+  <span class="door__foot"><span class="door__stat">${stat.split(' · ').map((x) => `<span>${x}</span>`).join('')}</span><span class="door__go">${icon('arrow')}</span></span>
   ${progressAttr ? `<span class="door__bar bar" ${progressAttr}><span class="bar__fill" style="width:0%"></span></span>` : ''}
 </a>`;
   const startItems = cur.startHere
@@ -441,7 +451,7 @@ function homePage() {
         const l = cur.lessons.get(s.slug);
         title = l ? l.title : s.slug;
         href = l && lessons.has(l.slug) ? l.url : null;
-        kind = l && l.track === 'ai' ? 'AI lesson' : 'Lesson';
+        kind = l ? kindLabel(l.track, lessons.get(l.slug)?.kind) : 'Lesson';
       } else {
         const p = problemBySlug.get(s.slug);
         title = p ? p.title : s.slug;
@@ -457,8 +467,8 @@ function homePage() {
 <section class="hero">
   <div class="hero__text">
     <p class="eyebrow">${icon('terminal')}Free. No sign-up. Runs in your browser.</p>
-    <h1 class="hero__title">Learn algorithms and AI <span class="hero__hl">by working through them.</span></h1>
-    <p class="hero__lead">Lessons you can step through one move at a time, problems you solve and test right here, and a plain-spoken guide to how AI works and how to use it well.</p>
+    <h1 class="hero__title">Learn algorithms, system design and AI <span class="hero__hl">by working through them.</span></h1>
+    <p class="hero__lead">Lessons you can step through one move at a time, problems you solve and test right here, system design taught the way interviews ask it, and a plain-spoken guide to how AI works and how to use it well.</p>
     <div class="hero__cta"><a class="btn btn--accent btn--lg" href="#start">${icon('flag')}Start here</a><a class="btn btn--ghost btn--lg" href="/practice/">Jump into practice</a></div>
   </div>
   <div class="hero__demo" aria-label="Example of a step-through lesson">
@@ -473,6 +483,7 @@ function homePage() {
 
 <section class="doors" aria-label="Sections">
   ${door('algorithms', '/algorithms/', 'Algorithms', 'From Big-O to dynamic programming, one concrete example at a time.', ['Step-through traces of every idea', 'Code in JavaScript and Python', 'Quick checks as you go'], `${liveCount(algo)} of ${algo.allLessons.length} lessons · ${algo.modules.length} modules`, `data-track-progress="${keys(algo)}" data-total="${algo.allLessons.length}"`)}
+  ${door('system-design', '/system-design/', 'System Design', 'Build the vocabulary, then design real systems end to end the way interviewers expect.', ['Watch a request flow through the design', 'Estimate scale with real arithmetic', 'Case studies with a fixed framework'], `${liveCount(sd)} of ${sd.allLessons.length} lessons · ${sd.modules.length} modules`, `data-track-progress="${keys(sd)}" data-total="${sd.allLessons.length}"`)}
   ${door('practice', '/practice/', 'Practice', 'Problems like the ones in interviews, told as small stories, with hints that teach.', ['Hints revealed one at a time', 'Run and submit in the browser', 'Walkthroughs after you solve'], `${problems.length} problems · ${cur.practiceTopics.length} topics`, `data-practice-progress data-total="${problems.length}"`)}
   ${door('ai', '/ai/', 'AI', 'How machine learning and LLMs work, then the craft of prompting, context and agents.', ['No hype, no vendor lock-in', 'Rewrite real prompts yourself', 'Habits for checking AI output'], `${liveCount(ai)} of ${ai.allLessons.length} lessons · ${ai.modules.length} modules`, `data-track-progress="${keys(ai)}" data-total="${ai.allLessons.length}"`)}
 </section>
@@ -497,14 +508,14 @@ function homePage() {
 <section class="archive-teaser"><p>${icon('book')}Looking for the original 2017 posts on merge sort, MSTs and Markov chains? They live in <a href="/archive.html">the archive</a>.</p></section>
 </div>`;
   return page({
-    fullTitle: 'introtoalgo: Learn algorithms, practice problems and AI',
+    fullTitle: 'introtoalgo: Learn algorithms, system design, practice problems and AI',
     title: 'introtoalgo',
-    description: 'Learn algorithms and data structures with step-through lessons, solve practice problems in your browser, and learn how AI and LLMs work and how to use them well.',
+    description: 'Learn algorithms with step-through lessons, prepare for system design interviews, solve practice problems in your browser, and learn how AI works.',
     path: '/',
     track: 'home',
     main,
     scripts: ['/assets/js/home.js'],
-    jsonLd: { '@context': 'https://schema.org', '@type': 'WebSite', name: 'introtoalgo', url: SITE, description: 'Learn algorithms, practice problems and AI.', author: { '@type': 'Person', name: 'Sarvesh Bhatnagar', url: 'https://www.sarveshbhatnagar.com' } },
+    jsonLd: { '@context': 'https://schema.org', '@type': 'WebSite', name: 'introtoalgo', url: SITE, description: 'Learn algorithms, system design, practice problems and AI.', author: { '@type': 'Person', name: 'Sarvesh Bhatnagar', url: 'https://www.sarveshbhatnagar.com' } },
   });
 }
 
@@ -515,7 +526,7 @@ function aboutPage() {
   <h1 class="page-hero__title">About introtoalgo</h1>
 </header>
 <div class="prose">
-  <p>introtoalgo started in 2017 as a small blog about algorithms. It is now a free place to learn algorithms, practise them, and understand AI well enough to use it with confidence.</p>
+  <p>introtoalgo started in 2017 as a small blog about algorithms. It is now a free place to learn algorithms, practise them, prepare for system design interviews, and understand AI well enough to use it with confidence.</p>
   <h2 id="how-it-is-built">How it is built</h2>
   <p>Every lesson starts with a concrete problem, traces the idea by hand, and only then shows code. Practice problems run in your browser: JavaScript in a sandboxed worker, Python through Pyodide. Nothing you write is sent anywhere.</p>
   <p>Your progress, saved code and theme choice live in your browser's local storage. Clearing site data resets them. There are no accounts.</p>
@@ -624,6 +635,7 @@ function notFoundPage() {
 <ul class="notfound__links">
   <li><a class="btn btn--accent" href="/">Home</a></li>
   <li><a class="btn btn--ghost" href="/algorithms/">Algorithms</a></li>
+  <li><a class="btn btn--ghost" href="/system-design/">System Design</a></li>
   <li><a class="btn btn--ghost" href="/practice/">Practice</a></li>
   <li><a class="btn btn--ghost" href="/ai/">AI</a></li>
 </ul>
