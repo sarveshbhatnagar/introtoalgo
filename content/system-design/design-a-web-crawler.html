@@ -1,0 +1,449 @@
+<!--
+{
+  "title": "Design a Web Crawler",
+  "description": "Design a crawler that fetches a billion pages a month: the URL frontier, politeness, deduplication with hashes and Bloom filters, DNS and traps.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "crawler", "queues", "bloom filter", "deduplication"]
+}
+-->
+<p>A search engine can only find pages it has seen. A web crawler is the program that sees them: it starts from a few known URLs, downloads each page, pulls out the links, and adds the new ones to its to-do list. Run that loop a billion times a month and you have the raw material for a search index.</p>
+
+<p>Interviewers like it because the loop is easy and everything around it is not: be polite to other people's servers, avoid fetching a page twice, survive sites that generate endless URLs, and keep hundreds of downloads in flight. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a web crawler.</x-interviewer>
+<x-you>What is it for: feeding a search index, archiving pages, or something narrower like price monitoring? And do we fetch only HTML, or images and PDFs too?</x-you>
+<x-interviewer>It feeds a general search index. HTML only.</x-interviewer>
+<x-you>How many pages, and how fresh must they be?</x-you>
+<x-interviewer>About a billion pages a month. Popular pages should be refreshed more often than obscure ones.</x-interviewer>
+<x-you>Then my priorities are: never overload a website, never waste fetches on duplicates, and spend the fetch budget on the pages that matter most. I'll store the raw HTML and hand it to the indexing team; ranking and search are theirs. I'll respect robots rules and skip pages behind logins.</x-you>
+<x-coach>Politeness comes first. A fast crawler that hammers a small site gets blocked, and in an interview that signals you forgot the people on the other end.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> start from seed URLs; fetch HTML pages; extract links and add new ones; store each page's content; recrawl pages, important ones more often.</li>
+<li><strong>Non-functional:</strong> polite (one request at a time per site, with a gap, robots rules obeyed); about 1 billion pages a month; each URL scheduled once per cycle (a rare lease retry may fetch it twice); survives slow and hostile sites; a crashed machine loses no frontier state.</li>
+<li><strong>Out of scope:</strong> indexing and ranking, JavaScript rendering, images and video, pages that need a login.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>A month is 30 × 86,400 = 2,592,000 seconds, call it 2.6 million. The crawler sets its own pace, so there is no traffic peak to plan for, only a target rate plus headroom for retries and slow periods.</p>
+
+<ul>
+<li><strong>Fetch rate:</strong> 10<sup>9</sup> pages ÷ 2.6 × 10<sup>6</sup> s ≈ 385 a second. Call it 400, and plan for 800 so a bad day can be caught up.</li>
+<li><strong>Bandwidth:</strong> assume an average HTML page of 100 KB. 400 × 100 KB = 40 MB/s, about 320 Mbit/s. One data center link handles it.</li>
+<li><strong>Connections in flight:</strong> assume a fetch takes about 1 second end to end, because many sites are slow. By Little's law (in-flight = rate × time), 400 a second × 1 s = 400 downloads open at any moment, 800 with headroom.</li>
+<li><strong>The politeness ceiling:</strong> at most one request a second per site, so a site with 1 million pages takes 10<sup>6</sup> ÷ 86,400 ≈ 11.6 days. Large sites, not bandwidth, limit how fresh you can be.</li>
+</ul>
+
+<x-estimate title="Raw page storage per month">
+<script type="application/json">
+{
+  "question": "How much storage does one month of raw HTML take, before compression?",
+  "givens": ["1 billion pages fetched a month", "About 100 KB of HTML per page"],
+  "unit": "bytes",
+  "answer": "100 TB",
+  "accept": ["30 TB", "300 TB"],
+  "steps": ["10<sup>9</sup> × 100 × 10<sup>3</sup> B = 10<sup>14</sup> B = 100 TB", "HTML compresses well; assume 4x, so about 25 TB stored per monthly snapshot"],
+  "note": "This goes to object storage, not a database."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Memory for the seen-URL set">
+<script type="application/json">
+{
+  "question": "The crawler knows about 10 billion distinct URLs. If you store an 8-byte hash of each one to answer \"have I seen this URL?\", how much memory is that?",
+  "givens": ["10 billion URLs", "8 bytes per URL hash", "No other overhead"],
+  "unit": "bytes",
+  "answer": "80 GB",
+  "accept": ["30 GB", "300 GB"],
+  "choices": ["800 MB", "8 GB", "80 GB", "800 GB"],
+  "steps": ["10 × 10<sup>9</sup> × 8 B = 8 × 10<sup>10</sup> B = 80 GB"],
+  "note": "Easy when split over ten machines. A Bloom filter needs about 12 GB at a 1% false-positive rate; the deep dive weighs the two."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>A crawler has no public users. Write the messages between its parts, and what goes out to the indexing team.</p>
+</x-task>
+<x-answer>
+<p>Three: a way to add URLs (seeds from operators and links from the parser, same call), a way for a fetcher to ask for the next URL it may fetch now, and an output record per fetched page. The interesting part is that "next URL" is not "next in line": the frontier decides, based on politeness and priority.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="Internal interfaces">
+<pre lang="text">
+frontier.add(urls: [ { url, priority, discovered_from } ])
+  -> accepted count; URLs already seen are dropped silently
+
+frontier.lease(fetcher_id) -> { url, host, lease_id, lease_until }
+  -> or "nothing ready, retry in N ms" when every host is cooling down
+
+frontier.complete(lease_id, result)
+  result: fetched(status, content_hash) | not_modified | failed(reason, retry_after?)
+  -> an expired lease is handed out again, so a dead fetcher loses no URL
+
+event PageFetched { url, fetched_at, status, content_hash, blob_key }
+  -> published to a stream that the indexer consumes
+</pre>
+</x-code>
+
+<p>The decision worth arguing is <strong>lease, not pop</strong>. If a fetcher popped a URL and crashed, the URL would be lost for good, since it is already marked seen and will never be added again. A leased URL goes back out after <code>lease_until</code>. The cost: a slow (not dead) fetcher may download a page another fetcher also downloads. That wastes a fetch but breaks nothing.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>What records does the crawler keep about URLs, about hosts and about page content? Which questions does it ask of each, and how often?</p>
+</x-task>
+<x-answer>
+<p>A URL record keyed by a hash of the normalised URL (seen? when to fetch next?), a host record keyed by host name (robots rules, when the next request is allowed), and the page bytes in object storage. The hot question is "have I seen this URL?", asked about 50 times per page fetched, which is why it gets its own structure.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Records">
+<pre lang="sql">
+-- one row per known URL, partitioned by host hash
+urls:   url_hash      BIGINT PRIMARY KEY  -- 8-byte hash of the normalised URL
+        url           TEXT                -- up to ~2 KB
+        host          TEXT
+        priority      SMALLINT
+        next_fetch_at TIMESTAMP
+        last_status   SMALLINT
+        content_hash  BIGINT NULL         -- fingerprint of the last body
+
+-- one row per host
+hosts:  host            TEXT PRIMARY KEY
+        robots_rules    TEXT              -- parsed robots.txt, refreshed daily
+        crawl_delay_ms  INT               -- 1,000 unless the site asks for more
+        next_allowed_at TIMESTAMP
+        ip_cache        TEXT, ip_expires TIMESTAMP
+
+-- page bodies: object storage, key = url_hash + fetch date, gzip-compressed
+</pre>
+</x-code>
+
+<p>The URL table gets lookups and inserts by hash and a scan for "what is due", with no joins: a <strong>wide-column or key-value store</strong> (such as Cassandra) partitioned by host fits, so the machine that schedules a host also owns its URLs. Page bodies are large, written once and read in bulk: that is <a href="/system-design/blob-storage.html">blob storage</a>.</p>
+
+<p>Normalise URLs before hashing, or one page looks like many: lowercase the scheme and host, drop the default port and the <code>#fragment</code>, sort and prune query parameters. <code>HTTP://Example.com:80/a?b=2&amp;a=1#top</code> and <code>http://example.com/a?a=1&amp;b=2</code> are one page.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the loop: where URLs wait, who downloads them, where bodies go, and how new links get back into the queue without duplicates.</p>
+</x-task>
+<x-answer>
+<p>A frontier hands URLs to a fleet of fetchers. Fetchers resolve DNS, download, store the body and pass it to parsers. Parsers extract links, drop the ones already seen, and add the rest to the frontier.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>The crawl is a <a href="/algorithms/breadth-first-search.html">breadth-first search</a> over the web graph: the frontier is the queue and the seen-URL set is the visited set. Here the queue is ordered by priority and politeness, and the visited set spans machines.</p>
+
+<x-arch caption="The frontier decides what to fetch next. Fetchers and parsers hold no state, so they scale by adding machines.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "seeds", "label": "Seed URLs", "kind": "client", "col": 0, "row": 1 },
+    { "id": "frontier", "label": "URL frontier", "kind": "queue", "col": 1, "row": 1 },
+    { "id": "dns", "label": "DNS resolver", "kind": "dns", "col": 2, "row": 0 },
+    { "id": "fetch", "label": "Fetchers", "kind": "worker", "col": 2, "row": 1, "stack": true },
+    { "id": "web", "label": "Websites", "kind": "external", "col": 3, "row": 0 },
+    { "id": "pages", "label": "Page store", "kind": "blob-store", "col": 3, "row": 1 },
+    { "id": "seen", "label": "Seen URLs", "kind": "database", "col": 1, "row": 2 },
+    { "id": "parse", "label": "Parsers", "kind": "worker", "col": 2, "row": 2, "stack": true }
+  ],
+  "edges": [
+    { "from": "seeds", "to": "frontier", "label": "add" },
+    { "from": "frontier", "to": "fetch", "label": "lease URL" },
+    { "from": "fetch", "to": "dns", "label": "resolve" },
+    { "from": "fetch", "to": "web", "label": "GET page" },
+    { "from": "fetch", "to": "pages", "label": "store body" },
+    { "from": "fetch", "to": "parse", "label": "fetched", "style": "async" },
+    { "from": "parse", "to": "seen", "label": "seen?" },
+    { "from": "seen", "to": "frontier", "label": "new URLs" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Follow one URL through the loop.</p>
+
+<x-tracer title="One URL through the crawl loop">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "seeds", "label": "Seed URLs", "kind": "client", "col": 0, "row": 1 },
+      { "id": "frontier", "label": "URL frontier", "kind": "queue", "col": 1, "row": 1 },
+      { "id": "dns", "label": "DNS resolver", "kind": "dns", "col": 2, "row": 0 },
+      { "id": "fetch", "label": "Fetchers", "kind": "worker", "col": 2, "row": 1 },
+      { "id": "web", "label": "Websites", "kind": "external", "col": 3, "row": 0 },
+      { "id": "pages", "label": "Page store", "kind": "blob-store", "col": 3, "row": 1 },
+      { "id": "seen", "label": "Seen URLs", "kind": "database", "col": 1, "row": 2 },
+      { "id": "parse", "label": "Parsers", "kind": "worker", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "seeds", "to": "frontier" },
+      { "from": "frontier", "to": "fetch" },
+      { "from": "fetch", "to": "dns" },
+      { "from": "fetch", "to": "web" },
+      { "from": "fetch", "to": "pages" },
+      { "from": "fetch", "to": "parse", "style": "async" },
+      { "from": "parse", "to": "seen" },
+      { "from": "seen", "to": "frontier" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The frontier leases <code>bakery.example/menu</code> to a fetcher for 60 seconds: its host's cool-down has passed and it is high priority.",
+      "arch": { "active": ["frontier", "fetch", ["frontier", "fetch"]], "dim": ["seeds", "parse", "seen"], "notes": { "frontier": "lease 60 s" } },
+      "vars": { "in flight": 1 }
+    },
+    {
+      "caption": "The host's robots rules, cached this morning, allow <code>/menu</code>.",
+      "arch": { "active": ["fetch"], "dim": ["seeds", "parse", "seen"], "notes": { "fetch": "robots: allowed" } },
+      "vars": { "in flight": 1 }
+    },
+    {
+      "caption": "The IP is in the DNS cache, so no lookup. A miss would cost 10 to 200 ms.",
+      "arch": { "active": ["dns", ["fetch", "dns"]], "dim": ["seeds", "parse", "seen"], "notes": { "dns": "cache hit" } },
+      "vars": { "in flight": 1 }
+    },
+    {
+      "caption": "It downloads the page: 200 OK, 92 KB, in about 1 second, without blocking a thread.",
+      "arch": { "active": ["web", ["fetch", "web"]], "dim": ["seeds", "parse", "seen"], "notes": { "web": "200, 92 KB" } },
+      "vars": { "in flight": 1, "bytes": "92 KB" }
+    },
+    {
+      "caption": "The body is compressed and stored with its fingerprint, so unchanged pages can be skipped later.",
+      "arch": { "active": ["pages", ["fetch", "pages"]], "dim": ["seeds", "seen"], "notes": { "pages": "put 23 KB" } },
+      "vars": { "in flight": 1, "bytes": "92 KB" }
+    },
+    {
+      "caption": "A message goes to the parsers. The fetcher completes its lease and moves on without waiting.",
+      "arch": { "active": ["parse", ["fetch", "parse"], ["fetch", "frontier"]], "dim": ["seeds", "seen"] },
+      "vars": { "in flight": 0, "links found": 0 }
+    },
+    {
+      "caption": "A parser pulls 60 links from the HTML, normalises each and hashes it.",
+      "arch": { "active": ["parse"], "dim": ["seeds", "dns", "web"], "notes": { "parse": "60 links" } },
+      "vars": { "links found": 60 }
+    },
+    {
+      "caption": "It sends all 60 hashes to the seen set in one batch, as insert-if-absent. 48 were already there: most links point to pages already found.",
+      "arch": { "active": ["seen", ["parse", "seen"]], "dim": ["seeds", "dns", "web"], "notes": { "seen": "48 known" } },
+      "vars": { "links found": 60, "new": 12 }
+    },
+    {
+      "caption": "The 12 new URLs go to their hosts' queues in the frontier. The shard keeps them as seen only once the frontier has them on disk.",
+      "arch": { "active": ["frontier", ["seen", "frontier"]], "mark": ["seen"], "dim": ["seeds", "dns", "web"], "notes": { "frontier": "+12 URLs" } },
+      "vars": { "links found": 60, "new": 12 }
+    },
+    {
+      "caption": "Later the same host returns <code>503</code> twice. The frontier doubles its delay to 2 seconds, then 4: a struggling site gets less traffic from us, not more.",
+      "arch": { "fail": [["fetch", "web"]], "active": ["frontier", ["fetch", "frontier"]], "dim": ["seeds", "parse", "seen", "pages"], "notes": { "web": "503", "frontier": "delay 4 s" } },
+      "vars": { "host delay": "4 s" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>The URL frontier: politeness and priority</h3>
+
+<p>A plain first-in, first-out queue fails twice. Pages link mostly within their own site, so the queue fills with runs from one host and the fetchers hit it all at once. And it treats a news home page like a ten-year-old forum thread.</p>
+
+<p>Split the frontier into two layers. The <strong>front</strong> layer is a handful of priority queues: high for pages that change often or rank well, low for the long tail. The <strong>back</strong> layer is one queue per host, and each host is in at most one fetcher's hands at a time. A <a href="/algorithms/heaps-and-priority-queues.html">min-heap</a> holds each host keyed by the time it may next be fetched. When a host's queue runs dry, it is refilled from the front layer, picking high priority more often than low.</p>
+
+<x-tracer title="Leasing URLs from the host heap">
+<script type="application/json">
+{
+  "code": [
+    "host, ready_at = heap.peek()",
+    "if ready_at > now: wait until ready_at",
+    "heap.pop(); url = queue[host].pop()",
+    "lease url to fetcher",
+    "on complete: heap.push(host, now + delay[host])"
+  ],
+  "steps": [
+    {
+      "caption": "Three hosts are waiting, each keyed by the time it may next be fetched. The clock says 10.0 s.",
+      "line": 1,
+      "array": { "label": "heap (host @ ready time)", "values": ["a @ 9.8", "b @ 10.3", "c @ 11.0"], "highlight": [0] },
+      "vars": { "now": "10.0 s" }
+    },
+    {
+      "caption": "Host <code>a</code> has been ready since 9.8 s, so its next URL is leased and <code>a</code> leaves the heap: no second fetcher can touch it.",
+      "line": 3,
+      "array": { "label": "heap (host @ ready time)", "values": ["b @ 10.3", "c @ 11.0"] },
+      "vars": { "now": "10.0 s", "busy": "a" }
+    },
+    {
+      "caption": "Another fetcher asks. The top is <code>b</code> at 10.3 s, still in the future, so it waits 0.3 s.",
+      "line": 2,
+      "array": { "label": "heap (host @ ready time)", "values": ["b @ 10.3", "c @ 11.0"], "highlight": [0] },
+      "vars": { "now": "10.0 s", "busy": "a" }
+    },
+    {
+      "caption": "At 10.3 s <code>b</code> is leased.",
+      "line": 3,
+      "array": { "label": "heap (host @ ready time)", "values": ["c @ 11.0"] },
+      "vars": { "now": "10.3 s", "busy": "a, b" }
+    },
+    {
+      "caption": "The fetch from <code>a</code> ends at 10.9 s. With a 1 s delay, <code>a</code> goes back in at 11.9 s. The gap counts from the end of a fetch, so slow sites are fetched less often.",
+      "line": 5,
+      "array": { "label": "heap (host @ ready time)", "values": ["c @ 11.0", "a @ 11.9"], "mark": [1] },
+      "vars": { "now": "10.9 s", "busy": "b" }
+    },
+    {
+      "caption": "Every pop and push is O(log h) for h hosts. With 10 million hosts that is about 23 comparisons, so the heap is never the bottleneck.",
+      "array": { "label": "heap (host @ ready time)", "values": ["c @ 11.0", "a @ 11.9"] },
+      "vars": { "hosts": "10 million", "log2": "≈ 23" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>To scale out, split the frontier by host with <a href="/system-design/consistent-hashing.html">consistent hashing</a> over, say, 10 machines. Each host lives on exactly one machine, so politeness needs no coordination. Queues live on disk with a small in-memory head.</p>
+
+<p>For priority, score each page by how often it changed on past fetches and how many known pages link to it.</p>
+
+<h3>Deduplicating URLs</h3>
+
+<p>Each page adds about 50 links to check, so at 400 pages a second the seen set answers 20,000 lookups a second, nearly all "already seen".</p>
+
+<p>Two details make it correct. The check is <strong>insert-if-absent</strong>, one atomic step on the shard, so two parsers finding the same link cannot both add it. And a URL counts as seen only once the frontier has stored it, so a crash never leaves a URL marked seen but never queued.</p>
+
+<x-tradeoffs caption="Ways to remember 10 billion seen URLs">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Full URLs in a database",
+      "good": "Exact, and you can list and inspect what you have seen.",
+      "bad": "10 billion URLs at about 100 bytes is 1 TB. Every check is a network read.",
+      "pick": "Small crawls, or as the cold record behind a faster check."
+    },
+    {
+      "name": "8-byte hashes, sharded in memory",
+      "good": "80 GB across 10 machines is 8 GB each. Effectively exact: with 10 billion 64-bit hashes you expect about 3 accidental matches in total.",
+      "bad": "Needs that memory and a lookup per batch over the network.",
+      "pick": "The seen set must not silently drop pages. My default here.",
+      "default": true
+    },
+    {
+      "name": "Bloom filter",
+      "good": "About 12 GB for 10 billion URLs at a 1% false-positive rate. Never says \"new\" for a URL it has seen.",
+      "bad": "1% of truly new URLs are wrongly reported as seen and never crawled. You cannot delete entries.",
+      "pick": "Memory is the hard limit and losing a small share of pages is fine."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>A <strong>Bloom filter</strong> is a big bit array plus k hash functions. Adding a URL sets k bits; checking it looks at the same k bits. If any is 0, the URL is certainly new. If all are 1, it is <em>probably</em> seen, because other URLs may have set those bits. For a 1% false-positive rate you need about 9.6 bits per item and 7 hash functions: 10<sup>10</sup> × 9.6 bits ≈ 12 GB.</p>
+
+<p>The catch to say out loud: a false positive is sticky. The same new URL hits the same bits every time it is discovered, so it is skipped every time, for as long as that filter lives. If you use a Bloom filter, rebuild it each crawl cycle with fresh hash seeds so the unlucky URLs change. At this scale I would pick the hash set. At 100 billion URLs (800 GB against 120 GB) the trade flips.</p>
+
+<h3>Deduplicating content</h3>
+
+<p>Different URLs often serve the same page: mirrors, <code>?ref=</code> variants, printer-friendly copies. Store a 64-bit fingerprint of each body (8 bytes × 1 billion pages = 8 GB) and skip parsing when it is already known. That catches exact copies only. Pages that differ by a timestamp or an ad need a <strong>similarity hash</strong>, where similar pages get fingerprints that differ in a few bits. Mention it; design it only if asked.</p>
+
+<h3>DNS and fetch throughput</h3>
+
+<p>A fetch is mostly waiting. With non-blocking I/O, ten fetcher machines holding 80 open connections each cover the 800 we planned for. The CPU goes to parsing, which is why parsers are a separate fleet.</p>
+
+<p>DNS is the classic hidden bottleneck: many standard resolver calls block a thread, and an uncached lookup can take 10 to 200 ms. Run a caching resolver next to the fetchers, keep each host's IP until its DNS time to live runs out, and resolve a host just before its turn in the heap. If one lookup serves 20 fetches on average, 400 fetches a second need only 400 ÷ 20 = 20 lookups a second.</p>
+
+<h3>Robots rules and traps</h3>
+
+<p>Before the first fetch from a host, download its <code>/robots.txt</code> and cache the parsed rules for about a day. Obey <code>Disallow</code> paths and any longer delay the file asks for. If the file returns a server error, treat the site as off limits for now; a 404 means no rules.</p>
+
+<p>Some sites generate URLs without end: a calendar with a "next month" link forever, session IDs in every link, filters that combine into millions of pages. Defend in layers: cap URL length (say 2,000 characters) and path depth, cap pages per host per cycle, strip session parameters, and flag hosts where most fetched pages have a fingerprint you have already seen.</p>
+
+<x-callout type="mistake" title="Treating politeness as a global rate limit">
+<p>"We fetch at most 400 pages a second" says nothing about any one site; all 400 could go to the same small server. Politeness is per host: one request at a time, with a gap. Enforce it where URLs are handed out, in the frontier, not in each fetcher.</p>
+</x-callout>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x (10 billion pages a month, about 4,000 fetches a second), fetchers and parsers scale by adding machines, and bandwidth becomes 400 MB/s, about 3.2 Gbit/s. The seen set heads toward 100 billion URLs, where a Bloom filter starts to earn its loss rate. The real limit is politeness: large sites cannot be fetched faster, so their freshness comes from smarter priority and conditional requests (<code>If-Modified-Since</code>), where a <code>304 Not Modified</code> costs almost nothing.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A fetcher</td><td>Its leased URLs are stuck until their leases expire.</td><td>After 60 seconds the frontier leases them to others. At most a minute of that machine's work is redone.</td></tr>
+<tr><td>A frontier machine</td><td>Its hosts are not crawled; nothing else stops.</td><td>Queues are on disk and replicated; a standby takes over that host range and replays from the last checkpoint.</td></tr>
+<tr><td>A seen-set shard</td><td>Links for its hash range cannot be checked.</td><td>A replica takes over, or the shard is rebuilt from the URL table; parsers buffer and retry meanwhile. Never treat "unknown" as "new".</td></tr>
+<tr><td>The DNS resolver</td><td>Cached hosts keep working; new hosts wait.</td><td>Run two resolvers; the frontier skips hosts whose lookup fails and tries them later.</td></tr>
+<tr><td>A website</td><td>Timeouts and 5xx errors.</td><td>Back off that host exponentially, and after several days of failure drop it to low priority.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<p>Everyone draws the loop. The difference is whether politeness and deduplication shape the design.</p>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Draws a queue, fetchers and a database; uses a set for visited URLs; adds a rate limit when asked about overloading sites.</td></tr>
+<tr><td>Mid</td><td>Estimates fetch rate and storage, uses per-host queues for politeness, hashes URLs for the seen set, and respects robots rules.</td></tr>
+<tr><td>Senior</td><td>Builds the frontier from priority plus per-host scheduling, partitions it by host so politeness needs no coordination, weighs an exact hash set against a Bloom filter with the sticky false-positive cost, leases instead of pops, and names politeness as the limit on freshness.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Defending the seen set" tone="strong">
+<x-interviewer>Why not just use a Bloom filter? It's much smaller.</x-interviewer>
+<x-you>It is: about 12 GB against 80 GB for 10 billion URLs. But at 1% false positives, one in a hundred genuinely new URLs is reported as seen, and because the same URL hits the same bits every time, it is never crawled this cycle. 80 GB split over ten machines is cheap, so I would rather be exact. If we grew to 100 billion URLs I would switch, and rebuild the filter each cycle so the lost URLs are not always the same ones.</x-you>
+<x-coach>The answer gives both sizes, explains the failure precisely ("sticky", not "sometimes wrong"), and states the number that would flip the decision.</x-coach>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you decide when to recrawl a page?</h3>
+<p>Track how often its fingerprint changed over past fetches and schedule around that interval, shorter for important pages. Conditional requests make an unchanged page cost a 304, not a download.</p>
+
+<h3>How would you crawl pages that need JavaScript to render?</h3>
+<p>Send only the pages that need it to a separate pool of headless browsers. Rendering costs far more CPU than parsing HTML, so keep it as a per-site exception.</p>
+
+<h3>A site asks you to stop crawling it. What changes?</h3>
+<p>Add the host to a blocklist the frontier checks before leasing, and purge its queue. Each host lives on one frontier machine, so this takes effect at the next lease.</p>
+
+<h3>How would you crawl from several regions?</h3>
+<p>Give each host to the region nearest its servers, so fetches are short and each host still has one owner. Only new URLs cross regions, to the seen set.</p>
+
+<h3>How do you know the crawler is healthy?</h3>
+<p>Watch fetches per second, the duplicate-content share, error rates per host, and the age of the oldest due URL in the high-priority queue, which tells you whether important pages are going stale.</p>
+
+<x-checklist title="Self-review: web crawler">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked what the crawl is for and which content types we fetch", "I got the page count and the freshness goal", "I named politeness and robots rules as requirements"] },
+    { "title": "Numbers and interfaces", "items": ["I turned pages a month into fetches a second and open connections", "I estimated page storage and the size of the seen set", "I used leases so a crashed fetcher loses no URL"] },
+    { "title": "Design and depth", "items": ["I described the crawl as a breadth-first search with a priority-ordered queue", "I enforced politeness per host in the frontier, not per fetcher", "I compared an exact hash set with a Bloom filter and explained the false-positive cost", "I normalised URLs and fingerprinted content to catch duplicates", "I handled DNS caching and crawler traps"] },
+    { "title": "Failure", "items": ["I said that politeness, not bandwidth, limits freshness at 10x", "I said what happens when a fetcher, a frontier machine and a website each fail"] }
+  ]
+}
+</script>
+</x-checklist>
+
+<h2>What to practise next</h2>
+
+<p>Next, <a href="/system-design/design-video-streaming.html">Design Video Streaming</a> moves huge files instead of small pages. For the queue ideas here, see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>.</p>

@@ -1,0 +1,207 @@
+{
+  "slug": "parcel-label-numbers",
+  "title": "Parcel Label Numbers",
+  "topic": "system-design-blocks",
+  "difficulty": "medium",
+  "pattern": "design",
+  "aka": "Snowflake ID Generator",
+  "order": 8,
+  "story": [
+    "<p>A courier prints a barcode number on every parcel at up to 16 depots. The numbers must never repeat, the depots cannot call a central server for each label (the warehouse network drops out), and sorting labels by number should roughly sort them by time. So each depot builds the number itself from three parts: the time in milliseconds, its own machine number, and a counter for labels printed in the same millisecond.</p>",
+    "<p>This is the Snowflake-style generator from <a href=\"/system-design/unique-ids.html\">Unique IDs</a>. Real layouts use 64 bits; this one is squeezed into 53 bits so every ID is an exact JavaScript number and survives a trip through JSON in a browser.</p>"
+  ],
+  "task": [
+    "<p>An ID is <code>t × 4096 + machine × 256 + seq</code>, which is the bit layout:</p>",
+    "<ul>",
+    "<li>41 bits: <code>t</code>, milliseconds since the courier's chosen epoch (0 to 2<sup>41</sup> − 1, about 69 years).</li>",
+    "<li>4 bits: <code>machine</code>, the depot number, 0 to 15.</li>",
+    "<li>8 bits: <code>seq</code>, 0 to 255, counting IDs made in the same millisecond.</li>",
+    "</ul>",
+    "<p>Write a class <code>LabelIds</code>:</p>",
+    "<ul>",
+    "<li><code>constructor(machine)</code>.</li>",
+    "<li><code>next(t)</code>: return a new ID for time <code>t</code>. If <code>t</code> is later than the time of the last ID issued (or nothing was issued yet), use <code>seq = 0</code>. If <code>t</code> equals it, use the last seq plus 1. Return <code>-1</code> and change nothing in two cases: the seq would reach 256 (this millisecond is used up), or <code>t</code> is earlier than the last ID's time (the clock moved backwards).</li>",
+    "<li><code>parts(id)</code>: split any valid ID into <code>[t, machine, seq]</code>.</li>",
+    "</ul>",
+    "<p>JavaScript's bit operators (<code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>&amp;</code>) work on 32 bits only, so they cannot handle a 53-bit ID. Use multiplication, division and remainder.</p>"
+  ],
+  "constraints": [
+    "0 ≤ machine ≤ 15",
+    "0 ≤ t ≤ 2,199,023,255,551 (2⁴¹ − 1)",
+    "parts is only called with IDs that this layout can produce, so 0 ≤ id ≤ 9,007,199,254,740,991",
+    "At most 1,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["LabelIds", "next", "next", "next", "parts"],
+      "args": [[5], [1000], [1000], [1001], [4097281]],
+      "expected": [null, 4097280, 4097281, 4101376, [1000, 5, 1]],
+      "explanation": "1000 × 4096 = 4,096,000 and 5 × 256 = 1,280, so the first ID at t = 1000 is 4,097,280 (seq 0). A second label in the same millisecond gets seq 1: 4,097,281. At t = 1001 the seq starts again at 0: 4,100,096 + 1,280 = 4,101,376. Splitting 4,097,281 back: 4,097,281 ÷ 4096 rounds down to 1000, the remainder is 1,281, and 1,281 ÷ 256 = 5 remainder 1."
+    },
+    {
+      "ops": ["LabelIds", "next", "next", "next", "next"],
+      "args": [[0], [2000], [1999], [2000], [2001]],
+      "expected": [null, 8192000, -1, 8192001, 8196096],
+      "explanation": "After an ID at t = 2000, the clock reports 1999. Issuing an ID at 1999 could repeat one already given out in that millisecond, so the generator refuses with -1 and keeps its state. Back at 2000 it continues the sequence with seq 1, and at 2001 it starts again from 0."
+    }
+  ],
+  "hints": [
+    "If two depots print a label in the same millisecond, what keeps their IDs apart? And if one depot prints two labels in the same millisecond?",
+    "The machine number separates depots, and the seq separates labels from one depot within a millisecond. So the generator only has to remember two things: the time of the last ID and the seq it used.",
+    "Multiplying by 4096 (2<sup>12</sup>) shifts the time left by 12 bits, and multiplying the machine by 256 (2<sup>8</sup>) shifts it left by 8. Splitting reverses it: divide by 4096 and round down for <code>t</code>; the remainder holds the rest.",
+    "In <code>next</code>: if <code>t &lt; last</code> return -1; if <code>t === last</code> and the seq is already 255 return -1; otherwise set the seq (0 or last + 1), store <code>t</code>, and build the ID. Do not store anything before both checks pass."
+  ],
+  "bruteForce": [
+    "<p>The simplest unique number is a shared counter in one database: every depot asks it for the next value. That needs a network call per label and stops every depot when the counter is unreachable, which is what the courier cannot accept.</p>",
+    "<p>Random 53-bit numbers need no coordination, but they do not sort by time, and with many labels two will eventually collide. Building the ID from time, machine and sequence gives uniqueness and rough time order with no network call at all.</p>"
+  ],
+  "signature": {
+    "class": "LabelIds",
+    "init": {
+      "params": [
+        {
+          "name": "machine",
+          "type": "int"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "next",
+        "params": [
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "int"
+      },
+      {
+        "name": "parts",
+        "params": [
+          {
+            "name": "id",
+            "type": "int"
+          }
+        ],
+        "returns": "int[]"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "class LabelIds {",
+      "  /** @param {number} machine depot number, 0 to 15 */",
+      "  constructor(machine) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @param {number} t ms since the epoch @return {number} new ID, or -1 */",
+      "  next(t) {",
+      "  }",
+      "",
+      "  /** @param {number} id @return {number[]} [t, machine, seq] */",
+      "  parts(id) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class LabelIds:",
+      "    def __init__(self, machine: int):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def next(self, t: int) -> int:",
+      "        pass",
+      "",
+      "    def parts(self, id: int) -> list[int]:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["LabelIds", "next", "parts"], "args": [[0], [0], [0]], "expected": [null, 0, [0, 0, 0]], "note": "very first millisecond, machine 0"},
+    {"ops": ["LabelIds", "next", "next", "parts"], "args": [[15], [2199023255551], [2199023255551], [9007199254740991]], "expected": [null, 9007199254740736, 9007199254740737, [2199023255551, 15, 255]], "note": "largest time and machine; largest possible ID"},
+    {"ops": ["LabelIds", "next", "next", "next"], "args": [[3], [50], [10], [9]], "expected": [null, 205568, -1, -1], "note": "clock keeps going backwards: every call refused"},
+    {"ops": ["LabelIds", "next", "next", "next"], "args": [[7], [100], [5000000], [5000000]], "expected": [null, 411392, 20480001792, 20480001793], "note": "a long gap resets the seq"},
+    {"ops": ["LabelIds", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next"], "args": [[9], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [77], [78]], "expected": [null, 317696, 317697, 317698, 317699, 317700, 317701, 317702, 317703, 317704, 317705, 317706, 317707, 317708, 317709, 317710, 317711, 317712, 317713, 317714, 317715, 317716, 317717, 317718, 317719, 317720, 317721, 317722, 317723, 317724, 317725, 317726, 317727, 317728, 317729, 317730, 317731, 317732, 317733, 317734, 317735, 317736, 317737, 317738, 317739, 317740, 317741, 317742, 317743, 317744, 317745, 317746, 317747, 317748, 317749, 317750, 317751, 317752, 317753, 317754, 317755, 317756, 317757, 317758, 317759, 317760, 317761, 317762, 317763, 317764, 317765, 317766, 317767, 317768, 317769, 317770, 317771, 317772, 317773, 317774, 317775, 317776, 317777, 317778, 317779, 317780, 317781, 317782, 317783, 317784, 317785, 317786, 317787, 317788, 317789, 317790, 317791, 317792, 317793, 317794, 317795, 317796, 317797, 317798, 317799, 317800, 317801, 317802, 317803, 317804, 317805, 317806, 317807, 317808, 317809, 317810, 317811, 317812, 317813, 317814, 317815, 317816, 317817, 317818, 317819, 317820, 317821, 317822, 317823, 317824, 317825, 317826, 317827, 317828, 317829, 317830, 317831, 317832, 317833, 317834, 317835, 317836, 317837, 317838, 317839, 317840, 317841, 317842, 317843, 317844, 317845, 317846, 317847, 317848, 317849, 317850, 317851, 317852, 317853, 317854, 317855, 317856, 317857, 317858, 317859, 317860, 317861, 317862, 317863, 317864, 317865, 317866, 317867, 317868, 317869, 317870, 317871, 317872, 317873, 317874, 317875, 317876, 317877, 317878, 317879, 317880, 317881, 317882, 317883, 317884, 317885, 317886, 317887, 317888, 317889, 317890, 317891, 317892, 317893, 317894, 317895, 317896, 317897, 317898, 317899, 317900, 317901, 317902, 317903, 317904, 317905, 317906, 317907, 317908, 317909, 317910, 317911, 317912, 317913, 317914, 317915, 317916, 317917, 317918, 317919, 317920, 317921, 317922, 317923, 317924, 317925, 317926, 317927, 317928, 317929, 317930, 317931, 317932, 317933, 317934, 317935, 317936, 317937, 317938, 317939, 317940, 317941, 317942, 317943, 317944, 317945, 317946, 317947, 317948, 317949, 317950, 317951, -1, -1, -1, 321792], "note": "256 IDs fit in one millisecond; the 257th is refused and so are more calls in that millisecond (no wrap back to seq 0); the next millisecond works"},
+    {"ops": ["LabelIds", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "next", "parts"], "args": [[1], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [5], [20991]], "expected": [null, 20736, 20737, 20738, 20739, 20740, 20741, 20742, 20743, 20744, 20745, 20746, 20747, 20748, 20749, 20750, 20751, 20752, 20753, 20754, 20755, 20756, 20757, 20758, 20759, 20760, 20761, 20762, 20763, 20764, 20765, 20766, 20767, 20768, 20769, 20770, 20771, 20772, 20773, 20774, 20775, 20776, 20777, 20778, 20779, 20780, 20781, 20782, 20783, 20784, 20785, 20786, 20787, 20788, 20789, 20790, 20791, 20792, 20793, 20794, 20795, 20796, 20797, 20798, 20799, 20800, 20801, 20802, 20803, 20804, 20805, 20806, 20807, 20808, 20809, 20810, 20811, 20812, 20813, 20814, 20815, 20816, 20817, 20818, 20819, 20820, 20821, 20822, 20823, 20824, 20825, 20826, 20827, 20828, 20829, 20830, 20831, 20832, 20833, 20834, 20835, 20836, 20837, 20838, 20839, 20840, 20841, 20842, 20843, 20844, 20845, 20846, 20847, 20848, 20849, 20850, 20851, 20852, 20853, 20854, 20855, 20856, 20857, 20858, 20859, 20860, 20861, 20862, 20863, 20864, 20865, 20866, 20867, 20868, 20869, 20870, 20871, 20872, 20873, 20874, 20875, 20876, 20877, 20878, 20879, 20880, 20881, 20882, 20883, 20884, 20885, 20886, 20887, 20888, 20889, 20890, 20891, 20892, 20893, 20894, 20895, 20896, 20897, 20898, 20899, 20900, 20901, 20902, 20903, 20904, 20905, 20906, 20907, 20908, 20909, 20910, 20911, 20912, 20913, 20914, 20915, 20916, 20917, 20918, 20919, 20920, 20921, 20922, 20923, 20924, 20925, 20926, 20927, 20928, 20929, 20930, 20931, 20932, 20933, 20934, 20935, 20936, 20937, 20938, 20939, 20940, 20941, 20942, 20943, 20944, 20945, 20946, 20947, 20948, 20949, 20950, 20951, 20952, 20953, 20954, 20955, 20956, 20957, 20958, 20959, 20960, 20961, 20962, 20963, 20964, 20965, 20966, 20967, 20968, 20969, 20970, 20971, 20972, 20973, 20974, 20975, 20976, 20977, 20978, 20979, 20980, 20981, 20982, 20983, 20984, 20985, 20986, 20987, 20988, 20989, 20990, 20991, [5, 1, 255]], "note": "the last seq of a millisecond"},
+    {"ops": ["LabelIds", "parts", "parts", "parts"], "args": [[2], [4095], [4096], [3840]], "expected": [null, [0, 15, 255], [1, 0, 0], [0, 15, 0]], "note": "parts of small IDs, made on other machines"},
+    {"ops": ["LabelIds", "next", "next", "next", "next"], "args": [[12], [1700000000000], [1700000000000], [1699999999999], [1700000000001]], "expected": [null, 6963200000003072, 6963200000003073, -1, 6963200000007168], "note": "realistic timestamps near 1.7 trillion ms"},
+    {"ops": ["LabelIds", "parts"], "args": [[0], [6963245006577663]], "expected": [null, [1700010987933, 15, 255]], "note": "split an ID from another depot"},
+    {"ops": ["LabelIds", "next", "next", "next", "next", "next"], "args": [[4], [1], [1], [2], [2], [2]], "expected": [null, 5120, 5121, 9216, 9217, 9218], "note": "seq restarts every millisecond"},
+    {"ops": ["LabelIds", "next", "next", "next"], "args": [[8], [2199023255550], [2199023255551], [2199023255550]], "expected": [null, 9007199254734848, 9007199254738944, -1], "note": "top of the time range, then a step back"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "const TIME_SHIFT = 4096;   // 2^12: room for 4 machine bits + 8 seq bits",
+      "const MACHINE_SHIFT = 256; // 2^8: room for 8 seq bits",
+      "const MAX_SEQ = 255;",
+      "",
+      "class LabelIds {",
+      "  constructor(machine) {",
+      "    this.machine = machine;",
+      "    this.lastT = -1;  // nothing issued yet",
+      "    this.seq = 0;",
+      "  }",
+      "",
+      "  next(t) {",
+      "    if (t < this.lastT) return -1;                        // clock moved backwards",
+      "    if (t === this.lastT && this.seq === MAX_SEQ) return -1; // millisecond used up",
+      "    this.seq = t === this.lastT ? this.seq + 1 : 0;",
+      "    this.lastT = t;",
+      "    // multiply, not <<: JavaScript bit operators are 32-bit",
+      "    return t * TIME_SHIFT + this.machine * MACHINE_SHIFT + this.seq;",
+      "  }",
+      "",
+      "  parts(id) {",
+      "    const t = Math.floor(id / TIME_SHIFT);",
+      "    const rest = id % TIME_SHIFT;",
+      "    return [t, Math.floor(rest / MACHINE_SHIFT), rest % MACHINE_SHIFT];",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "TIME_SHIFT = 4096    # 2^12: room for 4 machine bits + 8 seq bits",
+      "MACHINE_SHIFT = 256  # 2^8: room for 8 seq bits",
+      "MAX_SEQ = 255",
+      "",
+      "",
+      "class LabelIds:",
+      "    def __init__(self, machine):",
+      "        self.machine = machine",
+      "        self.last_t = -1  # nothing issued yet",
+      "        self.seq = 0",
+      "",
+      "    def next(self, t):",
+      "        if t < self.last_t:  # clock moved backwards",
+      "            return -1",
+      "        if t == self.last_t and self.seq == MAX_SEQ:  # millisecond used up",
+      "            return -1",
+      "        self.seq = self.seq + 1 if t == self.last_t else 0",
+      "        self.last_t = t",
+      "        return t * TIME_SHIFT + self.machine * MACHINE_SHIFT + self.seq",
+      "",
+      "    def parts(self, id):",
+      "        t, rest = divmod(id, TIME_SHIFT)",
+      "        return [t, rest // MACHINE_SHIFT, rest % MACHINE_SHIFT]"
+    ],
+    "walkthrough": [
+      "<p>Each field gets its own range of bits, so IDs from different times, depots or sequence numbers can never be equal. Multiplying by a power of two is a left shift, and dividing and taking the remainder undoes it.</p>",
+      "<p>Trace the first example, machine 5:</p>",
+      "<ol>",
+      "<li><code>next(1000)</code>: nothing issued yet, so seq 0. ID = 1000 × 4096 + 5 × 256 + 0 = 4,097,280.</li>",
+      "<li><code>next(1000)</code>: same millisecond, seq 1. ID = 4,097,281.</li>",
+      "<li><code>next(1001)</code>: later millisecond, seq back to 0. ID = 4,100,096 + 1,280 = 4,101,376.</li>",
+      "<li><code>parts(4097281)</code>: 4,097,281 ÷ 4096 = 1000 remainder 1,281; 1,281 ÷ 256 = 5 remainder 1. Answer <code>[1000, 5, 1]</code>.</li>",
+      "</ol>",
+      "<p>Two details matter in practice. Both refusals must leave the state untouched, or a refused call would burn a seq or move the clock. And IDs sort by time only roughly: two depots' clocks differ by a few milliseconds, so order across depots within that skew is arbitrary. Real generators also wait for the next millisecond instead of failing; here the caller decides.</p>"
+    ],
+    "time": "O(1)",
+    "timeWhy": "Each call is a few comparisons and arithmetic operations.",
+    "space": "O(1)",
+    "spaceWhy": "Only the machine number, the last time and the last seq.",
+    "takeaway": "A time-ordered ID is time, machine and sequence packed into fixed bit ranges. Size the fields from the requirements (machines, IDs per millisecond, lifetime), refuse when the clock goes backwards, and in JavaScript pack with arithmetic, since bit operators stop at 32 bits."
+  },
+  "related": ["unique-ids", "design-a-url-shortener"]
+}

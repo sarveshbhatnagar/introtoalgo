@@ -1,0 +1,462 @@
+<!--
+{
+  "title": "Design a Notification System",
+  "description": "Design a service that sends push, SMS and email at scale: per-channel queues, retries, duplicates, preferences, rate limits, provider outages, priority.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "queues", "retries", "idempotency", "third-party APIs"]
+}
+-->
+<p>Your bank texts you a login code, a shop emails a receipt, and your phone buzzes when a parcel ships. Behind each of these, some product service said "tell user 42 about this", and a shared notification service decided how, when and through which company's network the message actually left.</p>
+
+<p>Interviewers ask this question because the hard parts are not the happy path. They are what happens when a provider times out and you do not know whether the text went out, when a marketing campaign for 50 million users sits in front of a login code, and when a retry sends someone the same alert three times. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a notification system.</x-interviewer>
+<x-you>Is this a shared service that other teams call, sending push, SMS and email? And do we send through third-party providers rather than run our own SMS gateway or mail servers?</x-you>
+<x-interviewer>Yes to both. Other services call you. Providers do the last mile.</x-interviewer>
+<x-you>What kinds of messages: one-off alerts like login codes and order updates, or also marketing campaigns to millions of users at once?</x-you>
+<x-interviewer>Both. Campaigns can target 50 million users.</x-interviewer>
+<x-you>Volumes per day? And how fast must a login code arrive?</x-you>
+<x-interviewer>About 500 million push, 100 million emails and 5 million texts a day, across 100 million users. Login codes within seconds, even during a campaign.</x-interviewer>
+<x-you>Then I'll treat priority as a first-class requirement, respect user preferences, and aim for at-least-once sending with deduplication, because a lost login code is worse than an occasional duplicate. I'll leave out the in-app inbox and campaign targeting tools.</x-you>
+<x-coach>The candidate found the conflict early: bulk campaigns and urgent codes share the same providers.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> other services send a notification to a user by template, on one or more channels (push, SMS, email); campaigns to large segments; users choose which categories they get on which channel; callers can ask for the status of a notification.</li>
+<li><strong>Non-functional:</strong> high-priority messages (login codes, security alerts) reach the provider within 5 seconds, even during a campaign; an accepted notification is never silently dropped; duplicates are rare; accepting requests is 99.99% available, while sending may lag when providers struggle.</li>
+<li><strong>Out of scope:</strong> the in-app notification inbox, campaign audience tools, A/B tests of message text.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Average rates:</strong> 500 million push ÷ 86,400 s ≈ 5,800 a second; 100 million emails ≈ 1,160 a second; 5 million texts ≈ 58 a second. About 7,000 a second in total.</li>
+<li><strong>Campaign peak:</strong> the average hides the real peak. A campaign to 50 million users that should finish within 30 minutes needs 50,000,000 ÷ 1,800 s ≈ 28,000 sends a second, four times the daily average, on one channel.</li>
+<li><strong>Preferences and devices:</strong> 100 million users × 200 bytes of preferences = 20 GB; at 2 devices each and 200 bytes per device token, 40 GB. Both fit in a cache, which matters because every send reads them.</li>
+<li><strong>Provider limits:</strong> assume our SMS provider account allows 500 texts a second. That is a hard ceiling we must stay under, not a target.</li>
+</ul>
+
+<x-estimate title="A login code stuck behind a campaign">
+<script type="application/json">
+{
+  "question": "If all push notifications share one first-in-first-out queue, how long does a login-code push wait behind a 50-million-user campaign that was queued just before it?",
+  "givens": ["50 million campaign pushes already in the queue", "Senders drain the queue at 28,000 pushes a second"],
+  "unit": "duration",
+  "answer": "30 minutes",
+  "accept": ["10 minutes", "90 minutes"],
+  "steps": ["50,000,000 ÷ 28,000 ≈ 1,800 seconds", "1,800 s = 30 minutes"],
+  "note": "The code expires long before it is sent. This one number justifies separate queues by priority."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Notification log for 90 days">
+<script type="application/json">
+{
+  "question": "How much storage does a 90-day log of every notification take, before replication?",
+  "givens": ["605 million sends a day across all channels", "About 500 bytes of log per send (ids, template, parameters, status)", "Keep 90 days"],
+  "unit": "bytes",
+  "answer": "27 TB",
+  "accept": ["8 TB", "80 TB"],
+  "steps": ["605 × 10<sup>6</sup> × 500 B ≈ 300 GB a day", "300 GB × 90 ≈ 27 TB"]
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the endpoint a calling service uses to send one notification. What does it return, and how does a caller retry safely after a timeout?</p>
+</x-task>
+<x-answer>
+<p>A <code>POST</code> that names the user, a template, its parameters, a priority and an idempotency key, and returns <code>202 Accepted</code> with a notification id. Sending happens later; the caller polls a status endpoint if it cares. A retry with the same key returns the same id instead of sending twice.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+POST /v1/notifications
+  Idempotency-Key: order-881-shipped
+  body: { "user_id": 42, "template": "order_shipped", "params": { "order": "881" },
+          "category": "order_updates", "priority": "high" | "normal" | "bulk",
+          "channels": ["push", "email"]?, "expires_in": "24h"? }
+  202 Accepted   { "notification_id": "n_501" }
+  400 Bad Request         unknown template or missing parameter
+  404 Not Found           unknown user
+  409 Conflict            same Idempotency-Key with a different body
+  429 Too Many Requests   this caller is over its quota
+
+GET  /v1/notifications/n_501
+  200 { "push": "sent", "email": "retrying", "sms": "skipped: user opted out" }
+
+PUT  /v1/users/42/preferences   { "order_updates": ["push", "email"], "marketing": [] }
+POST /v1/campaigns              { "segment": "...", "template": "...", "send_at": "..." }   202
+POST /webhooks/{provider}       delivery receipts and bounces from providers
+</pre>
+</x-code>
+
+<p>The decision worth arguing is <strong>202, not 200</strong>. Sending depends on providers that can be slow or down for minutes, and the caller (an order service, a login flow) should never wait on them. Accept the request, store it, return an id. The cost is that the caller cannot learn about failures in the response; it gets a status endpoint instead. The <code>Idempotency-Key</code> makes the caller's own retries safe, as in <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a>.</p>
+
+<x-tryit variant="turn" minutes="2" title="Model the data">
+<x-task>
+<p>What records do you need, which are read on every send, and which kind of store suits each?</p>
+</x-task>
+<x-answer>
+<p>A notification log (one row per request, plus a status per channel) that is written heavily and read by id; and small per-user records (preferences, device tokens, contact details) that are read on every send and should sit in a cache. Different access patterns, so they can live in different stores.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Records">
+<pre lang="sql">
+notifications                     -- about 500 bytes, kept 90 days
+  notification_id   CHAR(26)      PRIMARY KEY
+  idempotency_key   VARCHAR(100)  UNIQUE (per caller), expires after 24 h
+  user_id           BIGINT
+  template, params, category, priority, created_at, expires_at
+
+deliveries                        -- one row per (notification, channel, device)
+  notification_id, channel, target    -- target: device token, phone or email
+  status            -- queued | sent | delivered | failed | skipped
+  attempts, provider, provider_msg_id, last_error, updated_at
+
+preferences   PRIMARY KEY (user_id)   -- category -> allowed channels, quiet hours, time zone
+devices       PRIMARY KEY (user_id, device_token)   -- platform, last_seen
+</pre>
+</x-code>
+
+<p>The log is write-heavy (thousands of inserts and status updates a second), read by id, and expires after 90 days: a <strong>key-value or wide-column store</strong> with a TTL suits it (such as DynamoDB or Cassandra). Preferences and devices are small and change rarely, but every send reads them. Keep them in a relational database, which suits the occasional update and the support tools that query it, and put a read-through cache in front. The idempotency key needs an atomic "insert if absent", which both kinds of store offer for a single key.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the path from a calling service to a phone, an inbox and a handset. Where do you check preferences, and where do queues go?</p>
+</x-task>
+<x-answer>
+<p>A thin API that validates, deduplicates, logs and returns 202; a router that applies preferences, rate limits and templates; then a separate queue and sender pool per channel, each talking to its provider. Channels fail and scale independently.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>Split the work at the two places where speed changes. The API must answer callers in milliseconds, so it only checks, records and enqueues. The providers are slow and unreliable, so each channel gets its own queue and sender pool, and a slow email provider never holds up a push.</p>
+
+<x-arch caption="The API accepts and records; routers decide who gets what on which channel; each channel has its own queue (dashed arrows) and its own senders talking to one provider.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "callers", "label": "Calling services", "kind": "service", "col": 0, "row": 0 },
+    { "id": "api", "label": "Notification API", "kind": "service", "col": 0, "row": 1, "stack": true },
+    { "id": "log", "label": "Notification log", "kind": "database", "col": 0, "row": 2 },
+    { "id": "router", "label": "Routers", "kind": "worker", "col": 1, "row": 1, "stack": true },
+    { "id": "prefs", "label": "Preferences and devices", "kind": "cache", "col": 1, "row": 2 },
+    { "id": "pushw", "label": "Push senders", "kind": "worker", "col": 2, "row": 0 },
+    { "id": "smsw", "label": "SMS senders", "kind": "worker", "col": 2, "row": 1 },
+    { "id": "emailw", "label": "Email senders", "kind": "worker", "col": 2, "row": 2 },
+    { "id": "pushp", "label": "Platform push services", "kind": "external", "col": 3, "row": 0 },
+    { "id": "smsp", "label": "SMS provider", "kind": "external", "col": 3, "row": 1 },
+    { "id": "emailp", "label": "Email provider", "kind": "external", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "callers", "to": "api", "label": "POST" },
+    { "from": "api", "to": "log", "label": "record, dedupe" },
+    { "from": "api", "to": "router", "label": "intake queue", "style": "async" },
+    { "from": "router", "to": "prefs", "label": "allowed?" },
+    { "from": "router", "to": "pushw", "label": "push queue", "style": "async" },
+    { "from": "router", "to": "smsw", "label": "SMS queue", "style": "async" },
+    { "from": "router", "to": "emailw", "label": "email queue", "style": "async" },
+    { "from": "pushw", "to": "pushp" },
+    { "from": "smsw", "to": "smsp" },
+    { "from": "emailw", "to": "emailp" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Follow one "order shipped" notification from the order service to a phone and an inbox, including a retry from the caller and a timeout at the email provider.</p>
+
+<x-tracer title="Order 881 has shipped">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "callers", "label": "Order service", "kind": "service", "col": 0, "row": 0 },
+      { "id": "api", "label": "Notification API", "kind": "service", "col": 0, "row": 1 },
+      { "id": "log", "label": "Notification log", "kind": "database", "col": 0, "row": 2 },
+      { "id": "router", "label": "Router", "kind": "worker", "col": 1, "row": 1 },
+      { "id": "prefs", "label": "Preferences and devices", "kind": "cache", "col": 1, "row": 2 },
+      { "id": "pushw", "label": "Push senders", "kind": "worker", "col": 2, "row": 0 },
+      { "id": "smsw", "label": "SMS senders", "kind": "worker", "col": 2, "row": 1 },
+      { "id": "emailw", "label": "Email senders", "kind": "worker", "col": 2, "row": 2 },
+      { "id": "pushp", "label": "Platform push services", "kind": "external", "col": 3, "row": 0 },
+      { "id": "smsp", "label": "SMS provider", "kind": "external", "col": 3, "row": 1 },
+      { "id": "emailp", "label": "Email provider", "kind": "external", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "callers", "to": "api" },
+      { "from": "api", "to": "log" },
+      { "from": "api", "to": "router", "style": "async" },
+      { "from": "router", "to": "prefs" },
+      { "from": "router", "to": "pushw", "style": "async" },
+      { "from": "router", "to": "smsw", "style": "async" },
+      { "from": "router", "to": "emailw", "style": "async" },
+      { "from": "pushw", "to": "pushp" },
+      { "from": "smsw", "to": "smsp" },
+      { "from": "emailw", "to": "emailp" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The order service calls <code>POST /v1/notifications</code> for user 42 with key <code>order-881-shipped</code>, priority normal.",
+      "arch": { "active": ["callers", "api", ["callers", "api"]], "dim": ["router", "prefs", "pushw", "smsw", "emailw", "pushp", "smsp", "emailp"] }
+    },
+    {
+      "caption": "The API inserts the key and the notification in one conditional write. The key is new, so the insert succeeds: <code>n_501</code>, queued.",
+      "arch": { "active": ["log", ["api", "log"]], "dim": ["router", "prefs", "pushw", "smsw", "emailw", "pushp", "smsp", "emailp"], "notes": { "log": "n_501 queued" } },
+      "vars": { "rows for key": 1 }
+    },
+    {
+      "caption": "It puts <code>n_501</code> on the intake queue and answers <code>202</code>. The caller waited a few milliseconds, not for any provider.",
+      "arch": { "active": [["api", "router"], ["api", "callers"]], "mark": ["callers", "log"], "dim": ["prefs", "pushw", "smsw", "emailw", "pushp", "smsp", "emailp"] },
+      "vars": { "rows for key": 1 }
+    },
+    {
+      "caption": "The 202 was lost on the network, so the order service retries with the same key. The insert finds the key, and the API returns <code>n_501</code> again. Nothing new is queued.",
+      "arch": { "active": ["callers", "api", "log", ["callers", "api"], ["api", "log"]], "dim": ["router", "prefs", "pushw", "smsw", "emailw", "pushp", "smsp", "emailp"], "notes": { "log": "key exists" } },
+      "vars": { "rows for key": 1 }
+    },
+    {
+      "caption": "A router picks up <code>n_501</code> and reads user 42's settings from the cache: order updates by push and email, not SMS. Two phones are registered.",
+      "arch": { "active": ["router", "prefs", ["router", "prefs"]], "dim": ["smsw", "smsp"], "notes": { "prefs": "push, email" } },
+      "vars": { "rows for key": 1 }
+    },
+    {
+      "caption": "It renders the template for each channel and enqueues two push jobs (one per phone) and one email job. SMS is recorded as skipped, so the status endpoint can explain it.",
+      "arch": { "active": ["pushw", "emailw", ["router", "pushw"], ["router", "emailw"]], "dim": ["smsw", "smsp", "prefs"] },
+      "vars": { "jobs": 3 }
+    },
+    {
+      "caption": "Push senders hand both messages to the platform push services, which accept them. Status: sent. Delivery to the phone is now up to the platform.",
+      "arch": { "active": ["pushp", ["pushw", "pushp"]], "mark": ["pushp"], "dim": ["smsw", "smsp", "prefs"], "notes": { "pushw": "2 sent" } },
+      "vars": { "jobs": 3, "sent": 2 }
+    },
+    {
+      "caption": "The email sender calls the provider and times out after 5 seconds. It cannot tell whether the email went out.",
+      "arch": { "fail": [["emailw", "emailp"]], "active": ["emailw"], "dim": ["smsw", "smsp", "prefs"], "notes": { "emailw": "timeout" } },
+      "vars": { "jobs": 3, "sent": 2, "attempts": 1 }
+    },
+    {
+      "caption": "It schedules a retry with backoff and sends the provider the same message id it used before. A provider that honours that id drops the copy if the first attempt had landed.",
+      "arch": { "active": ["emailw", "emailp", ["emailw", "emailp"]], "dim": ["smsw", "smsp", "prefs"], "notes": { "emailp": "accepted" } },
+      "vars": { "jobs": 3, "sent": 3, "attempts": 2 }
+    },
+    {
+      "caption": "The order service asks for the status. The API reads the log: push sent to 2 devices, email sent on attempt 2, SMS skipped by preference.",
+      "arch": { "active": ["callers", "api", "log", ["callers", "api"], ["api", "log"]], "mark": ["pushp", "emailp"], "dim": ["smsw", "smsp"] },
+      "vars": { "jobs": 3, "sent": 3, "attempts": 2 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>The pipeline: queues per channel and per priority</h3>
+
+<p>Channels differ in speed, cost and failure. Push is fast and cheap; email providers can be slow; SMS is capped at 500 a second. If they share a queue, the slowest channel sets everyone's pace. The 30-minute estimate shows that priority needs the same treatment.</p>
+
+<x-tradeoffs caption="How to lay out the queues">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "One queue for everything",
+      "good": "One thing to run and watch.",
+      "bad": "An email outage or a campaign blocks every login code behind it.",
+      "pick": "A prototype with one channel."
+    },
+    {
+      "name": "One queue per channel",
+      "good": "Channels scale and fail independently.",
+      "bad": "Within a channel, a 50-million campaign still delays urgent messages by 30 minutes.",
+      "pick": "No bulk traffic at all."
+    },
+    {
+      "name": "Per channel and priority",
+      "good": "High-priority work has its own queue and reserved senders, so it never waits behind bulk.",
+      "bad": "More queues to run; bulk must be throttled by hand so it does not starve.",
+      "pick": "Any mix of urgent and bulk messages. My choice.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<x-arch caption="Inside the email channel: two queues by priority feed one sender pool. Failed sends wait in a retry queue; ones past their deadline go to a dead-letter queue for a person to inspect.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "router", "label": "Routers", "kind": "worker", "col": 0, "row": 1 },
+    { "id": "high", "label": "Email: high", "kind": "queue", "col": 1, "row": 0 },
+    { "id": "bulk", "label": "Email: bulk", "kind": "queue", "col": 1, "row": 2 },
+    { "id": "senders", "label": "Email senders", "kind": "worker", "col": 2, "row": 1, "stack": true },
+    { "id": "provA", "label": "Email provider A", "kind": "external", "col": 3, "row": 0 },
+    { "id": "provB", "label": "Email provider B", "kind": "external", "col": 3, "row": 2 },
+    { "id": "retry", "label": "Retry queue", "kind": "queue", "col": 2, "row": 3 },
+    { "id": "dlq", "label": "Dead letters", "kind": "queue", "col": 3, "row": 3 }
+  ],
+  "edges": [
+    { "from": "router", "to": "high", "style": "async" },
+    { "from": "router", "to": "bulk", "style": "async" },
+    { "from": "high", "to": "senders", "label": "reserved share" },
+    { "from": "bulk", "to": "senders", "label": "throttled" },
+    { "from": "senders", "to": "provA", "label": "primary" },
+    { "from": "senders", "to": "provB", "label": "failover" },
+    { "from": "senders", "to": "retry", "label": "retry later", "style": "async" },
+    { "from": "retry", "to": "dlq", "label": "past deadline" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The three API priorities map to two queues: high and normal share the fast one, bulk gets its own. Give the fast queue a guaranteed share of senders and of each provider's rate limit, say 20%, and let bulk use the rest. Run campaigns at a set pace below the provider ceiling: 28,000 pushes a second for 30 minutes is fine. Retries go to a separate delay queue, so a failing message never blocks the head of the main queue.</p>
+
+<h3>Retries and duplicates</h3>
+
+<p>Every queue here delivers at least once (see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>), so a sender can crash after the provider accepted a message but before it marked the job done. The job runs again, and the user gets two texts. You cannot make this exactly once: the provider call and your own status write are two systems with no shared transaction. You can make duplicates rare:</p>
+
+<ul>
+<li>Before sending, check the <code>deliveries</code> row; skip it if it already says <code>sent</code>. This closes most of the window, not all of it.</li>
+<li>Send a stable id with each request (<code>n_501:email</code>). Some providers drop repeats of an id they have seen; push platforms can collapse notifications that share a collapse key on the device.</li>
+<li>Retry only errors that can succeed later: timeouts, 5xx and 429. An invalid device token or a hard email bounce will never succeed; remove the token or suppress the address instead.</li>
+<li>Back off exponentially with random jitter (1 s, 2 s, 4 s and so on, capped at 10 minutes) until the notification's deadline, then dead-letter it.</li>
+</ul>
+
+<p>The same gap exists at intake. The API writes the log, then enqueues. If it crashes in between, the notification is recorded but never queued, and the caller's retry finds the key and stops there. So a sweeper re-enqueues anything still marked <code>queued</code> after a minute, and routers skip ids they have already routed.</p>
+
+<p>The deadline is a product decision per category, and it is where judgement shows. A login code is useless after 5 minutes, so drop it then. A shipping update is still useful a day later. For login codes a duplicate is far better than a missing code, so retry aggressively; for marketing, a duplicate annoys people and costs money, so retry less and accept the odd loss.</p>
+
+<h3>Preferences and rate limits</h3>
+
+<p>Check preferences in the router, as late as possible. A campaign that starts at 09:00 reaches some users at 09:29; one who opted out at 09:15 must be skipped. That works because the campaign job feeds work in at the send pace, so little waits in the bulk queue after routing. Some categories cannot be turned off (security alerts), and the preference model must say so. Quiet hours need the user's time zone: a normal message that falls in the night is parked in a scheduled store and released in the morning; a high-priority one goes through.</p>
+
+<p>Three kinds of limit protect different things:</p>
+
+<ul>
+<li><strong>Per user</strong>, so people are not spammed: for example at most 3 marketing pushes a day, counted in the cache with a key like <code>42:marketing:2026-11-14</code>.</li>
+<li><strong>Per caller</strong>, so a buggy service in a loop cannot flood users or the queues: a quota per API key, answered with 429.</li>
+<li><strong>Per provider</strong>, so we stay under the 500 texts a second our account allows: a token bucket shared by all SMS senders. See <a href="/system-design/rate-limiting.html">Rate Limiting</a>.</li>
+</ul>
+
+<h3>When a provider fails</h3>
+
+<p>Providers fail in three ways: errors, slowness and silent loss. Errors are easy to see. Slowness is worse, because senders sit waiting and the queue grows. Put a short timeout on every call and a <strong>circuit breaker</strong> per provider: after, say, half the calls in 30 seconds fail, stop calling it for a while and send elsewhere or hold the work in the queue.</p>
+
+<x-tradeoffs caption="What to do when a provider fails">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Retry the same provider",
+      "good": "Simple; no second contract or integration.",
+      "bad": "A long outage means a long backlog.",
+      "pick": "Push, where each platform is the only route to its phones."
+    },
+    {
+      "name": "Fail over to a second provider",
+      "good": "Keeps SMS and email flowing through an outage.",
+      "bad": "A timed-out request may have been sent by the first provider, so failover can duplicate. Two integrations to maintain.",
+      "pick": "SMS and email, especially login codes. My choice.",
+      "default": true
+    },
+    {
+      "name": "Split traffic across providers all the time",
+      "good": "Both integrations stay tested; an outage halves capacity instead of stopping it.",
+      "bad": "Twice the integration and monitoring work every day.",
+      "pick": "Very high SMS or email volume, where one provider's limit is not enough."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Silent loss is the hardest: the provider says "accepted" and nothing arrives. Watch delivery receipts from the provider webhooks, and alert when the delivered rate for one provider drops well below its usual level. For login codes, users notice before you do; give them a "resend code" button that goes through the high-priority queue.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, campaigns need about 280,000 sends a second and the log takes about 270 TB over 90 days. Senders and routers are stateless and scale out. The first real wall is the providers: their rate limits do not grow because yours did. Spread load across several provider accounts or providers, and stretch campaigns over longer windows. The preference cache comes next, read on every send: replicate it and keep a few seconds of copies in each router's memory.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>The API</td><td>Callers get errors or timeouts.</td><td>Callers retry with the same idempotency key; run several API instances behind a load balancer.</td></tr>
+<tr><td>A router or sender</td><td>Its in-flight jobs are not acknowledged.</td><td>The queue hands them to another worker after a timeout; the <code>sent</code> check limits duplicates.</td></tr>
+<tr><td>The preference cache</td><td>Routers cannot check preferences.</td><td>Fall back to the database at a limited rate; pause bulk sends rather than risk ignoring opt-outs.</td></tr>
+<tr><td>An SMS or email provider</td><td>Sends fail or hang.</td><td>The circuit breaker opens; fail over to the second provider; high priority first.</td></tr>
+<tr><td>A platform push service</td><td>Push jobs back up in the queue.</td><td>Retry with backoff until each job's deadline; no failover exists for push.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="Calling the provider inside the API request">
+<p>If <code>POST /v1/notifications</code> sends the email before returning, every provider slowdown becomes an outage for the order service and the login flow. Accept, store, enqueue, return 202.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Promising exactly-once delivery">
+<p>No design can guarantee a text arrives exactly once: you cannot make a provider's send and your own record of it one atomic step. Say "at least once, with idempotency keys and checks that make duplicates rare", and say which categories prefer a duplicate over a loss.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>An API that calls the providers directly, with a database of preferences. Adds a queue when asked about slow providers.</td></tr>
+<tr><td>Mid</td><td>Returns 202, uses a queue per channel, checks preferences, retries with backoff, and mentions idempotency keys.</td></tr>
+<tr><td>Senior</td><td>Finds the campaign-versus-login-code conflict from the numbers and solves it with priority queues and reserved capacity; is precise that duplicates can be made rare but not impossible; sets deadlines per category; plans for provider slowness and silent loss, not only errors.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="A provider times out" tone="strong">
+<x-interviewer>The SMS provider times out on a login code. What do you do?</x-interviewer>
+<x-you>I don't know whether it was sent, so I retry. For login codes a duplicate is far better than a missing one. If the circuit breaker shows this provider is failing broadly, the retry goes to our second provider, which may mean two texts. The code expires in 5 minutes, so the job has that deadline; after it, retrying is pointless.</x-you>
+<x-interviewer>And for a marketing text?</x-interviewer>
+<x-you>Different answer. A duplicate costs money and annoys people, so I'd retry only the same provider with its message id, and accept losing a few.</x-you>
+<x-coach>The same failure gets two different answers, each tied to what the message is for. That is the judgement being tested.</x-coach>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you send a campaign to 50 million users?</h3>
+<p>Do not make 50 million API calls. A campaign job reads the segment in pages, creates notifications in batches, and feeds the bulk queues at a set pace, 28,000 a second for 30 minutes. It records progress so it can resume after a crash without starting over.</p>
+
+<h3>How do you handle device tokens that stop working?</h3>
+<p>Platform push services report invalid or expired tokens. Delete those tokens at once; sending to dead tokens wastes capacity and can count against you with the platform.</p>
+
+<h3>A user gets the same alert from three services. How do you stop it?</h3>
+<p>Add a short dedupe window per user and topic in the router: if an alert with the same group key went out in the last 10 minutes, merge or skip it. Better, give each event one owner that calls the notification service.</p>
+
+<h3>How do you send at 9 a.m. in each user's time zone?</h3>
+<p>Store scheduled notifications by send time, rounded to the minute. A scheduler reads the current minute's bucket and enqueues it. Users spread across time zones spread the load naturally.</p>
+
+<h3>How do you know the system is healthy?</h3>
+<p>Track queue age per channel and priority (how old is the oldest job), send and delivery rates per provider, and retry and dead-letter counts. Alert on high-priority queue age above a few seconds; see <a href="/system-design/observability.html">Observability</a>.</p>
+
+<x-checklist title="Self-review: notification system">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked which channels, whether providers do the last mile, and whether campaigns exist", "I asked how fast urgent messages must arrive", "I stated at-least-once with dedupe as the goal"] },
+    { "title": "Numbers and interfaces", "items": ["I computed the campaign peak, not only the daily average", "I showed how long an urgent message waits behind a campaign in one queue", "I returned 202 with an idempotency key and a status endpoint"] },
+    { "title": "Design and depth", "items": ["I used queues per channel and per priority with reserved capacity", "I checked preferences at send time and named limits per user, per caller and per provider", "I retried only retryable errors, with backoff and a deadline per category", "I explained why exactly once is impossible and how to make duplicates rare"] },
+    { "title": "Failure", "items": ["I handled provider errors, slowness and silent loss", "I chose failover for SMS and email and said it can duplicate", "I said what happens when the preference cache dies"] }
+  ]
+}
+</script>
+</x-checklist>

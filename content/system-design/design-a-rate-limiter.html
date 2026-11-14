@@ -1,0 +1,476 @@
+<!--
+{
+  "title": "Design a Rate Limiter",
+  "description": "Design a distributed API rate limiter: rules per user and per IP, a shared counter store with atomic updates, races, and failing open or closed.",
+  "minutes": 30,
+  "kind": "design",
+  "tags": ["case study", "rate limiting", "atomic counters", "failure modes"]
+}
+-->
+<p>A rate limiter sits in front of an API and says "no" to clients that send too much. Every request asks "may this one through?", and the answer must come back within a millisecond or two, from any of dozens of gateway servers, which all have to agree on how many requests each client has made.</p>
+
+<p>Interviewers like it because it is small enough to finish and still touches shared state, atomic updates, races, clocks, and what to do when a dependency dies. The counting algorithms themselves are covered in <a href="/system-design/rate-limiting.html">Rate Limiting</a>; this case study is about building the whole service. It follows the steps in <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<p>"Design a rate limiter" can mean a class in one process or a service for a whole company. Find out which before you say "token bucket".</p>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a rate limiter for our public API.</x-interviewer>
+<x-you>Is this a limiter inside one service, or a shared one that protects every endpoint across many gateway servers?</x-you>
+<x-interviewer>Shared. We run a fleet of API gateways, and every request passes through one of them.</x-interviewer>
+<x-you>What do we limit by: API key, user account, IP address? And do different endpoints or plans get different limits?</x-you>
+<x-interviewer>Per API key for logged-in traffic, per IP for anonymous traffic. Plans have different limits, and login has its own strict limit.</x-interviewer>
+<x-you>And the scale: how many requests a day, and how many distinct clients?</x-you>
+<x-interviewer>About a billion requests a day, from around 10 million API keys and a similar number of IPs.</x-interviewer>
+<x-you>Then my priorities are: the check adds under 2 ms at the 99th percentile, a limiter outage must not take the API down, and limits can be a few percent loose but never ten times loose. I'll leave out billing and usage dashboards.</x-you>
+<x-coach>The last answer sets the three priorities the design will be judged on: latency, failure behaviour, and how exact the count must be.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> limit requests per API key, per IP and per account, with rules that vary by endpoint and plan; reject excess requests with <code>429</code> and say when to retry; let operators change rules without a deploy.</li>
+<li><strong>Non-functional:</strong> under 2 ms added at p99; the API stays up if the limiter is down; counts are shared across all gateways, accurate to within a few percent; rule changes apply within about 10 seconds.</li>
+<li><strong>Out of scope:</strong> billing, usage dashboards, bot detection beyond simple limits.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>Turn the daily number into rates. A day has 86,400 seconds.</p>
+
+<ul>
+<li><strong>Average:</strong> 1 billion ÷ 86,400 ≈ 11,600 requests a second; call it 12,000.</li>
+<li><strong>Peak:</strong> assume 3x the average, so 36,000 a second.</li>
+<li><strong>Counter operations:</strong> a typical request is checked against two rules (its API key and its IP), so the counter store sees 2 × 36,000 = 72,000 operations a second at peak.</li>
+</ul>
+
+<x-estimate title="Counter store load at peak">
+<script type="application/json">
+{
+  "question": "How many counter operations per second must the shared store handle at peak?",
+  "givens": ["1 billion API requests a day", "Peak is 3x the average", "Each request is checked against 2 rules, one store operation each"],
+  "unit": "count/s",
+  "answer": "72 thousand/s",
+  "accept": ["30 thousand/s", "200 thousand/s"],
+  "steps": ["Average: 10<sup>9</sup> ÷ 86,400 s ≈ 11,600, call it 12,000 a second", "Peak: 12,000 × 3 = 36,000 a second", "Store operations: 36,000 × 2 = 72,000 a second"],
+  "note": "One in-memory node does on the order of 100,000 simple operations a second, but each check here runs a small script. Plan for about 50,000 a node and shard across 4 for headroom."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Memory for every counter">
+<script type="application/json">
+{
+  "question": "How much memory do the counters need if every client is active at once?",
+  "givens": ["10 million API keys and 10 million IP addresses", "One token bucket per key or IP", "About 100 bytes per bucket, including the key and the store's overhead"],
+  "unit": "bytes",
+  "answer": "2 GB",
+  "accept": ["500 MB", "10 GB"],
+  "steps": ["Buckets: 10 million + 10 million = 20 million", "20 × 10<sup>6</sup> × 100 B = 2 × 10<sup>9</sup> B = 2 GB"],
+  "note": "Small. Memory is not the problem; operations per second and latency are."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>There are three interfaces here: what the API client sees, what the gateway asks the counter store, and how operators change rules. Sketch each before reading on.</p>
+</x-task>
+<x-answer>
+<p>Clients see a <code>429</code> with <code>Retry-After</code> and headers showing what is left. The gateway makes one atomic "take a token" call per rule. Operators write rules to a config store that gateways reload. The decision to argue is 429 versus 503.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="What clients see, and the internal calls">
+<pre lang="text">
+Every response from the API:
+  X-RateLimit-Limit: 100        bucket size for the tightest rule
+  X-RateLimit-Remaining: 36     tokens left after this request
+
+Rejected request:
+  429 Too Many Requests
+  Retry-After: 1                seconds until a token is available
+  body: { "error": "rate_limited", "rule": "key-free-plan", "retry_after_s": 1 }
+
+Gateway to counter store, one atomic call per rule:
+  take(key, capacity, refill_per_sec, cost = 1)
+    -> { allowed, remaining, retry_after_ms }
+
+Operators:
+  PUT /admin/rules/{rule_id}    body: the rule (see the data model)
+  400 if the rule is invalid; gateways pick up changes within 10 s
+</pre>
+</x-code>
+
+<p>The decision worth arguing is the status code. <strong>429</strong> means "you, this client, sent too much"; <strong>503</strong> means "we are overloaded". Use 429 for limits, because a well-behaved client reads <code>Retry-After</code> and slows down. Keep 503 for load shedding, when the whole service is struggling regardless of who is asking. Mixing them up makes clients retry at the wrong times.</p>
+
+<x-tryit variant="turn" minutes="2" title="Model the data">
+<x-task>
+<p>What records exist, how big are they, who reads them, and how often? Pick a kind of store for each.</p>
+</x-task>
+<x-answer>
+<p>Rules: a few hundred records, read constantly, changed rarely, so every gateway holds them in memory. Counters: 20 million tiny records written on every request, so an in-memory key-value store with atomic scripts and expiry.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Rules (config store) and counters (in-memory store)">
+<pre lang="text">
+rule
+  rule_id          "key-free-plan"
+  match            endpoint pattern and plan, e.g. "/v1/*", plan = free
+  key_by           api_key | ip | account
+  capacity         100            burst size
+  refill_per_sec   10             long-run rate
+  on_store_down    open | local | closed
+
+counter            key = "rl:{rule_id}:{subject}"   e.g. "rl:key-free-plan:k_8f3a"
+  tokens           float, 8 bytes
+  last_refill_ms   integer, 8 bytes
+  TTL              capacity / refill_per_sec = 100 / 10 = 10 s
+</pre>
+</x-code>
+
+<p>Rules are a few hundred records in any durable config store. Gateways poll them into memory every 10 seconds, so no request waits on them.</p>
+
+<p>Counters are the opposite: 20 million records of about 100 bytes, updated on almost every request, needed in about half a millisecond. That calls for an <strong>in-memory key-value store</strong> (such as Redis) that can run a small script atomically and expire keys. Durability barely matters: losing a counter just gives one client a fresh bucket.</p>
+
+<p>The TTL is a neat trick. A bucket idle for capacity ÷ rate = 10 seconds is full again, and a missing key counts as full, so expiry changes no answer and frees memory.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch where the check happens, where counters and rules live, and what a rejected request touches.</p>
+</x-task>
+<x-answer>
+<p>The limiter is a library inside each gateway, so the only extra hop is to the counter store. Rejected requests never reach the backend.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>Run the limiter as a library in every gateway node. A separate limiter service would add a network hop to every request and one more fleet to keep alive. The counter store is split into 4 shards by key, each with a replica.</p>
+
+<x-arch caption="Each gateway checks counters in a shared store before forwarding. Rules reach the gateways in the background, off the request path.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "API clients", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway + limiter", "kind": "gateway", "col": 1, "row": 1, "stack": true },
+    { "id": "counters", "label": "Counter store (4 shards)", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "rules", "label": "Rules store", "kind": "database", "col": 2, "row": 2 },
+    { "id": "svc", "label": "Backend services", "kind": "service", "col": 3, "row": 1, "stack": true }
+  ],
+  "edges": [
+    { "from": "client", "to": "gw", "label": "HTTPS" },
+    { "from": "gw", "to": "counters", "label": "take(key)" },
+    { "from": "rules", "to": "gw", "label": "reload every 10 s", "style": "async" },
+    { "from": "gw", "to": "svc", "label": "if allowed" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through an allowed request, a rejected burst and a shard dying.</p>
+
+<x-tracer title="Allowed, rejected, and the store goes down">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "API client", "kind": "client", "col": 0, "row": 1 },
+      { "id": "gw", "label": "API gateway + limiter", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "counters", "label": "Counter store", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "rules", "label": "Rules store", "kind": "database", "col": 2, "row": 2 },
+      { "id": "svc", "label": "Backend services", "kind": "service", "col": 3, "row": 1 }
+    ],
+    "edges": [
+      { "from": "client", "to": "gw" },
+      { "from": "gw", "to": "counters" },
+      { "from": "rules", "to": "gw", "style": "async" },
+      { "from": "gw", "to": "svc" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A free-plan client with key <code>k_8f3a</code> calls <code>GET /v1/orders</code>. The gateway already holds the rules in memory: per key, capacity 100, refill 10 a second.",
+      "arch": { "active": ["client", "gw", ["client", "gw"]], "dim": ["rules"] },
+      "vars": { "tokens": 37, "allowed": 0, "rejected": 0 }
+    },
+    {
+      "caption": "One atomic call to the shard that owns <code>rl:key-free-plan:k_8f3a</code>: refill for the time passed, then take a token. About 0.5 ms round trip.",
+      "arch": { "active": ["counters", ["gw", "counters"]], "dim": ["rules"], "notes": { "counters": "37 → 36" } },
+      "vars": { "tokens": 36, "allowed": 0, "rejected": 0 }
+    },
+    {
+      "caption": "Allowed. The gateway forwards the request and adds <code>X-RateLimit-Remaining: 36</code> to the response.",
+      "arch": { "active": ["svc", ["gw", "svc"], ["svc", "gw"], ["gw", "client"]], "mark": ["client"], "dim": ["rules"] },
+      "vars": { "tokens": 36, "allowed": 1, "rejected": 0 }
+    },
+    {
+      "caption": "A buggy loop in the client fires 80 requests within a tenth of a second. 37 pass: the 36 tokens left, plus 1 that refills in that 0.1 s.",
+      "arch": { "active": ["counters", ["client", "gw"], ["gw", "counters"], ["gw", "svc"]], "dim": ["rules"], "notes": { "counters": "tokens: 0" } },
+      "vars": { "tokens": 0, "allowed": 38, "rejected": 0 }
+    },
+    {
+      "caption": "The other 80 − 37 = 43 get <code>429</code> with <code>Retry-After: 1</code>. The backend never sees them; protecting it is the whole point.",
+      "arch": { "active": [["gw", "client"]], "fail": [["gw", "svc"]], "dim": ["rules", "svc"], "notes": { "gw": "429" } },
+      "vars": { "tokens": 0, "allowed": 38, "rejected": 43 }
+    },
+    {
+      "caption": "The next token arrives in 1 ÷ 10 = 0.1 s, so the gateway remembers \"k_8f3a denied for 100 ms\" in its own memory. The loop's next 7 requests are rejected without calling the store.",
+      "arch": { "active": ["gw", ["client", "gw"], ["gw", "client"]], "dim": ["rules", "svc", "counters"], "notes": { "gw": "deny cache" } },
+      "vars": { "tokens": 0, "allowed": 38, "rejected": 50 }
+    },
+    {
+      "caption": "An operator raises the free plan to 200. Gateways pick it up on their next 10-second poll; no request waits.",
+      "arch": { "active": ["rules", ["rules", "gw"]], "dim": ["client", "svc", "counters"], "notes": { "rules": "capacity 200" } }
+    },
+    {
+      "caption": "Now the shard holding this key dies. The call times out after 5 ms. The rule says <code>on_store_down: local</code>, so the gateway falls back to an in-memory bucket with its share of the limit.",
+      "arch": { "fail": ["counters", ["gw", "counters"]], "active": ["gw", ["client", "gw"]], "dim": ["rules"], "notes": { "gw": "local limit" } }
+    },
+    {
+      "caption": "Requests within the local limit go through. The API stays up, roughly limited, while the replica takes over.",
+      "arch": { "fail": ["counters"], "active": ["svc", ["gw", "svc"], ["gw", "client"]], "mark": ["client"], "dim": ["rules"] }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on four places: the algorithm, the shared counter, store failure, and the key you limit by.</p>
+
+<h3>Choosing the algorithm per rule</h3>
+
+<p>Pick the algorithm per rule, by what the rule protects. <a href="/system-design/rate-limiting.html">Rate Limiting</a> explains how each one counts.</p>
+
+<x-tradeoffs caption="Which algorithm for which rule">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Token bucket",
+      "good": "Allows short bursts, holds the long-run rate. Two numbers per key, one atomic script.",
+      "bad": "A full bucket lets a whole burst through at once.",
+      "pick": "General per-key and per-IP API limits. My default here.",
+      "default": true
+    },
+    {
+      "name": "Sliding window log",
+      "good": "Exact count over the window.",
+      "bad": "One timestamp per request per key, so memory grows with the limit.",
+      "pick": "Small limits that must be exact: 5 login attempts per account per 15 minutes."
+    },
+    {
+      "name": "Fixed window counter",
+      "good": "One integer and an expiry. Cheapest possible.",
+      "bad": "Up to twice the limit across a window edge.",
+      "pick": "Coarse quotas where the edge does not matter: 100,000 calls a day."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Say it like this: "Token bucket for the API limits, because clients legitimately burst when a page loads. A sliding log for login, because the limit is 5 and I want it exact. A daily quota is a fixed window with a 24-hour expiry." What would change my mind: if the backend cannot absorb bursts at all, a leaky bucket that queues requests fits better.</p>
+
+<h3>A shared counter with atomic updates</h3>
+
+<p>Twenty gateways each counting alone would let a client spread across them through up to twenty times its limit. So the count lives in one place per key: the shard of the counter store that owns that key, chosen by <a href="/system-design/consistent-hashing.html">consistent hashing</a> so adding a shard moves only a small share of keys.</p>
+
+<p>The danger is splitting the check from the update. Here is the race, with one token left and two gateways.</p>
+
+<x-tracer title="The read-then-write race, and the fix">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "gwa", "label": "Gateway A", "kind": "gateway", "col": 0, "row": 0 },
+      { "id": "gwb", "label": "Gateway B", "kind": "gateway", "col": 0, "row": 2 },
+      { "id": "store", "label": "Counter shard", "kind": "cache", "col": 2, "row": 1 }
+    ],
+    "edges": [
+      { "from": "gwa", "to": "store" },
+      { "from": "gwb", "to": "store" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The bucket for <code>k_8f3a</code> holds 1 token. Two requests from the same client arrive at gateways A and B in the same millisecond.",
+      "arch": { "active": ["gwa", "gwb"], "notes": { "store": "tokens = 1" } },
+      "vars": { "tokens": 1, "allowed": 0 }
+    },
+    {
+      "caption": "Naive version: A reads the count. 1 token, so A decides to allow.",
+      "arch": { "active": ["store", ["gwa", "store"]], "notes": { "store": "tokens = 1", "gwa": "read 1" } },
+      "vars": { "tokens": 1, "allowed": 0 }
+    },
+    {
+      "caption": "Before A writes back, B reads too. It also sees 1 token and also decides to allow.",
+      "arch": { "active": ["store", ["gwb", "store"]], "notes": { "store": "tokens = 1", "gwa": "read 1", "gwb": "read 1" } },
+      "vars": { "tokens": 1, "allowed": 0 }
+    },
+    {
+      "caption": "Both write <code>tokens = 0</code> and both requests pass. Two requests spent one token. Under heavy concurrency this overshoots by as many requests as are in flight at once.",
+      "arch": { "fail": ["store"], "active": [["gwa", "store"], ["gwb", "store"]], "notes": { "store": "tokens = 0" } },
+      "vars": { "tokens": 0, "allowed": 2 }
+    },
+    {
+      "caption": "The fix: send the whole refill-check-take as one script that the shard runs to completion before starting another. A's script runs first and takes the token.",
+      "arch": { "active": ["store", ["gwa", "store"]], "mark": ["gwa"], "notes": { "store": "1 → 0", "gwa": "allowed" } },
+      "vars": { "tokens": 0, "allowed": 1 }
+    },
+    {
+      "caption": "B's script runs next, sees 0 tokens and rejects. One token, one request. No locks were needed, because the shard runs scripts one at a time.",
+      "arch": { "active": ["store", ["gwb", "store"]], "mark": ["gwa"], "fail": ["gwb"], "notes": { "store": "0", "gwa": "allowed", "gwb": "429" } },
+      "vars": { "tokens": 0, "allowed": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-code single title="The atomic take, run inside the counter store">
+<pre lang="text">
+take(key, capacity, rate, cost):
+  now = store's own clock, in ms
+  tokens, last = read key            (missing key: tokens = capacity, last = now)
+  tokens = min(capacity, tokens + (now - last) / 1000 * rate)
+  if tokens >= cost:
+      tokens = tokens - cost
+      allowed = true
+  else:
+      allowed = false
+  write key = (tokens, now), expire after capacity / rate seconds
+  return allowed, floor(tokens), time until tokens >= cost
+</pre>
+</x-code>
+
+<p>Two details show you have built one. First, the script uses the <strong>store's clock</strong>, not the gateway's: gateway clocks drift apart by milliseconds, and if A's clock is behind B's, <code>now - last</code> goes negative and the refill math breaks. Second, <strong>do not retry a timed-out take</strong>. The store may have taken the token before the reply was lost, so a retry would charge the client twice. Treat a timeout as "store down" for that one request.</p>
+
+<p>Say the cost of replication out loud. Each shard copies to its replica asynchronously, so if a primary dies, the last few hundred milliseconds of decrements are lost: a few extra requests, once, which fits "a few percent loose".</p>
+
+<h3>Failing open or closed</h3>
+
+<p>The counter store will be unreachable sometimes. Decide in advance, per rule, what the gateway does then.</p>
+
+<x-tradeoffs caption="When the counter store cannot answer">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Fail open",
+      "good": "A limiter outage never becomes an API outage.",
+      "bad": "No protection until the store is back; one abusive client can hurt everyone.",
+      "pick": "Low-risk endpoints where availability matters most and the backend has headroom."
+    },
+    {
+      "name": "Fall back to local limits",
+      "good": "Still available, still roughly limited. Each of 20 gateways allows 1/20 of the limit in its own memory.",
+      "bad": "Only right if the load balancer spreads a client evenly; a client pinned to one gateway gets 1/20 of its limit.",
+      "pick": "General API limits. My default.",
+      "default": true
+    },
+    {
+      "name": "Fail closed",
+      "good": "No request skips the limit, ever.",
+      "bad": "A store outage rejects every request on that endpoint.",
+      "pick": "Login, password reset, SMS sending: endpoints where an unlimited attacker costs more than a short outage."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The arithmetic for the fallback: the free plan refills 10 a second, so each of 20 gateways allows 10 ÷ 20 = 0.5 a second for that key. A client spread evenly gets about 20 × 0.5 = 10 a second in total, the same as normal. That is why <code>on_store_down</code> is a field on the rule, not a global switch.</p>
+
+<h3>Per-user and per-IP rules together</h3>
+
+<p>A request can match several rules: the IP rule, the API key rule and an endpoint rule. Check them all, allow only if every one allows, and return the longest <code>Retry-After</code>. Check the cheapest, broadest rule first (per IP) so a flood is rejected before it costs a second store call.</p>
+
+<ul>
+<li><strong>IP alone is a poor identity.</strong> An office or a mobile carrier can put thousands of users behind one address. Use IP for anonymous traffic and floods, and the key or account once known.</li>
+<li><strong>IPv6 needs a prefix.</strong> One home is often given a whole block of addresses (commonly a /64), so limit by that prefix, or a single client can rotate through endless addresses.</li>
+<li><strong>Login needs two keys.</strong> Limit per IP (one attacker trying many accounts) and per target account (many IPs trying one account). Either alone misses one attack.</li>
+</ul>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x (360,000 requests a second at peak), the counter store sees 720,000 operations a second. At about 50,000 per shard that is roughly 15 shards; run 16. Consistent hashing means going from 4 to 16 moves keys gradually, and a moved key simply starts as a full bucket. The gateways scale by adding nodes, since they hold only rules and a small deny cache.</p>
+
+<p>The first thing to break is usually a <strong>hot key</strong>: one abusive client sending 50,000 requests a second lands every check on one shard. The local deny cache from the tracer handles this: after the first rejection, that gateway stops asking the store until the next token is due. Add a local pre-limit per IP in each gateway to drop obvious floods before they reach the store at all.</p>
+
+<p>The deny cache does not help a big customer whose plan allows 20,000 requests a second, because those requests are allowed. For such keys, let each gateway take tokens in batches: one call takes 50, and the gateway spends them locally. Store calls drop 50-fold; the cost is that a gateway can hold a few unspent tokens when the limit is hit.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A gateway node</td><td>Its in-flight requests fail.</td><td>The load balancer removes it. Counters are shared, so no limit state is lost.</td></tr>
+<tr><td>A counter shard primary</td><td>Checks for its keys time out until the replica is promoted, a few seconds.</td><td>Each rule's <code>on_store_down</code> applies meanwhile. Recent decrements may be lost, so some clients get a few extra requests.</td></tr>
+<tr><td>The whole counter store</td><td>No shared counts.</td><td>Local limits for most rules, fail closed for login. Alert, because limits are now approximate.</td></tr>
+<tr><td>The rules store</td><td>No rule changes.</td><td>Gateways keep the last rules they loaded. Nothing on the request path notices.</td></tr>
+<tr><td>Network slow to the store</td><td>Checks blow the 2 ms budget.</td><td>A 5 ms timeout, then the fallback. After a few timeouts, stop calling that shard for a few seconds (a circuit breaker), so requests do not each pay 5 ms.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="A limiter that can take the API down">
+<p>If every request waits on the counter store with no timeout and no fallback, the limiter becomes a single point of failure for the whole API. Decide the failure behaviour per rule, and set a timeout far below your latency budget.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<p>Most candidates know the token bucket. Levels differ on many servers, races and failure.</p>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Explains one algorithm well, in one process. Needs prompting to notice that many gateways each counting alone multiplies the limit.</td></tr>
+<tr><td>Mid</td><td>Puts counters in a shared store, makes the check atomic, returns 429 with <code>Retry-After</code>, and estimates store load.</td></tr>
+<tr><td>Senior</td><td>Picks the algorithm per rule, chooses fail open or closed per endpoint with reasons, uses the store's clock, refuses to retry a timed-out take, handles hot keys with a local deny cache, and says how loose the limits get during failures.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Defending the failure mode" tone="strong">
+<x-interviewer>Your counter store is down. What happens to the login endpoint?</x-interviewer>
+<x-you>Login fails closed. If the limiter is down and login is unlimited, an attacker can try passwords as fast as our servers answer. A few minutes of failed logins is the smaller harm. The rest of the API falls back to local limits at one twentieth of the limit per gateway, so it stays up and roughly limited.</x-you>
+<x-interviewer>Isn't rejecting every login a bad experience?</x-interviewer>
+<x-you>It is, so I'd soften it: fall back to a strict local limit, say 1 attempt per IP per minute per gateway, instead of rejecting outright. Users can still log in slowly, and an attacker gets almost nothing.</x-you>
+<x-coach>The candidate picks a side, names its cost, then improves on it when pushed instead of abandoning it.</x-coach>
+</x-interview>
+
+<p>A weak answer: "We'd make the store highly available so it never goes down." Every dependency goes down; the interviewer wants to hear what you do then.</p>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you limit across several regions?</h3>
+<p>A store shared across regions puts a round trip of tens of milliseconds on every request. Instead, give each region its own counters and split the limit by each region's share of traffic, or sync regional counts every second and accept a small overshoot.</p>
+
+<h3>How would you limit by cost instead of by request?</h3>
+<p>Pass <code>cost</code> to the take call: a bulk export takes 10 tokens, a read takes 1. If the cost is only known after the request finishes, take an estimate up front and charge the difference afterwards.</p>
+
+<h3>How do you roll out a new, stricter limit safely?</h3>
+<p>Run it in shadow mode first: the gateway evaluates the rule and logs who would have been rejected, but lets them through. After a few days of logs you know which customers it hits, and can warn them before enforcing.</p>
+
+<h3>Why not just put the limit in the load balancer?</h3>
+<p>Many load balancers can limit per IP, a good first layer against floods, but they do not know the API key or plan. Use both layers.</p>
+
+<x-checklist title="Self-review: rate limiter">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether the limiter is in one process or shared across a fleet", "I asked what we limit by (key, IP, account) and whether limits vary by plan and endpoint", "I set a latency budget and said how exact the limits must be"] },
+    { "title": "Numbers and interfaces", "items": ["I turned daily requests into peak checks per second against the store", "I estimated counter memory and saw it was small", "I returned 429 with Retry-After and explained why not 503"] },
+    { "title": "Design and depth", "items": ["I put the limiter in the gateway and the counters in a shared in-memory store", "I chose an algorithm per rule and gave a reason for each", "I made refill-check-take one atomic operation and explained the race without it", "I used the store's clock and did not retry timed-out takes", "I combined per-IP and per-key rules and explained the limits of IP as an identity"] },
+    { "title": "Failure", "items": ["I chose fail open, local fallback or fail closed per endpoint, with reasons", "I said what breaks at 10x, including hot keys"] }
+  ]
+}
+</script>
+</x-checklist>
+
+<h2>What to practise next</h2>
+
+<p>The counter store here is a small, specialised key-value store. Build a general one, with replication and quorums, in <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>

@@ -1,0 +1,196 @@
+<!--
+{
+  "title": "What Changes by Level",
+  "description": "What junior, mid, senior and staff answers look like on the same question, shown side by side on a like counter, and how to practise for your level.",
+  "minutes": 18,
+  "tags": ["interview", "levels", "career"]
+}
+-->
+<p>Four candidates get the same prompt: "Design the like button for a social app, with a count under every post." All four draw a working system. One is hired as a new grad, one as mid-level, one as senior, and one is turned down for staff and offered senior. The difference was never whether the design worked. It was how much of the session they led, how deep they went, and how far past the boxes they looked.</p>
+
+<p>Interviewers calibrate against a level. Knowing what the bar is for yours tells you where to spend your 40 minutes.</p>
+
+<h2>The idea</h2>
+
+<p>The scorecard does not change by level: problem exploration, design, trade-offs, depth, communication, as in <a href="/system-design/how-the-interview-works.html">how the interview works</a>. What changes is how much you are expected to do without being asked. A simplification, since companies define levels differently, but a useful one:</p>
+
+<ul>
+<li><strong>Junior</strong> (new grad, early career): a correct, simple design that works end to end, with help. You ask sensible questions, know the basic blocks, and respond well to hints.</li>
+<li><strong>Mid-level</strong>: you drive the structure. You estimate, justify each component, and handle one deep dive well when it is pointed out.</li>
+<li><strong>Senior</strong>: you drive the whole session. You find the hard part yourself, go deep on two or three areas, argue trade-offs with costs and conditions, and bring up failure before you are asked.</li>
+<li><strong>Staff</strong>: everything senior, plus judgement about the problem itself: which requirements to challenge, what not to build, what it costs, how it evolves, and who else depends on it.</li>
+</ul>
+
+<h2>One question, four answers</h2>
+
+<p>The scenario numbers: 50 million likes a day, and a count shown on every post view, about 100 views for every like. Over a day of about 100,000 seconds that is 50 million ÷ 100,000 = 500 likes a second on average (the exact figure is nearer 580), and 500 × 100 = 50,000 count reads a second. Step through how the design grows as the level rises.</p>
+
+<x-tracer title="The like counter, level by level">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "App", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Like service", "kind": "service", "col": 1, "row": 1, "stack": true },
+      { "id": "cache", "label": "Count cache", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "queue", "label": "Like events", "kind": "queue", "col": 2, "row": 1 },
+      { "id": "db", "label": "Likes DB", "kind": "database", "col": 2, "row": 2 },
+      { "id": "agg", "label": "Count aggregator", "kind": "worker", "col": 3, "row": 1 }
+    ],
+    "edges": [
+      { "from": "client", "to": "api" },
+      { "from": "api", "to": "cache", "label": "read count" },
+      { "from": "api", "to": "queue", "style": "async" },
+      { "from": "api", "to": "db", "label": "insert like" },
+      { "from": "queue", "to": "agg", "style": "async" },
+      { "from": "agg", "to": "db", "label": "count += n" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Junior: a like inserts a row and increments the post's count in one transaction. Correct, and fine at 500 likes a second on average.",
+      "arch": { "hide": ["cache", "queue", "agg"], "active": ["client", "api", "db", ["client", "api"], ["api", "db"]], "notes": { "db": "count++" } },
+      "vars": { "likes/s": 500, "count reads/s": "50,000" }
+    },
+    {
+      "caption": "Mid: the estimate shows 50,000 count reads a second, 100 times the writes. Counts may be a few seconds stale, so they go in a cache.",
+      "arch": { "hide": ["queue", "agg"], "active": ["cache", ["api", "cache"]], "notes": { "cache": "hit" } },
+      "vars": { "likes/s": 500, "count reads/s": "50,000" }
+    },
+    {
+      "caption": "Senior, unprompted: a viral post gets 5,000 likes a second, and every one updates the same count row. Updates to one row wait on its lock, so that row caps the whole post.",
+      "arch": { "hide": ["queue", "agg"], "fail": ["db"], "active": [["api", "db"]], "notes": { "db": "hot row" } },
+      "vars": { "likes/s on post": "5,000", "row updates/s": "5,000" }
+    },
+    {
+      "caption": "Senior fix: insert the like row keyed by (user, post), so a double tap fails as a duplicate, and publish an event only when the insert succeeds. Nothing touches the count row.",
+      "arch": { "active": ["db", "queue", ["api", "db"], ["api", "queue"]], "notes": { "db": "like row only" } },
+      "vars": { "likes/s on post": "5,000", "row updates/s": 0 }
+    },
+    {
+      "caption": "An aggregator sums events per post and writes once a second. 5,000 likes become 1 count update. The cost: counts lag by about a second.",
+      "arch": { "active": ["agg", ["queue", "agg"], ["agg", "db"]], "mark": ["db"], "notes": { "agg": "5,000 → 1 write" } },
+      "vars": { "likes/s on post": "5,000", "row updates/s": 1 }
+    },
+    {
+      "caption": "Senior, on failure: the aggregator dies. Likes are still stored and events wait in the queue; counts freeze, then catch up when it restarts. It must save its queue position in the same write as the count, or a restart replays events and counts them twice.",
+      "arch": { "fail": ["agg"], "active": ["queue", "db", ["api", "db"], ["api", "queue"]], "notes": { "queue": "backlog grows" } },
+      "vars": { "likes/s on post": "5,000", "row updates/s": 0 }
+    },
+    {
+      "caption": "Staff: asks whether counts must be exact. The app shows \"12K\", so the last digits are invisible. And ranking and notifications want these events too, so the event stream is now an interface other teams depend on.",
+      "arch": { "active": ["queue"], "mark": ["client", "cache", "db", "agg"], "notes": { "queue": "shared contract" } },
+      "vars": { "likes/s on post": "5,000", "row updates/s": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The same question, summarised. Each row includes the one above it.</p>
+
+<table>
+<thead><tr><th>Level</th><th>Starts with</th><th>Goes deep on</th><th>Says about failure</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Features, and a question or two on scale.</td><td>The schema and the API, when asked.</td><td>Answers "what if the database dies?" with replicas.</td></tr>
+<tr><td>Mid</td><td>Features, scale, the read/write ratio, an estimate.</td><td>The cache, with a reason and a staleness bound.</td><td>Walks each box when asked.</td></tr>
+<tr><td>Senior</td><td>All that, plus which path is hard: the hot post.</td><td>Hot keys, idempotent likes, async counting.</td><td>Raises it unprompted, with what is lost and what lags.</td></tr>
+<tr><td>Staff</td><td>All that, plus whether exact counts are needed at all.</td><td>The event contract, storage growth, rollout.</td><td>Adds how you would detect it and who gets paged.</td></tr>
+</tbody>
+</table>
+
+<p>Staff candidates also close the gaps. If the service crashes between the insert and the publish, a like is stored but never counted, so a nightly job recounts popular posts from the like rows and corrects drift. And they put a number on growth. A like row is about 50 bytes, so 50 million a day × 365 is about 18 billion rows, near 1 TB a year. Small today, but a reason to decide retention and partitioning now rather than in year three.</p>
+
+<h2>How to practise for your level</h2>
+
+<x-tradeoffs caption="Practice methods, and who gets the most from each">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Redraw case studies from memory", "good": "Builds the vocabulary of components and common patterns fast.", "bad": "Trains recall, not judgement; it does not feel like a live interview.", "pick": "Junior, in the first weeks. Then move on." },
+    { "name": "Timed solo mocks", "good": "Practises pacing and structure on your own schedule.", "bad": "Nobody pushes back, so you never practise hints and curveballs.", "pick": "Mid-level, and anyone whose problem is running out of time." },
+    { "name": "Partner mocks with a scorer", "good": "Real interruptions and follow-ups; feedback on how you sound.", "bad": "Needs a partner who knows the material and will be honest.", "pick": "Senior and above, and everyone in the last two weeks.", "default": true },
+    { "name": "Review real design docs", "good": "Shows how cost, migration and ownership are argued in practice.", "bad": "Slow, and no clock.", "pick": "Staff candidates, alongside partner mocks." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Whatever your level, practise one level up in one area. A mid-level candidate who raises a failure mode unprompted, once, stands out. <a href="/system-design/mock-interview-practice.html">Mock interview practice</a> has prompts and a way to run sessions.</p>
+
+<h2>In the interview</h2>
+
+<p>Ask the level if you do not know it, and ask what they want to see: "Should I focus on the overall design or go deep in one area?" Then make the level-defining moves out loud, so they are scored:</p>
+
+<ul>
+<li>Mid: "Reads are 100 times writes, so I'll cache counts and accept a few seconds of staleness."</li>
+<li>Senior: "The part I'm worried about is one viral post. Let me go there."</li>
+<li>Staff: "Before I optimise this, do we need exact counts? If we show 12K, approximate is fine and much cheaper."</li>
+</ul>
+
+<x-interview title="A senior candidate answering like a mid" tone="weak">
+<x-interviewer>The design looks complete. Anything else?</x-interviewer>
+<x-you>I think that covers it. Is there a part you'd like me to go into?</x-you>
+<x-coach>Correct but passive. At senior level the interviewer wanted you to pick the hard part yourself.</x-coach>
+</x-interview>
+
+<x-interview title="The same moment, at senior level" tone="strong">
+<x-interviewer>The design looks complete. Anything else?</x-interviewer>
+<x-you>Two things. A viral post puts 5,000 updates a second on one count row, so I'd move counting to an aggregator that writes once a second. And if the aggregator is down, likes are kept but counts freeze; I'd alert on queue backlog so we notice in minutes.</x-you>
+<x-coach>Finds the hard part, fixes it with a number, and closes with failure and detection.</x-coach>
+</x-interview>
+
+<p>Follow-ups by level that you should expect:</p>
+
+<ul>
+<li><strong>Mid: "Why that database?"</strong> The five-part answer from <a href="/system-design/talking-through-trade-offs.html">talking through trade-offs</a>.</li>
+<li><strong>Senior: "What breaks at 10 times the traffic?"</strong> Name the first bottleneck and its number, then the fix.</li>
+<li><strong>Staff: "How would you roll this out?"</strong> Behind a flag, dual-writing old and new counts, comparing them, then switching reads; say how you would roll back.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Performing seniority with jargon">
+<p>Naming more technologies does not raise your level; it gives the interviewer more to probe. Seniority shows in what you choose to leave out and in the reasons you give.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Staff topics before the design works">
+<p>Talking about team ownership and migration at minute 10, before the like path reaches a database, reads as avoiding the work. Earn the wide view with a working design first.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A post gets 5,000 likes a second. An aggregator writes the summed count once a second. How many count-row updates a second does that post cause?",
+      "options": [
+        { "text": "5,000", "why": "That is the direct-update design, one write per like." },
+        { "text": "1", "correct": true, "why": "The aggregator turns a second's worth of likes into one write. The cost is about a second of lag." },
+        { "text": "0", "why": "The count still has to be written somewhere, once a second." }
+      ]
+    },
+    {
+      "question": "Which move most clearly signals senior rather than mid level?",
+      "options": [
+        { "text": "Adding a cache because reads are 100 times writes", "why": "Good, and expected at mid level." },
+        { "text": "Raising the viral-post hot row before the interviewer asks, with a fix", "correct": true, "why": "Finding the hard part yourself and going deep is the senior bar." },
+        { "text": "Naming a specific queue product", "why": "A product name is not judgement." }
+      ]
+    },
+    {
+      "question": "With 50 million likes a day and a day rounded to 100,000 seconds, what is the average like rate?",
+      "options": [
+        { "text": "50 a second", "why": "That divides by a million seconds." },
+        { "text": "500 a second", "correct": true, "why": "50,000,000 ÷ 100,000 = 500. With 86,400 seconds it is about 580." },
+        { "text": "5,000 a second", "why": "That divides by 10,000 seconds; that is the viral post's rate, not the average." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Keep the reference figures from <a href="/system-design/numbers-to-know.html">Numbers to Know</a> at hand, then run a full session from <a href="/system-design/mock-interview-practice.html">Mock Interview Practice</a> at your level.</p>

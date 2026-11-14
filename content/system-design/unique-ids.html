@@ -1,0 +1,212 @@
+<!--
+{
+  "title": "Unique IDs",
+  "description": "Generate unique IDs across many machines: auto-increment, UUIDs, Snowflake-style time-ordered IDs worked out bit by bit, and range allocation.",
+  "minutes": 16,
+  "tags": ["ids", "distributed systems", "building blocks"]
+}
+-->
+<p>An orders table outgrows one database and is split across 4. Each database keeps its own auto-increment counter, so within a day shard 1 and shard 3 have both created order 1001. Support looks up order 1001 and finds two. The analytics job that merges all shards silently overwrites one with the other.</p>
+
+<p>On one machine, unique IDs are free. Across many machines, every server must hand out IDs no other server will ever produce, ideally without asking anyone first.</p>
+
+<h2>The idea</h2>
+
+<p>There are three ways to avoid a clash without a central counter on every request: make IDs so random that clashes are practically impossible (UUIDs), build each ID from parts that are unique on their own, such as time plus a machine number plus a counter (Snowflake-style), or hand each server a private block of numbers in advance (range allocation).</p>
+
+<p>Beyond uniqueness, ask three questions. Must the ID fit in 64 bits? Should IDs sort by creation time? Is it a problem if outsiders can guess the next ID or count your orders?</p>
+
+<h2>The options</h2>
+
+<x-tradeoffs caption="ID schemes compared">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Auto-increment", "good": "Small, simple, perfectly ordered.", "bad": "One database decides every ID. Guessable, and reveals your volume.", "pick": "One database, now and later, and IDs are not shown to users." },
+    { "name": "UUID v4 (random)", "good": "No coordination at all; any machine, even a phone, can make one.", "bad": "128 bits. Random order scatters inserts across the whole index, which slows writes on large tables.", "pick": "You need no ordering and 16 bytes per key is fine." },
+    { "name": "Time-ordered UUID (v7)", "good": "Starts with a millisecond timestamp, so IDs sort by time and index inserts stay at the end. No machine numbers.", "bad": "Still 128 bits. Leaks creation time.", "pick": "128 bits is fine and you want ordering without any setup." },
+    { "name": "Snowflake-style 64-bit", "good": "Fits in a 64-bit integer, roughly time-ordered, millions per second per machine.", "bad": "Each generator needs a unique machine number, and it trusts the clock.", "pick": "IDs must be 64-bit and sortable: posts, messages, orders at scale.", "default": true },
+    { "name": "Range allocation", "good": "Dense integers; one allocator call per block of, say, 1,000.", "bad": "Needs a highly available allocator. Order is only per block.", "pick": "Short codes and compact numbers, as in a URL shortener." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Range allocation is the simplest to run when you already have a small, reliable allocator: a server asks for "the next 1,000", gets 7,000 to 7,999, and hands them out from memory. If it crashes, the unused numbers are skipped, which is harmless. The allocator is called once per thousand IDs, so it needs high availability but almost no capacity.</p>
+
+<p>How unlikely is a UUID v4 clash? It has 122 random bits. By the birthday estimate, n IDs collide with probability about n² ÷ 2<sup>123</sup>. For a trillion IDs: (10<sup>12</sup>)² ÷ (1.06 × 10<sup>37</sup>) ≈ 10<sup>−13</sup>. Treat it as never, provided the random generator is a good one.</p>
+
+<h2>A Snowflake-style ID, bit by bit</h2>
+
+<p>Split a 64-bit integer into fields. Because the timestamp sits in the highest bits, sorting IDs as numbers sorts them by time.</p>
+
+<x-figure caption="The 64 bits of one ID, with the example worked below. Widths are not to scale; the timestamp field is the largest.">
+<svg viewBox="0 0 520 125" aria-label="A bar of 64 bits split into four fields: 1 sign bit, 41 bits of millisecond timestamp, 10 bits of machine number, 12 bits of sequence. The example values are 0, 1,000,000,000, 37 and 5.">
+  <rect x="20" y="20" width="20" height="40" rx="4" class="f-surface s-line"/>
+  <rect x="40" y="20" width="270" height="40" rx="4" class="f-accent-soft s-line"/>
+  <rect x="310" y="20" width="90" height="40" rx="4" class="f-info s-line"/>
+  <rect x="400" y="20" width="100" height="40" rx="4" class="f-good-soft s-line"/>
+  <text x="175" y="45" text-anchor="middle" class="t-sans">timestamp (ms)</text>
+  <text x="355" y="45" text-anchor="middle" class="t-sans f-bg">machine</text>
+  <text x="450" y="45" text-anchor="middle" class="t-sans">sequence</text>
+  <text x="30" y="82" text-anchor="middle" class="f-muted">1</text>
+  <text x="175" y="82" text-anchor="middle" class="f-muted">41 bits</text>
+  <text x="355" y="82" text-anchor="middle" class="f-muted">10 bits</text>
+  <text x="450" y="82" text-anchor="middle" class="f-muted">12 bits</text>
+  <text x="30" y="110" text-anchor="middle">0</text>
+  <text x="175" y="110" text-anchor="middle">1,000,000,000</text>
+  <text x="355" y="110" text-anchor="middle">37</text>
+  <text x="450" y="110" text-anchor="middle">5</text>
+</svg>
+</x-figure>
+
+<ul>
+<li><strong>Sign, 1 bit:</strong> always 0, so the ID stays positive in languages with signed 64-bit integers.</li>
+<li><strong>Timestamp, 41 bits:</strong> milliseconds since an epoch you choose, such as your launch date. 2<sup>41</sup> ms = 2.2 × 10<sup>12</sup> ms, about 70 years before it runs out.</li>
+<li><strong>Machine, 10 bits:</strong> 2<sup>10</sup> = 1,024 generators can run at once.</li>
+<li><strong>Sequence, 12 bits:</strong> a counter that resets every millisecond. 2<sup>12</sup> = 4,096 IDs per ms per machine, so about 4 million a second each.</li>
+</ul>
+
+<p>Build the example: shift each field into place and add. 1,000,000,000 × 2<sup>22</sup> = 4,194,304,000,000,000. Then 37 × 2<sup>12</sup> = 151,552. Then the sequence, 5. The ID is 4,194,304,000,151,557. Reading it back is the reverse: divide by 2<sup>22</sup> for the timestamp, and so on.</p>
+
+<p>The split is yours to tune. Fewer machines and more sequence bits suits a few very busy generators; a shorter timestamp in seconds lasts longer but sorts less finely.</p>
+
+<x-tracer title="Two generators, a burst, a clock jump, a lost lease">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "a", "label": "Order service A", "kind": "service", "col": 0, "row": 0 },
+      { "id": "b", "label": "Order service B", "kind": "service", "col": 0, "row": 2 },
+      { "id": "coord", "label": "Coordination service", "kind": "service", "col": 1, "row": 1 },
+      { "id": "db", "label": "Orders DB", "kind": "database", "col": 2, "row": 1 }
+    ],
+    "edges": [
+      { "from": "a", "to": "coord", "label": "machine no." },
+      { "from": "b", "to": "coord", "label": "machine no." },
+      { "from": "a", "to": "db", "label": "insert" },
+      { "from": "b", "to": "db", "label": "insert" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Service A starts and claims a free machine number from the coordination service, held by a lease. It gets 37.",
+      "arch": { "active": ["a", "coord", ["a", "coord"]], "notes": { "a": "machine 37" } },
+      "vars": { "A": "37" }
+    },
+    {
+      "caption": "Service B claims 38. From now on neither talks to anyone to make an ID.",
+      "arch": { "active": ["b", "coord", ["b", "coord"]], "notes": { "a": "machine 37", "b": "machine 38" } },
+      "vars": { "A": "37", "B": "38" }
+    },
+    {
+      "caption": "At millisecond 1,000,000,000, A makes its sixth ID of that millisecond, so the sequence is 5: ID 4,194,304,000,151,557.",
+      "arch": { "active": ["a", "db", ["a", "db"]], "notes": { "a": "seq 5" } },
+      "vars": { "timestamp": "1,000,000,000", "machine": 37, "sequence": 5 }
+    },
+    {
+      "caption": "In the same millisecond, B makes its first ID: 4,194,304,000,155,648. Same time, different machine bits, so no clash.",
+      "arch": { "active": ["b", "db", ["b", "db"]], "notes": { "b": "seq 0" } },
+      "vars": { "timestamp": "1,000,000,000", "machine": 38, "sequence": 0 }
+    },
+    {
+      "caption": "A burst: A uses all 4,096 sequence numbers within one millisecond. The next request waits for the clock to tick, under 1 ms.",
+      "arch": { "active": ["a"], "notes": { "a": "seq full, wait" } },
+      "vars": { "timestamp": "1,000,000,001", "machine": 37, "sequence": 4095 }
+    },
+    {
+      "caption": "Time sync moves A's clock back 3 ms. Reusing those milliseconds could repeat an ID, so A refuses to issue IDs until its clock passes the last timestamp it used.",
+      "arch": { "fail": ["a"], "notes": { "a": "clock went back" } },
+      "vars": { "last used": "1,000,000,002", "clock now": "999,999,999" }
+    },
+    {
+      "caption": "A loses contact with the coordination service and its lease runs out. Number 37 may be given to a new server, so A must stop making IDs. Two generators with one number would collide.",
+      "arch": { "fail": ["a", ["a", "coord"]], "active": ["b", ["b", "db"]], "notes": { "a": "lease lost: stop" } },
+      "vars": { "A": "stopped", "B": "38" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<x-callout type="mistake" title="64-bit IDs in JavaScript">
+<p>JavaScript numbers are exact only up to 2<sup>53</sup>. With 22 bits below the timestamp, any timestamp past 2<sup>31</sup> ms (about 25 days after the epoch) produces an ID that a browser silently rounds. Send these IDs as strings in JSON.</p>
+</x-callout>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>2<sup>10</sup> ≈ 1 thousand, 2<sup>20</sup> ≈ 1 million, 2<sup>30</sup> ≈ 1 billion, 2<sup>40</sup> ≈ 1 trillion.</li>
+<li>A 64-bit ID is 8 bytes; a UUID is 16 bytes, or 36 characters as text. On a billion rows and their indexes, that difference is many gigabytes.</li>
+<li>Snowflake-style capacity: 4,096 per ms × 1,000 ms = about 4 million IDs a second per machine.</li>
+</ul>
+
+<x-estimate title="How long the timestamp lasts">
+<script type="application/json">
+{
+  "question": "A 41-bit field counts milliseconds since your chosen epoch. Roughly how long until it overflows?",
+  "givens": ["41 bits of milliseconds", "A year is about 3.16 × 10<sup>7</sup> seconds"],
+  "unit": "duration",
+  "answer": "70 years",
+  "accept": ["25 years", "200 years"],
+  "steps": ["2<sup>41</sup> = 2,199,023,255,552 ms ≈ 2.2 × 10<sup>12</sup> ms", "÷ 1,000 = 2.2 × 10<sup>9</sup> seconds", "÷ 3.16 × 10<sup>7</sup> ≈ 69.6, call it 70 years"],
+  "note": "Choosing the epoch as your launch date instead of 1970 is what makes the 70 years start now."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>IDs come up whenever data is sharded or written from many servers, and in any design that shows items in time order (feeds, chats). State the requirements first: "IDs must be unique across shards, fit in 64 bits, and roughly sort by time, so I'd use a Snowflake-style generator inside each service."</p>
+
+<x-interview title="IDs for chat messages">
+<x-interviewer>How do you assign message IDs?</x-interviewer>
+<x-you>Messages are written on many servers and shown in time order, so I'd use 64-bit Snowflake-style IDs: 41 bits of milliseconds, 10 bits of machine number, 12 bits of sequence. Each server gets its machine number from a lease at startup, and then makes IDs locally.</x-you>
+<x-interviewer>Two messages in the same chat land on different servers in the same millisecond. Which comes first?</x-interviewer>
+<x-you>The machine bits decide, so the order is arbitrary within that millisecond, and clocks on different servers differ by a few ms anyway. For a chat that is fine. If exact order inside a conversation mattered, I'd have one owner per conversation assign a sequence number.</x-you>
+<x-coach>Strong answers admit that time-ordered IDs are only roughly ordered across machines, and say what to do if that is not good enough.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"What if the clock goes backwards?"</strong> Refuse or wait until it passes the last timestamp used; alert if the jump is large.</li>
+<li><strong>"How are machine numbers assigned?"</strong> From a coordination service with a lease, or from configuration. The lease must be held while generating.</li>
+<li><strong>"Can outsiders learn anything from your IDs?"</strong> Yes. Sequential IDs reveal volume, and time-based ones reveal when a record was made. Where that matters, show users a separate random public ID.</li>
+<li><strong>"Why not UUIDs?"</strong> Fine if 128 bits is acceptable; prefer a time-ordered version so index inserts stay sequential.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Random IDs as a clustered primary key">
+<p>Random UUID v4 keys land all over the index, so every insert touches a different page and large tables slow down. Use a time-ordered ID when the key decides physical order.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Your layout uses 10 machine bits and 12 sequence bits. How many IDs can one machine make in one second at most?",
+      "options": [
+        { "text": "4,096", "why": "That is per millisecond. A second has 1,000 of them." },
+        { "text": "About 4 million", "correct": true, "why": "4,096 per ms × 1,000 ms = 4,096,000." },
+        { "text": "About 4 billion", "why": "That multiplies by all 1,024 machines too. The question asks about one." }
+      ]
+    },
+    {
+      "question": "Which ID choice fits best: 64-bit keys, sorted by time, written by 200 servers?",
+      "options": [
+        { "text": "Auto-increment on one database", "why": "Every insert would wait on one database." },
+        { "text": "UUID v4", "why": "128 bits and random order: fails both requirements." },
+        { "text": "Snowflake-style", "correct": true, "why": "64 bits, time in the high bits, and 200 servers fit easily into 1,024 machine numbers." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Clocks, leases and lost machines are the theme of <a href="/system-design/reliability-and-failure.html">reliability and failure</a>. To see range allocation inside a full design, work through <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a>; for time-ordered IDs, <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>

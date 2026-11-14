@@ -1,0 +1,196 @@
+<!--
+{
+  "title": "System Design Mistakes",
+  "description": "The twelve habits that sink system design interviews, from skipping requirements to not driving, what each looks like to the interviewer, and the fix.",
+  "minutes": 17,
+  "tags": ["interview", "mistakes", "communication"]
+}
+-->
+<p>A candidate is asked to design an internal tool for booking meeting rooms in one office: 400 employees, maybe 50 bookings an hour. Forty minutes later the board holds a sharded database, a stream processor, three caches and a multi-region failover plan. The feedback says "no hire". Every box was something they understood well. None of it was needed, and they never asked how many people would use it.</p>
+
+<p>Most candidates who fail do not fail on knowledge. They fail on habits, and each has a fix you can practise. Here are the twelve most common, grouped by when they happen.</p>
+
+<h2>Before you draw</h2>
+
+<h3>1. Skipping requirements</h3>
+<p>Looks like: the prompt is read and the first box goes up. The interviewer now has no evidence you can scope a problem, and you have no facts to justify anything later. Fix: spend the first few minutes on features, scale and priorities, and write them where the interviewer can see. <a href="/system-design/requirements-and-scope.html">Requirements and scope</a> has the questions.</p>
+
+<h3>2. Designing for scale you did not establish</h3>
+<p>Looks like the meeting-room story: sharding for a load one server handles. 50 bookings an hour is about one a minute. Fix: let the numbers decide. Say "this fits on one database with a replica; here is the number at which I'd shard." Showing you know when <em>not</em> to scale is a strong signal.</p>
+
+<h3>3. No numbers</h3>
+<p>Looks like: "it's a lot of traffic, so we'll need caching." Fix: a 3-minute estimate of peak requests a second, storage and one more figure that matters, each ending in a decision. See <a href="/system-design/back-of-the-envelope-estimation.html">back-of-the-envelope estimation</a> and the reference figures in <a href="/system-design/numbers-to-know.html">numbers to know</a>.</p>
+
+<h3>4. Reciting a memorised design</h3>
+<p>Looks like: the question is a chat app for a hospital's staff, and the answer is the consumer chat design from a video, with global fan-out and no word about message retention rules. Fix: start from this prompt's requirements. Reuse patterns, not whole answers, and say which requirement makes this one different.</p>
+
+<h2>While you design</h2>
+
+<h3>5. Drawing in silence</h3>
+<p>The interviewer only scores what they hear. Fix: narrate each decision as you draw it, including rejected ones: "I considered a queue here, but the user needs the result, so it's a direct call."</p>
+
+<h3>6. Buzzword stacking</h3>
+<p>Looks like: "We'll put Kafka in front, Redis beside it, Cassandra behind, all on Kubernetes." Each name is a claim you can be asked to defend. Fix: name the category and the reason ("a durable log, because three consumers read the same events"), and add a component only when a requirement asks for it. <a href="/system-design/talking-through-trade-offs.html">Talking through trade-offs</a> gives the sentence to use.</p>
+
+<h3>7. Going deep too early</h3>
+<p>Looks like: 15 minutes on the perfect ID scheme while the read path still does not reach a database. Fix: get a simple design working end to end by about minute 27 of 45, then go deep where the interviewer points.</p>
+
+<h3>8. Not driving</h3>
+<p>Looks like: finishing each part and waiting, "what should I do next?" Interviewers at mid level and above score whether you lead. Fix: say the plan at the start, and at each pause propose the next step: "The high-level design is done. The hard part is the hot-key problem, so I'd like to go there unless you'd rather see storage."</p>
+
+<h3>9. Ignoring failure</h3>
+<p>Looks like: a design that works only when every box is up. Fix: walk the boxes and say what happens when each one dies, with a number. Step through it below.</p>
+
+<x-tracer title="Walking the failure of each box">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Users", "kind": "client", "col": 0, "row": 1 },
+      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+      { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 1, "stack": true },
+      { "id": "cache", "label": "Cache", "kind": "cache", "col": 3, "row": 0 },
+      { "id": "primary", "label": "DB primary", "kind": "database", "col": 3, "row": 1 },
+      { "id": "replica", "label": "DB replica", "kind": "database", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "lb" },
+      { "from": "lb", "to": "app" },
+      { "from": "app", "to": "cache", "label": "read" },
+      { "from": "app", "to": "primary", "label": "write, miss" },
+      { "from": "app", "to": "replica" },
+      { "from": "primary", "to": "replica", "label": "replicate", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The normal read: 3,000 reads a second, 90% served by the cache, so the database sees 300.",
+      "arch": { "active": ["client", "app", "cache", ["client", "lb"], ["lb", "app"], ["app", "cache"]], "notes": { "cache": "hit" } },
+      "vars": { "db reads/s": 300 }
+    },
+    {
+      "caption": "\"What if an app server dies?\" Requests in flight on it fail and clients retry. Health checks remove it within seconds, and the others take its share because they hold no state.",
+      "arch": { "fail": ["app"], "active": ["lb"], "notes": { "app": "1 of 6 down" } },
+      "vars": { "db reads/s": 300 }
+    },
+    {
+      "caption": "\"What if the cache dies?\" Every read falls through: 3,000 a second on a database that normally sees 300. Say it, then the fix: cache replicas, and a limit on fall-through traffic.",
+      "arch": { "fail": ["cache"], "active": ["primary", ["app", "primary"]], "notes": { "primary": "10x load" } },
+      "vars": { "db reads/s": "3,000" }
+    },
+    {
+      "caption": "\"What if the primary dies?\" Writes and cache misses fail. Replication is asynchronous, so writes the replica had not received yet are lost. Say so plainly; do not claim zero loss.",
+      "arch": { "fail": ["primary"], "active": ["replica"], "notes": { "replica": "behind by ~1 s" } },
+      "vars": { "db reads/s": "300 failing" }
+    },
+    {
+      "caption": "The replica is promoted and writes resume after the failover, often tens of seconds. If losing even a second of writes is unacceptable, replicate synchronously to one copy and pay for it in write latency.",
+      "arch": { "fail": ["primary"], "active": ["replica", ["app", "replica"]], "mark": ["replica"], "notes": { "replica": "new primary" } },
+      "vars": { "db reads/s": 300 }
+    },
+    {
+      "caption": "\"And the load balancer?\" Run two, with one taking over the shared address if the other stops answering. Every box now has an answer, which is what the interviewer was checking.",
+      "arch": { "fail": ["lb"], "mark": ["app", "cache", "replica"], "notes": { "lb": "standby takes" } },
+      "vars": { "db reads/s": 300 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Under pressure</h2>
+
+<h3>10. Defending a choice after a hint</h3>
+<p>"Is a database write on every click a problem?" is rarely a neutral question. Looks like: "No, databases are fast." Fix: assume a hint points at a flaw, say what breaks with a number, fix it.</p>
+
+<h3>11. Promising guarantees you cannot keep</h3>
+<p>Looks like: "the queue gives us exactly-once delivery." Over a network, a message can always be delivered twice when an acknowledgement is lost. What systems offer is at-least-once delivery plus an idempotent consumer, so a repeat has no extra effect: exactly-once <em>processing</em>. Fix: name the real guarantee and the mechanism. See <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>.</p>
+
+<h3>12. Hand-waving the hard part</h3>
+<p>Looks like: "the database handles the concurrency" for a seat booking, which is the one place the interviewer wanted depth. Fix: when you reach the part that makes this problem hard, slow down: name the race, show the rows, say which lock or condition prevents it.</p>
+
+<x-callout type="mistake" title="Treating a mistake you notice as fatal">
+<p>You spot a flaw in your design at minute 30 and freeze or rush past it. Noticing it is a good signal. Name it, patch it, move on.</p>
+</x-callout>
+
+<x-tradeoffs caption="You spot a flaw in your own design mid-interview">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Keep going and hope", "good": "No time spent.", "bad": "If the interviewer saw it too, they now think you did not.", "pick": "Never for a real flaw." },
+    { "name": "Start the design over", "good": "A clean board.", "bad": "Burns 10 minutes and the depth you were about to show.", "pick": "Only if the flaw breaks the core requirement and it is before minute 15." },
+    { "name": "Name it and patch it", "good": "Shows self-review, which interviewers score, in under a minute.", "bad": "The board gets a little messy.", "pick": "Almost always.", "default": true }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>In the interview</h2>
+
+<p>Most of these mistakes have a sentence that prevents them. Practise these until they are automatic:</p>
+
+<ul>
+<li>Requirements: "Before I draw, a few questions on features and scale."</li>
+<li>Scale: "At 50 bookings an hour this is one small database. I'll note what would make me shard."</li>
+<li>Driving: "Next I'd go into the hard part, which here is double bookings."</li>
+<li>Failure: "Let me walk each box and say what happens when it dies."</li>
+<li>Self-review: "I just noticed a problem with what I drew. Here is the fix."</li>
+</ul>
+
+<x-interview title="The meeting-room tool" tone="weak">
+<x-interviewer>Design a meeting-room booking tool for our office.</x-interviewer>
+<x-you>Sure. I'll start with a global load balancer, then microservices for rooms, users and bookings, each with its own database, sharded by user id, and a stream for events.</x-you>
+<x-coach>Mistakes 1, 2 and 6 in one breath. Nothing here was asked for.</x-coach>
+</x-interview>
+
+<x-interview title="The meeting-room tool" tone="strong">
+<x-interviewer>Design a meeting-room booking tool for our office.</x-interviewer>
+<x-you>How many people and rooms, and is it one office? And is the main risk two people booking the same room at the same time?</x-you>
+<x-interviewer>One office, 400 people, 30 rooms. Yes, double bookings are the complaint today.</x-interviewer>
+<x-you>Then scale is small, about a booking a minute, so one service and one relational database with a replica. The interesting part is preventing overlapping bookings for a room. I'll spend most of our time there.</x-you>
+<x-coach>Scope, a number, a right-sized design and a clear plan for depth, in under two minutes.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"What if it grows to 100 offices?"</strong> Do the maths: 100 × 50 an hour is about 80 bookings a minute, still small. Say what you would watch.</li>
+<li><strong>"What are you least sure about?"</strong> Name the weakest part of your design and how you would test it. Pretending there is none is a weak answer.</li>
+</ul>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A design has a cache with a 90% hit rate in front of a database, and 3,000 reads a second at peak. The interviewer asks what happens when the cache dies. What load does the database see?",
+      "options": [
+        { "text": "300 reads a second", "why": "That is the normal load: the 10% that misses." },
+        { "text": "2,700 reads a second", "why": "That is the share the cache was absorbing, but the misses still arrive too." },
+        { "text": "3,000 reads a second", "correct": true, "why": "Every read now misses, so the database sees all 3,000, ten times its normal load." }
+      ]
+    },
+    {
+      "question": "A candidate says their queue gives exactly-once delivery. What is the accurate version?",
+      "options": [
+        { "text": "Exactly-once delivery is fine if the network is reliable", "why": "Networks lose acknowledgements; then the sender must resend or risk losing the message." },
+        { "text": "At-least-once delivery, with consumers that make repeats harmless", "correct": true, "why": "Duplicates can always arrive. Idempotent processing makes the effect happen once." },
+        { "text": "At-most-once delivery, so nothing is duplicated", "why": "That avoids duplicates by allowing loss, which is a different trade, not exactly once." }
+      ]
+    },
+    {
+      "question": "At minute 30 you realise your design lets two people book the same room. What is the best move?",
+      "options": [
+        { "text": "Say nothing and hope the interviewer missed it", "why": "If they saw it, they now believe you did not." },
+        { "text": "Name it, then reject overlapping bookings for a room inside a transaction, with a lock on the room or a database constraint", "correct": true, "why": "Self-review plus a concrete fix is a strong signal, and it takes a minute." },
+        { "text": "Erase the board and redesign from scratch", "why": "That spends the remaining time on work you already did." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>See how expectations shift with seniority in <a href="/system-design/what-changes-by-level.html">What Changes by Level</a>, then run a timed attempt from <a href="/system-design/mock-interview-practice.html">Mock Interview Practice</a> and score yourself against this list.</p>

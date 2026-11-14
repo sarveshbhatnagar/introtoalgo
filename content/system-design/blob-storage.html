@@ -1,0 +1,217 @@
+<!--
+{
+  "title": "Blob Storage",
+  "description": "Keep metadata in the database and bytes in an object store: pre-signed and multipart uploads, and replication vs erasure coding for durability.",
+  "minutes": 17,
+  "tags": ["storage", "object storage", "uploads", "building blocks"]
+}
+-->
+<p>A photo app saves each upload in a database column. Users add 2 million photos a day at about 3 MB each: 2 × 10<sup>6</sup> × 3 MB = 6 TB a day, about 2.2 PB a year. Every replica copies every byte, the nightly backup no longer finishes overnight, and each 3 MB upload ties up an app server while it streams through.</p>
+
+<p>The database is good at small rows that change and get queried. Photos are large, written once and read whole. They belong somewhere else.</p>
+
+<h2>The idea</h2>
+
+<p>An <strong>object store</strong> (such as Amazon S3 or any of its look-alikes) keeps blobs of bytes under keys like <code>photos/7f3a9c/original.jpg</code>. You <code>PUT</code> an object, <code>GET</code> it, or <code>DELETE</code> it, over HTTP. There are no folders, only key prefixes, and an object is replaced whole, never edited in place.</p>
+
+<p>In exchange it is cheap per gigabyte, scales to petabytes without you thinking about disks, and is built to be extremely durable. The costs: the first byte takes tens of milliseconds, small partial updates are impossible, and listing millions of keys is slow. So the rule is simple: <strong>metadata in the database, bytes in the object store</strong>. The database row says who owns the photo, its size, its status and its object key. The object store holds the bytes.</p>
+
+<h2>Objects, files and blocks</h2>
+
+<x-tradeoffs caption="Three kinds of storage">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Object storage",
+      "good": "Huge scale, high durability, cheap, reachable over HTTP from anywhere, works with CDNs.",
+      "bad": "Whole-object writes only. Higher latency per request. No rename or append.",
+      "pick": "User uploads, media, backups, logs, data exports. The usual answer.",
+      "default": true
+    },
+    {
+      "name": "File storage",
+      "good": "A shared file system with folders, rename, append and partial writes.",
+      "bad": "Harder to scale to many clients and huge sizes. More expensive per GB.",
+      "pick": "Several servers must share files through ordinary file operations (legacy apps, build caches)."
+    },
+    {
+      "name": "Block storage",
+      "good": "A raw disk volume for one machine: lowest latency, any file system or database on top.",
+      "bad": "Attached to one machine at a time. You manage capacity.",
+      "pick": "The disk under a database or a single server."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The metadata row is small and ordinary:</p>
+
+<x-code single title="photos">
+<pre lang="sql">
+id          BIGINT PRIMARY KEY
+owner_id    BIGINT
+object_key  TEXT        -- "photos/7f3a9c/original.jpg", generated, never the user's filename
+size_bytes  BIGINT
+status      TEXT        -- pending | ready | deleted
+created_at  TIMESTAMP
+</pre>
+</x-code>
+
+<h2>Uploading without touching the bytes</h2>
+
+<p>App servers should not relay uploads: 6 TB a day through them is about 6 × 10<sup>12</sup> ÷ 86,400 ≈ 70 MB/s on average, all of it wasted work. Instead the server hands the client a <strong>pre-signed URL</strong>: a link to one object key, signed with the server's credentials, that allows one action for a short time. The client sends the bytes straight to the store.</p>
+
+<x-tracer title="A pre-signed upload, then a read">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Phone app", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Upload API", "kind": "service", "col": 1, "row": 0 },
+      { "id": "db", "label": "Metadata DB", "kind": "database", "col": 2, "row": 0 },
+      { "id": "cdn", "label": "CDN", "kind": "cdn", "col": 1, "row": 2 },
+      { "id": "blob", "label": "Object store", "kind": "blob-store", "col": 2, "row": 2 },
+      { "id": "worker", "label": "Thumbnail worker", "kind": "worker", "col": 3, "row": 1 }
+    ],
+    "edges": [
+      { "from": "client", "to": "api", "label": "ask for URL" },
+      { "from": "api", "to": "db" },
+      { "from": "client", "to": "blob", "label": "PUT bytes", "route": "hv" },
+      { "from": "client", "to": "cdn" },
+      { "from": "cdn", "to": "blob", "label": "on miss" },
+      { "from": "blob", "to": "worker", "style": "async" },
+      { "from": "worker", "to": "db" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The user picks a 3 MB photo. The app asks the API for somewhere to put it, sending only the size and type.",
+      "arch": { "active": ["client", "api", ["client", "api"]], "notes": { "api": "3 MB jpeg" } }
+    },
+    {
+      "caption": "The API checks the user's quota and inserts a metadata row with status <code>pending</code> and a generated key.",
+      "arch": { "active": ["db", ["api", "db"]], "notes": { "db": "pending" } }
+    },
+    {
+      "caption": "It signs a URL that allows a <code>PUT</code> to that one key for 15 minutes, with the declared size and type as conditions, and returns it. No bytes have touched the API.",
+      "arch": { "active": [["api", "client"]], "notes": { "client": "has URL" } }
+    },
+    {
+      "caption": "The app uploads the 3 MB straight to the object store. The store checks the signature and expiry, then stores the object durably before answering.",
+      "arch": { "active": ["blob", ["client", "blob"]], "mark": ["blob"], "notes": { "blob": "3 MB stored" } }
+    },
+    {
+      "caption": "The store emits an \"object created\" event. A worker makes thumbnails and flips the row to <code>ready</code>. Only now does the photo appear in feeds.",
+      "arch": { "active": ["worker", ["blob", "worker"], ["worker", "db"]], "notes": { "db": "ready" } }
+    },
+    {
+      "caption": "A friend opens the photo through the CDN. The first request misses and fetches from the store; the next thousand are served from the edge.",
+      "arch": { "active": ["cdn", ["client", "cdn"], ["cdn", "blob"]], "notes": { "cdn": "miss, then hits" } }
+    },
+    {
+      "caption": "Failure: another user's connection drops at 60%. No object is created and the row stays <code>pending</code>, so nobody ever sees a broken photo. A sweeper later finds the pending row with no object and deletes it.",
+      "arch": { "fail": [["client", "blob"]], "active": ["db"], "notes": { "db": "still pending" } }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h3>Multipart upload for big files</h3>
+
+<p>A 2 GB video over a 20 Mbps connection takes 2 × 10<sup>9</sup> × 8 bits ÷ 2 × 10<sup>7</sup> bits/s = 800 seconds, about 13 minutes. One upload that fails at 90% throws away 12 minutes of work. <strong>Multipart upload</strong> splits the file into parts, here 2 GB ÷ 100 MB = 20 parts. Each part is a separate request, can go in parallel, and is retried on its own; a failure costs at most one part, 100 MB at 20 Mbps = 40 seconds. A final "complete" call tells the store to stitch the parts into one object. Set a lifecycle rule to clean up uploads that were started and never completed, or their parts sit there costing money.</p>
+
+<h3>Durability: copies or erasure coding</h3>
+
+<p>Object stores survive disk and rack failures in one of two ways. <strong>Replication</strong> stores 3 full copies on different machines: 3x the raw storage, simple, and fast to read and rebuild. <strong>Erasure coding</strong> splits an object into, say, 10 data fragments, computes 4 parity fragments, and spreads all 14 across different disks. Any 10 of the 14 rebuild the object, so it survives 4 lost fragments while using only 14 ÷ 10 = 1.4x the space. The price: rebuilding one lost fragment reads 10 others, and small objects pay overhead. Stores often replicate hot or small objects and erasure-code large, colder ones.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Object store first-byte latency: tens of milliseconds, much more than a database row read. Put a CDN in front of anything popular.</li>
+<li>Replication: 3x raw space. Erasure coding with 10 + 4 fragments: 1.4x, survives 4 losses.</li>
+<li>Upload time = size in bits ÷ link speed. 1 GB at 10 Mbps is 8 × 10<sup>9</sup> ÷ 10<sup>7</sup> = 800 seconds.</li>
+</ul>
+
+<x-estimate title="Raw disk for a year of photos">
+<script type="application/json">
+{
+  "question": "How much raw disk does one year of photos use with 10 + 4 erasure coding?",
+  "givens": ["2 million photos a day", "About 3 MB each", "10 data + 4 parity fragments"],
+  "unit": "bytes",
+  "answer": "3 PB",
+  "accept": ["1 PB", "10 PB"],
+  "steps": ["2 × 10<sup>6</sup> × 3 × 10<sup>6</sup> B = 6 × 10<sup>12</sup> B = 6 TB a day", "6 TB × 365 ≈ 2.2 PB of photos a year", "2.2 PB × 1.4 ≈ 3.1 PB of raw disk", "With 3 full copies it would be 2.2 × 3 ≈ 6.6 PB"],
+  "note": "Erasure coding saves about 3.5 PB a year here, which is why large stores use it for big objects."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring in blob storage as soon as the product has images, video, documents or any file bigger than a few hundred kilobytes. Say where the bytes go, where the metadata goes, and that uploads bypass your servers.</p>
+
+<x-interview title="Photo uploads">
+<x-interviewer>How do users upload photos?</x-interviewer>
+<x-you>The client asks our API for an upload URL. The API writes a pending metadata row and returns a pre-signed URL for one key, valid 15 minutes. The client uploads straight to the object store, so 70 MB/s of photos never touch our servers. An upload event triggers thumbnailing and marks the row ready.</x-you>
+<x-interviewer>What if the upload succeeds but the event is lost?</x-interviewer>
+<x-you>The row stays pending. A sweeper checks pending rows older than a few minutes: if the object exists, it finishes processing; if not, it deletes the row. The object store and the database can disagree briefly, and the status column is how we notice.</x-you>
+<x-coach>It keeps bytes off the app path and has a plan for the two stores disagreeing.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"How do you serve private photos?"</strong> Do not make the bucket public. Hand out short-lived pre-signed <code>GET</code> URLs, or signed CDN URLs, after checking permissions.</li>
+<li><strong>"How do you delete?"</strong> Mark the row deleted so it disappears at once, then delete the object and purge the CDN asynchronously.</li>
+<li><strong>"Can you avoid storing the same file twice?"</strong> Use a hash of the content as the key and count references, at the cost of more complex deletes.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Proxying uploads through app servers">
+<p>Every byte then crosses your servers twice, and slow mobile uploads hold connections for minutes. Use pre-signed URLs so clients talk to the store directly.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Using the user's filename as the key">
+<p>Two users upload <code>IMG_0001.jpg</code> and one overwrites the other. Generate the key; keep the original filename in the metadata row.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "An erasure code uses 6 data and 3 parity fragments. How much raw space does it use, and how many lost fragments can it survive?",
+      "options": [
+        { "text": "1.5x, survives 3", "correct": true, "why": "9 ÷ 6 = 1.5x, and any 6 of the 9 fragments rebuild the object, so 3 can be lost." },
+        { "text": "3x, survives 2", "why": "That describes 3 full copies." },
+        { "text": "1.5x, survives 6", "why": "You need 6 fragments left to rebuild, so only 3 can be lost." }
+      ]
+    },
+    {
+      "question": "A 1 GB file goes up in 50 MB parts over a 10 Mbps link, and one part fails. How much upload time does the retry cost?",
+      "options": [
+        { "text": "About 40 seconds", "correct": true, "why": "50 × 10<sup>6</sup> × 8 bits ÷ 10<sup>7</sup> bits/s = 40 s. Only that part is resent." },
+        { "text": "About 800 seconds", "why": "That is the whole file. Multipart retries just the failed part." },
+        { "text": "About 5 seconds", "why": "That forgets to convert bytes to bits (× 8)." }
+      ]
+    },
+    {
+      "question": "Why does the metadata row start as <code>pending</code>?",
+      "options": [
+        { "text": "The database is slow to write", "why": "The row is written in milliseconds; the status is about the object." },
+        { "text": "So nobody sees a photo whose bytes have not fully arrived", "correct": true, "why": "The row and the object live in two stores. The status marks when both are done." },
+        { "text": "Object stores require it", "why": "The object store knows nothing about your database." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Finding things by their content, not their key, is the job of <a href="/system-design/search-systems.html">search systems</a>, next. Uploads, chunking and CDNs come together in <a href="/system-design/design-video-streaming.html">Design Video Streaming</a> and <a href="/system-design/design-file-sync.html">Design File Sync</a>.</p>

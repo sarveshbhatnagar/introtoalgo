@@ -1,0 +1,212 @@
+<!--
+{
+  "title": "Talking Through Trade-offs",
+  "description": "A five-part sentence for every design choice, worked on SQL vs NoSQL, caching, sync vs async, consistency and push vs pull, with strong and weak scripts.",
+  "minutes": 18,
+  "tags": ["interview", "trade-offs", "communication"]
+}
+-->
+<p>Two candidates draw the same design for an online shop. The interviewer asks each one why the orders table lives in a relational database. The first says "SQL is more reliable, and NoSQL doesn't scale as well." The second says "Placing an order writes the order and decrements stock together, so I want a transaction. At 200 orders a second one primary is plenty. If we needed tens of thousands of writes a second, I'd look at a partitioned store and give up the cross-row transaction."</p>
+
+<p>Same choice, but only the second answer tells the interviewer anything. Here is a sentence shape that produces it on demand, worked on five choices that come up in almost every interview.</p>
+
+<h2>The five-part sentence</h2>
+
+<p>A trade-off answer has five parts. Say them in this order and you rarely leave one out.</p>
+
+<x-code single title="The pattern">
+<pre lang="text">
+1. Option     "I'll use X."
+2. Buys       "It gives us ..."                      (the benefit, concrete)
+3. Costs      "The price is ..."                     (what gets worse)
+4. Fits       "That's right here because ..."        (tie it to a requirement or a number)
+5. Changes    "If ... changed, I'd switch to Y."     (the condition that flips it)
+</pre>
+</x-code>
+
+<p>Parts 3 and 5 separate candidates. Naming the cost of your own choice shows you see the whole picture. Naming what would change your mind shows the choice came from the requirements, not habit, and hands the interviewer a follow-up on ground you prepared.</p>
+
+<p>Part 4 needs a fact from earlier, such as a read/write ratio or a rule like "no double bookings". Skip <a href="/system-design/requirements-and-scope.html">requirements</a> and <a href="/system-design/back-of-the-envelope-estimation.html">estimates</a> and you have nothing to tie it to.</p>
+
+<h2>Five classic choices</h2>
+
+<h3>SQL or NoSQL</h3>
+
+<p>Frame it by access pattern: what you read and write together, and whether you need transactions across rows. <a href="/system-design/choosing-a-database.html">Choosing a database</a> covers the categories.</p>
+
+<x-interview title="Defending the database" tone="weak">
+<x-interviewer>Why a document store for orders?</x-interviewer>
+<x-you>NoSQL scales horizontally and it's more flexible. SQL databases get slow at scale.</x-you>
+<x-coach>No requirement, no cost, no condition. "At scale" with no number is a buzzword.</x-coach>
+</x-interview>
+
+<x-interview title="Defending the database" tone="strong">
+<x-interviewer>Why a relational database for orders?</x-interviewer>
+<x-you>An order writes the order row and decrements stock, and both must happen or neither. A relational database gives me that transaction. The cost is that one primary takes all writes. At 200 orders a second, against a few thousand writes a second per primary, that's fine. If we grew to tens of thousands a second and every read was by order id, I'd move to a key-value store partitioned by order id and handle stock with a separate reservation step.</x-you>
+<x-coach>All five parts, with numbers, in four sentences.</x-coach>
+</x-interview>
+
+<h3>Cache or no cache</h3>
+
+<p>Sometimes the strongest move is to decline one. An admin tool doing 5 reads a second does not need a cache: it would add a component and a staleness problem for no gain.</p>
+
+<p>Strong: "Profile reads are 100 times the writes and a small share of profiles get most views, so I'll put a cache in front, with a 5-minute TTL and a delete on write. The cost is a profile can look stale to other users for a moment. If writes became as common as reads, the hit rate would drop and I'd remove it." The <a href="/system-design/caching.html">caching</a> lesson has the details.</p>
+
+<h3>Synchronous or asynchronous</h3>
+
+<p>Ask: does the user need this step's result before we answer? A card charge, yes. The receipt email, no. Anything the user does not wait for can go through a <a href="/system-design/message-queues-and-streams.html">queue</a>, so its failures stop being the user's failures. Step through a checkout while the email provider is down.</p>
+
+<x-tracer title="Checkout with the email step made asynchronous">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "user", "label": "Shopper", "kind": "client", "col": 0, "row": 1 },
+      { "id": "checkout", "label": "Checkout service", "kind": "service", "col": 1, "row": 1 },
+      { "id": "card", "label": "Card processor", "kind": "external", "col": 2, "row": 0 },
+      { "id": "queue", "label": "Email queue", "kind": "queue", "col": 2, "row": 1 },
+      { "id": "db", "label": "Orders DB", "kind": "database", "col": 2, "row": 2 },
+      { "id": "worker", "label": "Email worker", "kind": "worker", "col": 3, "row": 1 },
+      { "id": "mail", "label": "Email provider", "kind": "external", "col": 3, "row": 0 }
+    ],
+    "edges": [
+      { "from": "user", "to": "checkout", "label": "POST /orders" },
+      { "from": "checkout", "to": "card", "label": "charge" },
+      { "from": "checkout", "to": "db", "label": "insert order" },
+      { "from": "checkout", "to": "queue", "style": "async" },
+      { "from": "queue", "to": "worker", "style": "async" },
+      { "from": "worker", "to": "mail", "label": "send" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A shopper places an order. Checkout answers only after the steps the shopper must know about.",
+      "arch": { "active": ["user", "checkout", ["user", "checkout"]] },
+      "vars": { "shopper waiting": "yes" }
+    },
+    {
+      "caption": "It writes order 9071 as <em>pending</em> first, so no card is ever charged without a record of why.",
+      "arch": { "active": ["db", ["checkout", "db"]], "notes": { "db": "9071 pending" } },
+      "vars": { "shopper waiting": "yes" }
+    },
+    {
+      "caption": "It charges the card synchronously, with the order id as the idempotency key so a retry cannot charge twice. The shopper must know whether this worked, so waiting is right.",
+      "arch": { "active": ["card", ["checkout", "card"]], "mark": ["db"], "notes": { "card": "approved" } },
+      "vars": { "shopper waiting": "yes" }
+    },
+    {
+      "caption": "It marks the order paid and drops a \"send receipt for 9071\" message on the queue. It does not wait for the email.",
+      "arch": { "active": ["db", "queue", ["checkout", "db"], ["checkout", "queue"]], "mark": ["card"], "notes": { "db": "9071 paid" } },
+      "vars": { "shopper waiting": "yes", "queued emails": 1 }
+    },
+    {
+      "caption": "The shopper sees \"Order placed\". Enqueueing took about a millisecond; sending the email is not on the shopper's clock at all.",
+      "arch": { "active": [["checkout", "user"]], "mark": ["user", "db"] },
+      "vars": { "shopper waiting": "no", "queued emails": 1 }
+    },
+    {
+      "caption": "The worker takes the message and calls the email provider, which is down.",
+      "arch": { "active": ["worker", ["queue", "worker"], ["worker", "mail"]], "fail": ["mail"], "mark": ["user"] },
+      "vars": { "shopper waiting": "no", "queued emails": 1 }
+    },
+    {
+      "caption": "The message goes back on the queue to retry in a minute. Orders keep succeeding. Called directly, this outage would have failed every checkout.",
+      "arch": { "active": ["queue"], "fail": ["mail"], "mark": ["user", "db"], "notes": { "queue": "retry in 60 s" } },
+      "vars": { "shopper waiting": "no", "queued emails": 1 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Say the cost: the email can arrive minutes late, and a retry can send it twice unless the worker is <a href="/system-design/idempotency-and-retries.html">idempotent</a>. If checkout crashes between marking the order paid and enqueueing, the receipt is never sent; an interviewer may push here. Write the email job into the orders database in the same transaction (an outbox) and let a relay move it to the queue. What would change the choice: an email carrying a login code the user is staring at must go out right away.</p>
+
+<h3>Strong or eventual consistency</h3>
+
+<p>Be precise; interviewers notice loose words. Strong (linearizable) means once a write is acknowledged, every later read sees it. Eventual means replicas converge if writes stop, with no promised bound on staleness before then. A replica that "lags about a second" is eventual consistency with a typical lag, not a guarantee. <a href="/system-design/cap-and-consistency.html">CAP and consistency</a> covers the models, and why a quorum is not strong consistency.</p>
+
+<p>Strong: "Seat reservations need strong consistency because two people must never get seat 14C, so a reservation is a conditional write on the primary: take the seat only if it is still free. The seat map people browse can be eventually consistent, a few seconds stale, since the reservation itself is checked. If we went multi-region, I'd have one region own each event's seats." It splits one feature into two operations with different needs.</p>
+
+<h3>Push or pull</h3>
+
+<p>For a feed, push writes each new post into every follower's feed (fan-out on write). Pull builds the feed from the accounts you follow when you open it (fan-out on read).</p>
+
+<x-tradeoffs caption="Feed delivery: where to pay the fan-out cost">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Push (fan-out on write)", "good": "Reads are one lookup of a ready feed: fast and cheap.", "bad": "A post by someone with 10 million followers costs 10 million writes.", "pick": "Most users have a few hundred followers and reads far outnumber posts." },
+    { "name": "Pull (fan-out on read)", "good": "A post is one write, whoever posts it.", "bad": "Each feed load reads from every account you follow and merges, so reads are slow and costly.", "pick": "Few readers, or follow counts are small and feeds are rarely opened." },
+    { "name": "Hybrid", "good": "Push for ordinary accounts, pull for the few huge ones at read time.", "bad": "Two code paths, and a threshold to tune.", "pick": "Follower counts are very uneven, which is the usual case in an interview.", "default": true }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The <a href="/system-design/design-a-news-feed.html">news feed</a> case study works the arithmetic through.</p>
+
+<h2>In the interview</h2>
+
+<p>Use the full sentence for the three or four decisions that shape the design. For small ones a clause is enough: "round robin, since the servers are identical".</p>
+
+<ul>
+<li>"The price of this is..." Say it before they ask.</li>
+<li>"This fits because we said reads are 100 times writes."</li>
+<li>"If that number were ten times higher, I'd switch to..."</li>
+<li>"Both work at 200 a second; I'll pick the one the team already runs." An honest tie is a fine answer.</li>
+</ul>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"What if you're wrong about that number?"</strong> Say which part of the design breaks first and how you would notice: "if writes are ten times higher, the single primary saturates; I'd watch write latency and plan partitioning before it does."</li>
+<li><strong>"Why not the other option?"</strong> Give its strength first, then the cost that rules it out here.</li>
+<li><strong>"Can you have both?"</strong> Sometimes, per operation, as with the seat map and the seat reservation. Say what each operation gets.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Listing pros and cons, then not choosing">
+<p>"SQL has transactions, NoSQL scales horizontally, both have their place." That is a textbook paragraph, not a decision. The score is for choosing. Pick one and say what would make you switch.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Only naming the flaws of the option you rejected">
+<p>The interviewer will ask for your choice's cost anyway. Volunteer it; it reads as confidence.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Which part of the five-part sentence is missing? \"I'll queue the thumbnail jobs so uploads return fast. That fits, since users don't need the thumbnail right away. If users had to see the thumbnail before posting, I'd do it inline.\"",
+      "options": [
+        { "text": "The option", "why": "It names the option: queue the thumbnail jobs." },
+        { "text": "The cost", "correct": true, "why": "It never says what gets worse: a post can show a placeholder for a few seconds, and failed jobs need retries." },
+        { "text": "What would change the choice", "why": "The last sentence is exactly that." }
+      ]
+    },
+    {
+      "question": "Profiles are read 100 times for every write. A candidate says \"profile reads are strongly consistent because they go to a replica that lags under a second.\" What is wrong?",
+      "options": [
+        { "text": "Nothing; under a second is strong enough", "why": "\"Strong\" is a guarantee that every read sees the latest acknowledged write. Lag of any size breaks it." },
+        { "text": "Replica reads are eventually consistent; typical lag is not a guarantee", "correct": true, "why": "Say \"eventually consistent, usually under a second behind\", and add read-your-writes for the profile's owner if needed." },
+        { "text": "Replicas never lag if replication is configured correctly", "why": "Asynchronous replication always allows lag; that is what makes it fast." }
+      ]
+    },
+    {
+      "question": "A feed product: most users have about 300 followers, a few have 5 million. Each post by a 5-million account under pure push costs how many feed writes, and what do you choose?",
+      "options": [
+        { "text": "300; pure push is fine", "why": "300 is the typical account. The large accounts drive the cost." },
+        { "text": "5 million; use a hybrid that pulls the large accounts at read time", "correct": true, "why": "One post would mean 5 million writes. Pulling those few accounts at read time keeps push cheap for everyone else." },
+        { "text": "5 million; use pure pull for everyone", "why": "That makes every feed load slow to fix a problem only a few accounts cause." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>See the habits that lose interviews, many of them failed trade-offs, in <a href="/system-design/system-design-mistakes.html">System Design Mistakes</a>. Then practise the sentence on a full case such as <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>.</p>

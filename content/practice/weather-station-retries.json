@@ -1,0 +1,150 @@
+{
+  "slug": "weather-station-retries",
+  "title": "Weather Station Retries",
+  "topic": "system-design-blocks",
+  "difficulty": "easy",
+  "pattern": "simulation",
+  "aka": "Exponential Backoff with a Cap",
+  "order": 2,
+  "story": [
+    "<p>Two hundred weather stations on a hillside upload a reading every few minutes. When the upload server restarts, every station fails at once. If each one retries every 100 ms, the server comes back to a wall of retries and falls over again. So each station waits longer after every failure: 100 ms, then 200, then 400, doubling up to a ceiling. A reading is useless after a while, so a station also gives up when its total waiting would pass a time budget.</p>",
+    "<p>Every client that calls a network service needs this schedule (see <a href=\"/system-design/idempotency-and-retries.html\">Idempotency and Retries</a> and <a href=\"/system-design/reliability-and-failure.html\">Reliability and Failure</a>). Real clients also add random jitter, for example picking a random wait between 0 and the scheduled value, so stations do not retry in lockstep. Here you compute the schedule that the jitter draws from.</p>"
+  ],
+  "task": [
+    "<p>Write <code>retryDelays(baseMs, capMs, maxRetries, budgetMs)</code>. Return the list of waits, in milliseconds, before retry 1, retry 2, and so on.</p>",
+    "<ul>",
+    "<li>The wait before retry <em>k</em> (counting from 1) is <code>min(capMs, baseMs × 2<sup>k−1</sup>)</code>.</li>",
+    "<li>There are at most <code>maxRetries</code> retries.</li>",
+    "<li>Stop before any retry whose wait would make the total of all waits so far greater than <code>budgetMs</code>. A total exactly equal to the budget is allowed.</li>",
+    "</ul>",
+    "<p>Return an empty list if no retry fits.</p>"
+  ],
+  "constraints": [
+    "1 ≤ baseMs ≤ capMs ≤ 3,600,000",
+    "0 ≤ maxRetries ≤ 60",
+    "0 ≤ budgetMs ≤ 1,000,000,000"
+  ],
+  "examples": [
+    {
+      "args": [100, 1000, 6, 10000],
+      "expected": [100, 200, 400, 800, 1000, 1000],
+      "explanation": "The waits double from 100: 100, 200, 400, 800. The next would be 1,600, but the cap is 1,000, so retries 5 and 6 wait 1,000 each. The total is 3,500 ms, well inside the 10,000 ms budget, so all 6 retries happen."
+    },
+    {
+      "args": [500, 4000, 10, 6000],
+      "expected": [500, 1000, 2000],
+      "explanation": "After three retries the station has waited 500 + 1,000 + 2,000 = 3,500 ms. Retry 4 would wait 4,000 ms more, for a total of 7,500, which is over the 6,000 ms budget, so the station gives up there. It does not look for a later, shorter wait: waits never shrink."
+    }
+  ],
+  "hints": [
+    "Write out the first few waits for base 100 and cap 1,000. After which retry does the cap start to matter, and what happens to every wait after that?",
+    "Keep the current wait in a variable. After each retry it doubles, but never past the cap: <code>wait = min(wait × 2, cap)</code>.",
+    "Keep a running total. Before adding a wait, check whether <code>total + wait</code> would exceed the budget. If it would, stop: every later wait is at least as long, so none of them can fit either.",
+    "Loop at most <code>maxRetries</code> times; the loop can end early on the budget check. Do not compute <code>2<sup>k</sup></code> for large k when you can double a capped value instead."
+  ],
+  "bruteForce": [
+    "<p>A first version computes <code>baseMs × 2<sup>k−1</sup></code> with a power function for every retry and then applies the cap. JavaScript and Python give the right answer, but the number in the middle is huge: for retry 60 with a base of 1,000 ms it is about 5.8 × 10<sup>20</sup> ms. In a language with 64-bit integers that overflows (the limit is about 9.2 × 10<sup>18</sup>) and can come out negative, and a negative wait means retrying instantly, in a tight loop, which is the exact storm backoff exists to prevent.</p>",
+    "<p>Doubling a value that is already capped never leaves the range of the constraints, so it avoids the problem with no extra work.</p>"
+  ],
+  "signature": {
+    "function": "retryDelays",
+    "params": [
+      {
+        "name": "baseMs",
+        "type": "int"
+      },
+      {
+        "name": "capMs",
+        "type": "int"
+      },
+      {
+        "name": "maxRetries",
+        "type": "int"
+      },
+      {
+        "name": "budgetMs",
+        "type": "int"
+      }
+    ],
+    "returns": "int[]"
+  },
+  "starter": {
+    "js": [
+      "/**",
+      " * @param {number} baseMs wait before the first retry",
+      " * @param {number} capMs longest single wait",
+      " * @param {number} maxRetries most retries allowed",
+      " * @param {number} budgetMs most total waiting allowed",
+      " * @return {number[]} the wait before each retry",
+      " */",
+      "function retryDelays(baseMs, capMs, maxRetries, budgetMs) {",
+      "  // Your code here",
+      "}"
+    ],
+    "py": [
+      "def retry_delays(base_ms: int, cap_ms: int, max_retries: int, budget_ms: int) -> list[int]:",
+      "    # Your code here",
+      "    pass"
+    ]
+  },
+  "tests": [
+    {"args": [100, 1000, 0, 10000], "expected": [], "note": "no retries allowed"},
+    {"args": [100, 1000, 5, 99], "expected": [], "note": "budget too small for even the first wait"},
+    {"args": [100, 1000, 5, 100], "expected": [100], "note": "budget exactly the first wait"},
+    {"args": [100, 1000, 4, 1500], "expected": [100, 200, 400, 800], "note": "total exactly equals the budget"},
+    {"args": [100, 1000, 4, 1499], "expected": [100, 200, 400], "note": "one millisecond short of the fourth retry"},
+    {"args": [250, 250, 5, 100000], "expected": [250, 250, 250, 250, 250], "note": "base equals cap: constant waits"},
+    {"args": [1, 3600000, 60, 1000000000], "expected": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000], "note": "many doublings, then the cap"},
+    {"args": [1, 1000, 60, 1000000000], "expected": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000], "note": "sixty retries: capped values must not overflow"},
+    {"args": [300, 1000, 3, 1000000], "expected": [300, 600, 1000], "note": "cap is not a power-of-two multiple of the base"},
+    {"args": [1000, 30000, 8, 60000], "expected": [1000, 2000, 4000, 8000, 16000], "note": "budget cuts the list before the cap is reached"},
+    {"args": [7, 50, 10, 0], "expected": [], "note": "zero budget"},
+    {"args": [3600000, 3600000, 60, 1000000000], "expected": [3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000, 3600000], "note": "largest waits"},
+    {"args": [50, 400, 12, 3000], "expected": [50, 100, 200, 400, 400, 400, 400, 400, 400], "note": "budget runs out on the capped part"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function retryDelays(baseMs, capMs, maxRetries, budgetMs) {",
+      "  const waits = [];",
+      "  let wait = baseMs, total = 0;",
+      "  for (let k = 1; k <= maxRetries; k++) {",
+      "    if (total + wait > budgetMs) break; // later waits are never shorter",
+      "    waits.push(wait);",
+      "    total += wait;",
+      "    wait = Math.min(wait * 2, capMs);   // double, but never past the cap",
+      "  }",
+      "  return waits;",
+      "}"
+    ],
+    "py": [
+      "def retry_delays(base_ms, cap_ms, max_retries, budget_ms):",
+      "    waits = []",
+      "    wait, total = base_ms, 0",
+      "    for _ in range(max_retries):",
+      "        if total + wait > budget_ms:  # later waits are never shorter",
+      "            break",
+      "        waits.append(wait)",
+      "        total += wait",
+      "        wait = min(wait * 2, cap_ms)  # double, but never past the cap",
+      "    return waits"
+    ],
+    "walkthrough": [
+      "<p>Track two numbers: the next wait and the total waited so far. Each round, check the budget, record the wait, then double it and clamp it to the cap.</p>",
+      "<p>Trace the second example, base 500, cap 4,000, budget 6,000:</p>",
+      "<ol>",
+      "<li>wait 500, total 0: 0 + 500 ≤ 6,000. Record 500, total 500, next wait 1,000.</li>",
+      "<li>500 + 1,000 = 1,500 ≤ 6,000. Record 1,000, total 1,500, next wait 2,000.</li>",
+      "<li>1,500 + 2,000 = 3,500 ≤ 6,000. Record 2,000, total 3,500, next wait 4,000.</li>",
+      "<li>3,500 + 4,000 = 7,500 &gt; 6,000. Stop. Answer <code>[500, 1000, 2000]</code>.</li>",
+      "</ol>",
+      "<p>Stopping at the first wait that does not fit is safe because waits never shrink. The cap is what keeps one unlucky client from sleeping for an hour; the budget is what stops it from retrying long after the caller stopped caring.</p>"
+    ],
+    "time": "O(r)",
+    "timeWhy": "One loop step per retry, and r = maxRetries ≤ 60.",
+    "space": "O(r)",
+    "spaceWhy": "The returned list holds at most one wait per retry.",
+    "takeaway": "Retry with exponential backoff, a cap on each wait, and a total budget, and add random jitter in production so clients spread out. Doubling a capped value instead of computing powers keeps the numbers small."
+  },
+  "related": ["idempotency-and-retries", "reliability-and-failure", "rate-limiting"]
+}

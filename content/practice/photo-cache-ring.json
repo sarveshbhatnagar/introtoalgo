@@ -1,0 +1,284 @@
+{
+  "slug": "photo-cache-ring",
+  "title": "Photo Cache Ring",
+  "topic": "system-design-blocks",
+  "difficulty": "hard",
+  "pattern": "design",
+  "aka": "Consistent Hash Ring",
+  "order": 11,
+  "story": [
+    "<p>A photo site keeps thumbnails on a handful of cache servers. With <code>hash(key) mod N</code>, adding a fifth server to four would move about 4 in 5 keys to a different server, and that flood of cache misses would land on the database at once. A hash ring moves only the keys next to the new server's points. Each server is placed at several points on the ring (virtual nodes) so the load evens out, and a key can be stored on the next few distinct servers clockwise, so a copy survives when one server dies.</p>",
+    "<p>This is the ring from <a href=\"/system-design/consistent-hashing.html\">Consistent Hashing</a>, used to spread keys across cache servers (<a href=\"/system-design/caching.html\">Caching</a>) and to choose replicas in leaderless key-value stores (<a href=\"/system-design/design-a-key-value-store.html\">Design a Key-Value Store</a>).</p>"
+  ],
+  "task": [
+    "<p>The ring has positions 0 to 2<sup>32</sup> − 1. Positions come from <code>ringHash(s)</code>, a 32-bit FNV-1a hash followed by a mixing step. It is given in the starter code in both languages, so JavaScript and Python agree exactly; use it as it is.</p>",
+    "<p>Write a class <code>HashRing</code>:</p>",
+    "<ul>",
+    "<li><code>constructor(vnodes)</code>: every server gets <code>vnodes</code> points.</li>",
+    "<li><code>addNode(name)</code>: add the server's points. Point <code>i</code> (from 0 to <code>vnodes − 1</code>) has the label <code>name + \"#\" + i</code> and sits at <code>ringHash(label)</code>. Adding a server that is already on the ring does nothing.</li>",
+    "<li><code>removeNode(name)</code>: remove all of that server's points. Removing a server that is not on the ring does nothing.</li>",
+    "<li><code>owners(key, count)</code>: start at position <code>ringHash(key)</code> and walk clockwise: the first point at or after that position, then the next, wrapping from the highest position back to the lowest. Collect server names in the order you meet them, skipping servers already collected, until you have <code>count</code> names or have seen every server. Return the list. An empty ring gives <code>[]</code>.</li>",
+    "</ul>",
+    "<p>If two points share a position, the one whose label sorts first (comparing character codes) comes first clockwise.</p>"
+  ],
+  "constraints": [
+    "1 ≤ vnodes ≤ 50",
+    "At most 20 servers on the ring at once; names are 1 to 20 letters, digits or hyphens",
+    "Keys are 1 to 40 printable ASCII characters",
+    "1 ≤ count ≤ 20",
+    "At most 1,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["HashRing", "addNode", "addNode", "addNode", "owners", "owners", "owners", "removeNode", "owners", "owners"],
+      "args": [[2], ["cache-a"], ["cache-b"], ["cache-c"], ["sun.jpg", 1], ["sun.jpg", 2], ["photo-3", 3], ["cache-b"], ["sun.jpg", 1], ["photo-3", 3]],
+      "expected": [null, null, null, null, ["cache-b"], ["cache-b", "cache-c"], ["cache-a", "cache-c", "cache-b"], null, ["cache-c"], ["cache-a", "cache-c"]],
+      "explanation": "In millions, the six points sit at a#0 25.1, a#1 152.6, c#1 414.5, b#0 616.2, b#1 1,845.2 and c#0 3,752.1. \"sun.jpg\" hashes to 476.3, so the first point clockwise is b#0: owner cache-b. For two owners the walk goes on to b#1, which is cache-b again and is skipped, then c#0: cache-c. \"photo-3\" hashes to 3,939.4, past the last point, so the walk wraps to a#0, then a#1 (skipped), c#1, b#0. After cache-b leaves, \"sun.jpg\" moves to the next point, c#0, while \"photo-3\" still starts at cache-a: only keys that cache-b owned have moved. With two servers left, asking for 3 owners returns 2."
+    },
+    {
+      "ops": ["HashRing", "owners", "addNode", "addNode", "owners", "removeNode", "owners"],
+      "args": [[1], ["cat.jpg", 2], ["solo"], ["solo"], ["cat.jpg", 2], ["ghost"], ["cat.jpg", 1]],
+      "expected": [null, [], null, null, ["solo"], null, ["solo"]],
+      "explanation": "An empty ring has no owners. Adding \"solo\" twice still leaves one point, so even with 2 owners requested only one server exists. Removing a server that was never added changes nothing."
+    }
+  ],
+  "hints": [
+    "Forget servers for a moment and think only about points on a circle. Given a position, how do you find the first point at or after it quickly if the points are kept sorted? What if there is none?",
+    "Keep every point as <code>(position, label, server)</code> in a list sorted by position, then label. Binary search finds the first point with position ≥ the key's position; if it runs off the end, start at index 0.",
+    "For several owners, keep walking from that index, wrapping with <code>% points.length</code>, and use a set of servers already collected to skip their other points. Stop after <code>count</code> servers, or after one full lap.",
+    "Adding a server inserts its <code>vnodes</code> points and keeps the list sorted; removing it filters its points out. Keep a set of servers on the ring so adding twice and removing an unknown server are easy to ignore."
+  ],
+  "bruteForce": [
+    "<p>For each lookup you could compute the clockwise distance from the key to every point, <code>(point − key) mod 2<sup>32</sup></code>, and sort. That is correct but costs O(P log P) per lookup for P points: with 20 servers × 50 points, 1,000 points sorted for every single cache read.</p>",
+    "<p>Keeping the points sorted once, when servers join or leave (rare), turns each lookup into a binary search plus a short walk.</p>"
+  ],
+  "signature": {
+    "class": "HashRing",
+    "init": {
+      "params": [
+        {
+          "name": "vnodes",
+          "type": "int"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "addNode",
+        "params": [
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "returns": "void"
+      },
+      {
+        "name": "removeNode",
+        "params": [
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "returns": "void"
+      },
+      {
+        "name": "owners",
+        "params": [
+          {
+            "name": "key",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "int"
+          }
+        ],
+        "returns": "string[]"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "/** Ring position of a string: 0 to 2^32 - 1. Use as it is. */",
+      "function ringHash(s) {",
+      "  let h = 2166136261;",
+      "  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;",
+      "  h = (h ^ (h >>> 13)) >>> 0;",
+      "  h = Math.imul(h, 0x5bd1e995) >>> 0;",
+      "  return (h ^ (h >>> 15)) >>> 0;",
+      "}",
+      "",
+      "class HashRing {",
+      "  /** @param {number} vnodes points per server */",
+      "  constructor(vnodes) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @param {string} name */",
+      "  addNode(name) {",
+      "  }",
+      "",
+      "  /** @param {string} name */",
+      "  removeNode(name) {",
+      "  }",
+      "",
+      "  /** @param {string} key @param {number} count @return {string[]} */",
+      "  owners(key, count) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "def ring_hash(s: str) -> int:",
+      "    \"\"\"Ring position of a string: 0 to 2^32 - 1. Use as it is.\"\"\"",
+      "    h = 2166136261",
+      "    for ch in s:",
+      "        h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF",
+      "    h ^= h >> 13",
+      "    h = (h * 0x5BD1E995) & 0xFFFFFFFF",
+      "    return h ^ (h >> 15)",
+      "",
+      "",
+      "class HashRing:",
+      "    def __init__(self, vnodes: int):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def add_node(self, name: str) -> None:",
+      "        pass",
+      "",
+      "    def remove_node(self, name: str) -> None:",
+      "        pass",
+      "",
+      "    def owners(self, key: str, count: int) -> list[str]:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["HashRing", "owners"], "args": [[3], ["x", 1]], "expected": [null, []], "note": "empty ring"},
+    {"ops": ["HashRing", "addNode", "owners", "owners"], "args": [[1], ["only"], ["a", 1], ["b", 5]], "expected": [null, null, ["only"], ["only"]], "note": "one server owns everything"},
+    {"ops": ["HashRing", "addNode", "addNode", "removeNode", "removeNode", "owners"], "args": [[4], ["n1"], ["n2"], ["n1"], ["n1"], ["k", 2]], "expected": [null, null, null, null, null, ["n2"]], "note": "remove twice"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "owners", "owners", "owners", "owners", "owners"], "args": [[2], ["cache-a"], ["cache-b"], ["cache-c"], ["cat.jpg", 1], ["dog.jpg", 1], ["owl.png", 1], ["fox.png", 1], ["elk.gif", 1]], "expected": [null, null, null, null, ["cache-c"], ["cache-c"], ["cache-c"], ["cache-c"], ["cache-c"]], "note": "with only two points per server, one server owns most of the ring"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "owners", "owners", "owners"], "args": [[2], ["cache-a"], ["cache-b"], ["cache-c"], ["cache-a#0", 1], ["cache-c#1", 1], ["cache-c#0", 2]], "expected": [null, null, null, null, ["cache-a"], ["cache-c"], ["cache-c", "cache-a"]], "note": "key lands exactly on a point: that point owns it (a strict > search would pick b#0, or wrap past c#0)"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "addNode", "owners", "owners", "owners"], "args": [[1], ["s1"], ["s2"], ["s3"], ["s4"], ["k1", 4], ["k2", 4], ["k3", 20]], "expected": [null, null, null, null, null, ["s3", "s1", "s2", "s4"], ["s3", "s1", "s2", "s4"], ["s3", "s1", "s2", "s4"]], "note": "all servers as owners, in ring order"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "owners", "addNode", "owners", "owners", "owners"], "args": [[3], ["east"], ["west"], ["north"], ["user/12/avatar", 1], ["south"], ["user/12/avatar", 1], ["photo-1", 2], ["photo-2", 2]], "expected": [null, null, null, null, ["north"], null, ["south"], ["south", "north"], ["west", "east"]], "note": "adding a server: a key either stays or moves to the new one"},
+    {"ops": ["HashRing", "addNode", "addNode", "removeNode", "addNode", "owners"], "args": [[5], ["p"], ["q"], ["p"], ["p"], ["bee.gif", 2]], "expected": [null, null, null, null, null, ["q", "p"]], "note": "remove then add back gives the same ring"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "addNode", "addNode", "owners", "owners", "owners"], "args": [[50], ["r1"], ["r2"], ["r3"], ["r4"], ["r5"], ["ant.bmp", 3], ["sun.jpg", 3], ["photo-3", 5]], "expected": [null, null, null, null, null, null, ["r3", "r2", "r1"], ["r4", "r2", "r5"], ["r5", "r3", "r2", "r1", "r4"]], "note": "many virtual nodes"},
+    {"ops": ["HashRing", "addNode", "addNode", "owners", "removeNode", "removeNode", "owners"], "args": [[2], ["a"], ["b"], ["z", 2], ["a"], ["b"], ["z", 2]], "expected": [null, null, null, ["a", "b"], null, null, []], "note": "ring emptied again"},
+    {"ops": ["HashRing", "addNode", "addNode", "addNode", "owners", "owners", "owners"], "args": [[1], ["x-1"], ["x-2"], ["x-3"], ["~~~~", 2], ["!", 2], ["mid-key", 3]], "expected": [null, null, null, null, ["x-1", "x-2"], ["x-1", "x-2"], ["x-1", "x-2", "x-3"]], "note": "short keys made of symbols"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "function ringHash(s) {",
+      "  let h = 2166136261;",
+      "  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;",
+      "  h = (h ^ (h >>> 13)) >>> 0;",
+      "  h = Math.imul(h, 0x5bd1e995) >>> 0;",
+      "  return (h ^ (h >>> 15)) >>> 0;",
+      "}",
+      "",
+      "class HashRing {",
+      "  constructor(vnodes) {",
+      "    this.vnodes = vnodes;",
+      "    this.points = [];         // [position, label, server], sorted by position then label",
+      "    this.servers = new Set();",
+      "  }",
+      "",
+      "  addNode(name) {",
+      "    if (this.servers.has(name)) return;",
+      "    this.servers.add(name);",
+      "    for (let i = 0; i < this.vnodes; i++) {",
+      "      const label = name + '#' + i;",
+      "      this.points.push([ringHash(label), label, name]);",
+      "    }",
+      "    this.points.sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));",
+      "  }",
+      "",
+      "  removeNode(name) {",
+      "    if (!this.servers.delete(name)) return;",
+      "    this.points = this.points.filter((p) => p[2] !== name);",
+      "  }",
+      "",
+      "  owners(key, count) {",
+      "    const n = this.points.length, h = ringHash(key);",
+      "    let lo = 0, hi = n;                     // first point with position >= h",
+      "    while (lo < hi) {",
+      "      const mid = (lo + hi) >> 1;",
+      "      if (this.points[mid][0] < h) lo = mid + 1; else hi = mid;",
+      "    }",
+      "    const out = [], seen = new Set();",
+      "    for (let k = 0; k < n && out.length < count && out.length < this.servers.size; k++) {",
+      "      const server = this.points[(lo + k) % n][2]; // % n wraps past the top",
+      "      if (!seen.has(server)) { seen.add(server); out.push(server); }",
+      "    }",
+      "    return out;",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "from bisect import bisect_left",
+      "",
+      "",
+      "def ring_hash(s):",
+      "    h = 2166136261",
+      "    for ch in s:",
+      "        h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF",
+      "    h ^= h >> 13",
+      "    h = (h * 0x5BD1E995) & 0xFFFFFFFF",
+      "    return h ^ (h >> 15)",
+      "",
+      "",
+      "class HashRing:",
+      "    def __init__(self, vnodes):",
+      "        self.vnodes = vnodes",
+      "        self.points = []  # (position, label, server), sorted by position then label",
+      "        self.servers = set()",
+      "",
+      "    def add_node(self, name):",
+      "        if name in self.servers:",
+      "            return",
+      "        self.servers.add(name)",
+      "        for i in range(self.vnodes):",
+      "            label = f\"{name}#{i}\"",
+      "            self.points.append((ring_hash(label), label, name))",
+      "        self.points.sort()",
+      "",
+      "    def remove_node(self, name):",
+      "        if name not in self.servers:",
+      "            return",
+      "        self.servers.remove(name)",
+      "        self.points = [p for p in self.points if p[2] != name]",
+      "",
+      "    def owners(self, key, count):",
+      "        n = len(self.points)",
+      "        start = bisect_left(self.points, (ring_hash(key),))  # first position >= hash",
+      "        out, seen = [], set()",
+      "        for k in range(n):",
+      "            if len(out) == count or len(out) == len(self.servers):",
+      "                break",
+      "            server = self.points[(start + k) % n][2]  # % n wraps past the top",
+      "            if server not in seen:",
+      "                seen.add(server)",
+      "                out.append(server)",
+      "        return out"
+    ],
+    "walkthrough": [
+      "<p>The ring is a sorted list of points. A lookup is a binary search for the first point at or after the key's position, then a clockwise walk that wraps with <code>% n</code>. Servers change rarely, so re-sorting on add is fine; lookups happen on every cache read, so they get the fast path.</p>",
+      "<p>Trace the first example (positions in millions). Sorted points: a#0 25.1, a#1 152.6, c#1 414.5, b#0 616.2, b#1 1,845.2, c#0 3,752.1.</p>",
+      "<ol>",
+      "<li><code>owners(\"sun.jpg\", 2)</code>: hash 476.3. Binary search lands on index 3, b#0: cache-b. Index 4, b#1: cache-b again, skip. Index 5, c#0: cache-c. Two names: done.</li>",
+      "<li><code>owners(\"photo-3\", 3)</code>: hash 3,939.4 is above every point, so the search returns 6 = n, and <code>6 % 6 = 0</code> wraps to a#0: cache-a. Then a#1 (skip), c#1: cache-c, b#0: cache-b.</li>",
+      "<li>Remove cache-b: the list becomes a#0, a#1, c#1, c#0. \"sun.jpg\" now lands on index 3, c#0: cache-c. \"photo-3\" still wraps to cache-a.</li>",
+      "</ol>",
+      "<p>The skip-seen set matters: without it, a server's second virtual node would be counted as a second replica, and both copies of a key would sit on one machine. Stopping when every server has been collected keeps the walk to one lap even when <code>count</code> is larger than the number of servers.</p>"
+    ],
+    "time": "O(log P + P)",
+    "timeWhy": "Per lookup: binary search over P points, then a walk that usually stops after a few points and never goes past one lap. Adding a server re-sorts: O(P log P), rare.",
+    "space": "O(P)",
+    "spaceWhy": "P = servers × vnodes points, each with its position, label and server.",
+    "takeaway": "Consistent hashing is a sorted array of points plus a binary search that wraps around. Virtual nodes even out the load, and walking clockwise while skipping servers you already have gives a replica list where each copy is on a different machine."
+  },
+  "related": ["consistent-hashing", "caching", "design-a-key-value-store"]
+}

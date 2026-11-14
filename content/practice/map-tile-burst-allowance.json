@@ -1,0 +1,216 @@
+{
+  "slug": "map-tile-burst-allowance",
+  "title": "Map Tile Burst Allowance",
+  "topic": "system-design-blocks",
+  "difficulty": "medium",
+  "pattern": "design",
+  "aka": "Token Bucket Rate Limiter",
+  "order": 5,
+  "story": [
+    "<p>A map company sells tile access to app developers. When a user pans the map, the app needs a burst of tiles at once, then nothing for a while. A fixed cap per minute would either block the burst or allow too much in total, so each API key gets a token bucket: it holds up to <code>capacity</code> tokens, a request spends tokens, and one new token drips in every <code>intervalMs</code> milliseconds. A full bucket allows a burst; the drip sets the long-run rate.</p>",
+    "<p>This is the token bucket from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a>, the usual choice for API gateways (see <a href=\"/system-design/design-a-rate-limiter.html\">Design a Rate Limiter</a>). No timer refills it: each request works out how many tokens arrived since the last one, which is where most bugs hide.</p>"
+  ],
+  "task": [
+    "<p>Write a class <code>TokenBucket</code>:</p>",
+    "<ul>",
+    "<li><code>constructor(capacity, intervalMs)</code>: the bucket starts full at time 0.</li>",
+    "<li><code>take(t, cost)</code>: a request at time <code>t</code> (milliseconds) that needs <code>cost</code> tokens. If the bucket holds at least <code>cost</code> tokens, remove them and return <code>true</code>. Otherwise return <code>false</code> and remove nothing.</li>",
+    "<li><code>available(t)</code>: return how many tokens the bucket holds at time <code>t</code>, without changing anything else.</li>",
+    "</ul>",
+    "<p>Drips happen at fixed times: <code>intervalMs</code>, <code>2 × intervalMs</code>, <code>3 × intervalMs</code>, and so on. Each drip adds one token, unless the bucket is already full, in which case that token is lost. A drip at exactly time <code>t</code> counts before the request at <code>t</code>.</p>"
+  ],
+  "constraints": [
+    "1 ≤ capacity ≤ 1,000,000",
+    "1 ≤ intervalMs ≤ 1,000,000",
+    "1 ≤ cost ≤ 1,000,000 (a cost above capacity can never succeed)",
+    "0 ≤ t ≤ 1,000,000,000,000, and t never decreases from one call to the next",
+    "At most 2,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["TokenBucket", "take", "take", "take", "take", "take", "take", "available"],
+      "args": [[3, 1000], [0, 1], [100, 1], [200, 1], [300, 1], [1000, 1], [1500, 1], [2000]],
+      "expected": [null, true, true, true, false, true, false, 1],
+      "explanation": "The bucket starts with 3 tokens, so the burst at 0, 100 and 200 ms is allowed and empties it. At 300 ms nothing has dripped yet: rejected. The drip at 1,000 ms adds one token, which the request at 1,000 spends. At 1,500 the bucket is empty again. The drip at 2,000 leaves 1 token."
+    },
+    {
+      "ops": ["TokenBucket", "take", "take", "take", "take", "take"],
+      "args": [[2, 1000], [0, 2], [600, 1], [1200, 1], [1900, 1], [2000, 1]],
+      "expected": [null, true, false, true, false, true],
+      "explanation": "A cost-2 request empties the bucket at 0. At 600 ms no drip has happened. At 1,200 ms the drip at 1,000 has added a token, so the request is allowed. A common bug measures 600 ms \"since the last request\" at both 600 and 1,200, never reaches 1,000, and wrongly rejects this one. The drip at 2,000 pays for the last request."
+    }
+  ],
+  "hints": [
+    "Between two calls at times <code>a</code> and <code>b</code>, how many drips happened? Try a = 600, b = 1,200 with a 1,000 ms interval, then a = 0, b = 600.",
+    "The number of drips up to time <code>t</code> is <code>floor(t / intervalMs)</code>. So the drips between two calls are the difference of those two counts, and nothing is lost to rounding.",
+    "Store the token count and the drip count at the last update. On every call, add the new drips to the tokens, clamp to <code>capacity</code> (tokens beyond it are lost), and save the new drip count.",
+    "<code>take</code> refills first, then compares with <code>cost</code>. <code>available</code> refills and returns the count; refilling early is harmless because the drip count is stored, not the time of the call."
+  ],
+  "bruteForce": [
+    "<p>A timer that adds one token every interval works on paper, but a gateway with a million API keys cannot run a million timers. Simulating every drip one by one inside each call is also too slow: with a 1 ms interval and calls a trillion milliseconds apart, that is a trillion steps.</p>",
+    "<p>Counting drips with one division gives the same result in O(1), and the bucket is just two numbers per key, small enough to keep in a shared in-memory store.</p>"
+  ],
+  "signature": {
+    "class": "TokenBucket",
+    "init": {
+      "params": [
+        {
+          "name": "capacity",
+          "type": "int"
+        },
+        {
+          "name": "intervalMs",
+          "type": "int"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "take",
+        "params": [
+          {
+            "name": "t",
+            "type": "int"
+          },
+          {
+            "name": "cost",
+            "type": "int"
+          }
+        ],
+        "returns": "bool"
+      },
+      {
+        "name": "available",
+        "params": [
+          {
+            "name": "t",
+            "type": "int"
+          }
+        ],
+        "returns": "int"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "class TokenBucket {",
+      "  /**",
+      "   * @param {number} capacity most tokens the bucket holds",
+      "   * @param {number} intervalMs one token drips in every intervalMs",
+      "   */",
+      "  constructor(capacity, intervalMs) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @param {number} t ms @param {number} cost @return {boolean} */",
+      "  take(t, cost) {",
+      "  }",
+      "",
+      "  /** @param {number} t ms @return {number} tokens in the bucket */",
+      "  available(t) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class TokenBucket:",
+      "    def __init__(self, capacity: int, interval_ms: int):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def take(self, t: int, cost: int) -> bool:",
+      "        pass",
+      "",
+      "    def available(self, t: int) -> int:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["TokenBucket", "available"], "args": [[5, 100], [0]], "expected": [null, 5], "note": "starts full"},
+    {"ops": ["TokenBucket", "take", "available"], "args": [[5, 100], [0, 6], [0]], "expected": [null, false, 5], "note": "cost above capacity: rejected, nothing removed"},
+    {"ops": ["TokenBucket", "take", "take", "available"], "args": [[5, 100], [0, 5], [0, 1], [0]], "expected": [null, true, false, 0], "note": "spend everything in one request"},
+    {"ops": ["TokenBucket", "take", "available", "available", "available"], "args": [[4, 100], [50, 4], [99], [100], [450]], "expected": [null, true, 0, 1, 4], "note": "drip counts from time 0, not from the request"},
+    {"ops": ["TokenBucket", "available", "take", "available"], "args": [[3, 1000], [999999], [1000000, 3], [1000000]], "expected": [null, 3, true, 0], "note": "a full bucket loses drips"},
+    {"ops": ["TokenBucket", "take", "take", "take", "take", "take"], "args": [[1, 10], [0, 1], [5, 1], [10, 1], [19, 1], [20, 1]], "expected": [null, true, false, true, false, true], "note": "capacity 1: one request per interval"},
+    {"ops": ["TokenBucket", "take", "take", "take", "take"], "args": [[3, 1000], [0, 3], [700, 1], [1400, 1], [2100, 1]], "expected": [null, true, false, true, true], "note": "mid-interval requests must not lose progress"},
+    {"ops": ["TokenBucket", "take", "take", "available"], "args": [[10, 7], [0, 10], [70, 9], [70]], "expected": [null, true, true, 1], "note": "ten drips land between two calls and refill the bucket"},
+    {"ops": ["TokenBucket", "take", "available", "take", "available"], "args": [[1000000, 1000000], [0, 1000000], [1000000000000], [1000000000000, 1000000], [1000000000000]], "expected": [null, true, 1000000, true, 0], "note": "largest values"},
+    {"ops": ["TokenBucket", "take", "take", "take", "take", "available"], "args": [[2, 1], [0, 2], [0, 1], [1, 1], [1, 1], [3]], "expected": [null, true, false, true, false, 2], "note": "interval of 1 ms"},
+    {"ops": ["TokenBucket", "take", "take", "take", "take"], "args": [[5, 200], [0, 3], [10, 3], [399, 3], [400, 3]], "expected": [null, true, false, true, false], "note": "a failed request leaves tokens for a later one"},
+    {"ops": ["TokenBucket", "available", "available", "take", "available"], "args": [[3, 100], [250], [250], [250, 1], [300]], "expected": [null, 3, 3, true, 3], "note": "available changes nothing"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "class TokenBucket {",
+      "  constructor(capacity, intervalMs) {",
+      "    this.capacity = capacity;",
+      "    this.intervalMs = intervalMs;",
+      "    this.tokens = capacity; // starts full",
+      "    this.drips = 0;         // drips counted so far (drip k happens at k * intervalMs)",
+      "  }",
+      "",
+      "  refill(t) {",
+      "    const drips = Math.floor(t / this.intervalMs);",
+      "    // add the drips since the last update; anything above capacity is lost",
+      "    this.tokens = Math.min(this.capacity, this.tokens + (drips - this.drips));",
+      "    this.drips = drips;",
+      "  }",
+      "",
+      "  take(t, cost) {",
+      "    this.refill(t);",
+      "    if (this.tokens < cost) return false; // not enough: take nothing",
+      "    this.tokens -= cost;",
+      "    return true;",
+      "  }",
+      "",
+      "  available(t) {",
+      "    this.refill(t);",
+      "    return this.tokens;",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class TokenBucket:",
+      "    def __init__(self, capacity, interval_ms):",
+      "        self.capacity = capacity",
+      "        self.interval_ms = interval_ms",
+      "        self.tokens = capacity  # starts full",
+      "        self.drips = 0          # drips counted so far (drip k happens at k * interval_ms)",
+      "",
+      "    def _refill(self, t):",
+      "        drips = t // self.interval_ms",
+      "        # add the drips since the last update; anything above capacity is lost",
+      "        self.tokens = min(self.capacity, self.tokens + (drips - self.drips))",
+      "        self.drips = drips",
+      "",
+      "    def take(self, t, cost):",
+      "        self._refill(t)",
+      "        if self.tokens < cost:  # not enough: take nothing",
+      "            return False",
+      "        self.tokens -= cost",
+      "        return True",
+      "",
+      "    def available(self, t):",
+      "        self._refill(t)",
+      "        return self.tokens"
+    ],
+    "walkthrough": [
+      "<p>The bucket is two numbers: tokens now, and how many drips have been counted. Every call first catches up: the drips up to <code>t</code> are <code>floor(t / intervalMs)</code>, so the new ones are that minus the stored count.</p>",
+      "<p>Trace the second example, capacity 2, interval 1,000:</p>",
+      "<ol>",
+      "<li>t = 0, cost 2: drips 0, nothing new. 2 tokens ≥ 2: take them, 0 left.</li>",
+      "<li>t = 600, cost 1: floor(600 / 1000) = 0 drips, nothing new. 0 &lt; 1: rejected.</li>",
+      "<li>t = 1,200, cost 1: floor(1200 / 1000) = 1, one new drip. 1 token: take it, 0 left, drips stored as 1.</li>",
+      "<li>t = 1,900: still 1 drip, nothing new. Rejected.</li>",
+      "<li>t = 2,000: 2 drips, one new. Allowed.</li>",
+      "</ol>",
+      "<p>Storing the drip count, not the time of the last call, is the whole trick. The version that does <code>gained = floor((t - last) / interval); last = t</code> throws away the 600 ms of progress made before the call at 600, so it rejects the request at 1,200. In a real gateway the refill and the take must also happen as one atomic step in the shared store, or two servers can spend the same token.</p>"
+    ],
+    "time": "O(1)",
+    "timeWhy": "Each call does one division, one min and a comparison.",
+    "space": "O(1)",
+    "spaceWhy": "Two numbers per bucket, whatever the traffic.",
+    "takeaway": "A token bucket refills lazily: on each request, work out how many tokens arrived since the last update and cap at capacity. Count refills from a fixed origin, so partial intervals are never lost; capacity sets the burst, the drip rate sets the average."
+  },
+  "related": ["rate-limiting", "design-a-rate-limiter"]
+}

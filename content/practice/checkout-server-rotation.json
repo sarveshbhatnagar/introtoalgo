@@ -1,0 +1,285 @@
+{
+  "slug": "checkout-server-rotation",
+  "title": "Checkout Server Rotation",
+  "topic": "system-design-blocks",
+  "difficulty": "medium",
+  "pattern": "design",
+  "aka": "Round-Robin and Least-Connections Load Balancer",
+  "order": 7,
+  "story": [
+    "<p>An online shop runs its checkout service on a few identical servers behind a load balancer. Most requests take a few milliseconds, but a checkout that waits on a card payment can hold its connection for seconds. Health checks mark servers down and up again, and a server that goes down still has to finish the checkouts it already holds.</p>",
+    "<p>The balancer can hand out requests in turn (round robin) or send each one to the server with the fewest open connections (least connections). These are the two strategies from <a href=\"/system-design/load-balancing.html\">Load Balancing</a>; you build both behind one switch so you can compare them.</p>"
+  ],
+  "task": [
+    "<p>Write a class <code>Balancer</code>:</p>",
+    "<ul>",
+    "<li><code>constructor(servers, strategy)</code>: <code>servers</code> lists distinct server names in a fixed order; all start up, with 0 open connections. <code>strategy</code> is <code>\"round-robin\"</code> or <code>\"least-connections\"</code>.</li>",
+    "<li><code>route()</code>: pick a server that is up, add one open connection to it, and return its name. If every server is down, return <code>null</code> (<code>None</code> in Python) and change nothing.</li>",
+    "<li><code>finish(server)</code>: one connection on that server closes. Ignore it if the server has 0 open connections.</li>",
+    "<li><code>setHealth(server, up)</code>: mark the server up (<code>true</code>) or down (<code>false</code>). Its open connections stay open either way.</li>",
+    "<li><code>open(server)</code>: return the server's number of open connections.</li>",
+    "</ul>",
+    "<p><strong>Round robin</strong> keeps a cursor that starts at position 0. <code>route</code> looks at the server at the cursor, then the next ones, wrapping around the end of the list, and picks the first that is up. The cursor then moves to the position just after the picked server.</p>",
+    "<p><strong>Least connections</strong> picks the up server with the fewest open connections; on a tie, the one that comes first in <code>servers</code>.</p>"
+  ],
+  "constraints": [
+    "1 ≤ servers.length ≤ 50",
+    "Server names are distinct, non-empty strings; finish, setHealth and open always name a server from the list.",
+    "At most 2,000 calls per test"
+  ],
+  "examples": [
+    {
+      "ops": ["Balancer", "route", "route", "setHealth", "route", "route", "route", "open"],
+      "args": [[["s1", "s2", "s3"], "round-robin"], [], [], ["s2", false], [], [], [], ["s3"]],
+      "expected": [null, "s1", "s2", null, "s3", "s1", "s3", 2],
+      "explanation": "Round robin hands out s1, then s2. Then s2 is marked down. The cursor is on s3, so s3 is next, and the cursor wraps to s1. After s1 the cursor is on s2, which is down, so the balancer skips to s3. s3 now has 2 open connections because nothing has finished."
+    },
+    {
+      "ops": ["Balancer", "route", "route", "route", "finish", "route", "route", "setHealth", "route"],
+      "args": [[["s1", "s2", "s3"], "least-connections"], [], [], [], ["s2"], [], [], ["s2", false], []],
+      "expected": [null, "s1", "s2", "s3", null, "s2", "s1", null, "s3"],
+      "explanation": "All start at 0, so ties go to the first: s1, then s2, then s3, one connection each. s2 finishes a request and drops to 0, so it gets the next one. Now all three have 1, and the tie goes to s1, which reaches 2. Then s2 is marked down. Of the servers still up, s3 has 1 open connection and s1 has 2, so s3 gets the request."
+    }
+  ],
+  "hints": [
+    "Both strategies share most of their state. What does the balancer need to know about each server, whatever the strategy?",
+    "Per server: whether it is up and how many connections are open. Keep the names in a list for order, and a map from name to position so <code>finish</code>, <code>setHealth</code> and <code>open</code> are one lookup each.",
+    "For round robin, the cursor is a position in the list. Try at most <code>n</code> positions starting at the cursor, using <code>(cursor + i) % n</code>. If none is up, return null without moving the cursor.",
+    "For least connections, scan every server, skip the ones that are down, and keep the first with the smallest count. A strict \"less than\" comparison gives the tie to the earlier server for free."
+  ],
+  "bruteForce": [
+    "<p>A first version of round robin often keeps a counter, starts at <code>servers[counter % n]</code>, steps forward with a <code>while</code> loop until it finds a server that is up, and then adds 1 to the counter. It loops forever when every server is down. It also gives the server after a dead one a double share: with a, b, c and b down, counter 1 lands on b and moves on to c, then counter 2 lands on c again.</p>",
+    "<p>Scanning forward from a cursor that sits just after the last pick fixes both: the scan is bounded by <code>n</code>, and the turn passes on in order. With at most 50 servers, an O(n) scan per request is fine; a balancer with thousands of backends would keep a heap or buckets of connection counts for least connections.</p>"
+  ],
+  "signature": {
+    "class": "Balancer",
+    "init": {
+      "params": [
+        {
+          "name": "servers",
+          "type": "string[]"
+        },
+        {
+          "name": "strategy",
+          "type": "string"
+        }
+      ]
+    },
+    "methods": [
+      {
+        "name": "route",
+        "params": [],
+        "returns": "string"
+      },
+      {
+        "name": "finish",
+        "params": [
+          {
+            "name": "server",
+            "type": "string"
+          }
+        ],
+        "returns": "void"
+      },
+      {
+        "name": "setHealth",
+        "params": [
+          {
+            "name": "server",
+            "type": "string"
+          },
+          {
+            "name": "up",
+            "type": "bool"
+          }
+        ],
+        "returns": "void"
+      },
+      {
+        "name": "open",
+        "params": [
+          {
+            "name": "server",
+            "type": "string"
+          }
+        ],
+        "returns": "int"
+      }
+    ]
+  },
+  "starter": {
+    "js": [
+      "class Balancer {",
+      "  /**",
+      "   * @param {string[]} servers server names, in order",
+      "   * @param {string} strategy \"round-robin\" or \"least-connections\"",
+      "   */",
+      "  constructor(servers, strategy) {",
+      "    // Your code here",
+      "  }",
+      "",
+      "  /** @return {string|null} the chosen server */",
+      "  route() {",
+      "  }",
+      "",
+      "  /** @param {string} server */",
+      "  finish(server) {",
+      "  }",
+      "",
+      "  /** @param {string} server @param {boolean} up */",
+      "  setHealth(server, up) {",
+      "  }",
+      "",
+      "  /** @param {string} server @return {number} open connections */",
+      "  open(server) {",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class Balancer:",
+      "    def __init__(self, servers: list[str], strategy: str):",
+      "        # Your code here",
+      "        pass",
+      "",
+      "    def route(self) -> str | None:",
+      "        pass",
+      "",
+      "    def finish(self, server: str) -> None:",
+      "        pass",
+      "",
+      "    def set_health(self, server: str, up: bool) -> None:",
+      "        pass",
+      "",
+      "    def open(self, server: str) -> int:",
+      "        pass"
+    ]
+  },
+  "tests": [
+    {"ops": ["Balancer", "route", "route", "route"], "args": [[["only"], "round-robin"], [], [], []], "expected": [null, "only", "only", "only"], "note": "one server"},
+    {"ops": ["Balancer", "setHealth", "route", "open"], "args": [[["only"], "least-connections"], ["only", false], [], ["only"]], "expected": [null, null, null, 0], "note": "every server down: null, nothing changes"},
+    {"ops": ["Balancer", "setHealth", "setHealth", "route", "setHealth", "route", "route"], "args": [[["a", "b"], "round-robin"], ["a", false], ["b", false], [], ["b", true], [], []], "expected": [null, null, null, null, null, "b", "b"], "note": "all down, then one comes back"},
+    {"ops": ["Balancer", "route", "route", "route", "route", "route"], "args": [[["a", "b", "c", "d"], "round-robin"], [], [], [], [], []], "expected": [null, "a", "b", "c", "d", "a"], "note": "wraps around"},
+    {"ops": ["Balancer", "route", "setHealth", "route", "route", "route", "route"], "args": [[["a", "b", "c"], "round-robin"], [], ["b", false], [], [], [], []], "expected": [null, "a", null, "c", "a", "c", "a"], "note": "the server after a dead one gets no double share"},
+    {"ops": ["Balancer", "route", "route", "setHealth", "route", "route", "route"], "args": [[["a", "b", "c"], "round-robin"], [], [], ["a", false], [], [], []], "expected": [null, "a", "b", null, "c", "b", "c"], "note": "cursor wraps past a dead first server"},
+    {"ops": ["Balancer", "route", "setHealth", "setHealth", "setHealth", "route", "route", "setHealth", "setHealth", "setHealth", "route", "route"], "args": [[["a", "b", "c"], "round-robin"], [], ["a", false], ["b", false], ["c", false], [], [], ["a", true], ["b", true], ["c", true], [], []], "expected": [null, "a", null, null, null, null, null, null, null, null, "b", "c"], "note": "a failed route while all are down must not move the cursor"},
+    {"ops": ["Balancer", "route", "route", "route", "route", "finish", "finish", "route"], "args": [[["x", "y"], "least-connections"], [], [], [], [], ["y"], ["y"], []], "expected": [null, "x", "y", "x", "y", null, null, "y"], "note": "least connections balances, then refills the emptier one"},
+    {"ops": ["Balancer", "route", "route", "setHealth", "finish", "open", "route", "open"], "args": [[["x", "y"], "least-connections"], [], [], ["x", false], ["x"], ["x"], [], ["y"]], "expected": [null, "x", "y", null, null, 0, "y", 2], "note": "a down server drains but gets nothing new"},
+    {"ops": ["Balancer", "finish", "open", "route", "open"], "args": [[["p", "q"], "least-connections"], ["p"], ["p"], [], ["p"]], "expected": [null, null, 0, "p", 1], "note": "finish with nothing open is ignored"},
+    {"ops": ["Balancer", "route", "route", "route", "finish", "finish", "route", "route"], "args": [[["a", "b", "c"], "least-connections"], [], [], [], ["c"], ["a"], [], []], "expected": [null, "a", "b", "c", null, null, "a", "c"], "note": "tie between a and c goes to the earlier one"},
+    {"ops": ["Balancer", "route", "route", "route", "finish", "route", "route"], "args": [[["a", "b", "c"], "round-robin"], [], [], [], ["a"], [], []], "expected": [null, "a", "b", "c", null, "a", "b"], "note": "round robin ignores open counts"},
+    {"ops": ["Balancer", "setHealth", "setHealth", "route", "route", "setHealth", "route", "route"], "args": [[["a", "b", "c", "d", "e"], "round-robin"], ["c", false], ["d", false], [], [], ["c", true], [], []], "expected": [null, null, null, "a", "b", null, "c", "e"], "note": "two dead in a row, then one recovers"},
+    {"ops": ["Balancer", "route", "route", "route", "setHealth", "setHealth", "route", "open", "open"], "args": [[["a", "b", "c"], "least-connections"], [], [], [], ["a", false], ["a", true], [], ["a"], ["b"]], "expected": [null, "a", "b", "c", null, null, "a", 2, 1], "note": "health flaps keep the counts"}
+  ],
+  "compare": "exact",
+  "solution": {
+    "js": [
+      "class Balancer {",
+      "  constructor(servers, strategy) {",
+      "    this.names = servers;",
+      "    this.index = new Map(servers.map((s, i) => [s, i]));",
+      "    this.up = servers.map(() => true);",
+      "    this.conns = servers.map(() => 0);",
+      "    this.roundRobin = strategy === 'round-robin';",
+      "    this.cursor = 0;",
+      "  }",
+      "",
+      "  pick() {",
+      "    const n = this.names.length;",
+      "    if (this.roundRobin) {",
+      "      for (let k = 0; k < n; k++) {         // at most one lap",
+      "        const i = (this.cursor + k) % n;",
+      "        if (this.up[i]) { this.cursor = (i + 1) % n; return i; }",
+      "      }",
+      "      return -1;",
+      "    }",
+      "    let best = -1;",
+      "    for (let i = 0; i < n; i++) {           // strict < keeps the earliest on ties",
+      "      if (this.up[i] && (best === -1 || this.conns[i] < this.conns[best])) best = i;",
+      "    }",
+      "    return best;",
+      "  }",
+      "",
+      "  route() {",
+      "    const i = this.pick();",
+      "    if (i === -1) return null;              // everything is down",
+      "    this.conns[i]++;",
+      "    return this.names[i];",
+      "  }",
+      "",
+      "  finish(server) {",
+      "    const i = this.index.get(server);",
+      "    if (this.conns[i] > 0) this.conns[i]--;",
+      "  }",
+      "",
+      "  setHealth(server, up) {",
+      "    this.up[this.index.get(server)] = up;   // open connections stay",
+      "  }",
+      "",
+      "  open(server) {",
+      "    return this.conns[this.index.get(server)];",
+      "  }",
+      "}"
+    ],
+    "py": [
+      "class Balancer:",
+      "    def __init__(self, servers, strategy):",
+      "        self.names = servers",
+      "        self.index = {s: i for i, s in enumerate(servers)}",
+      "        self.up = [True] * len(servers)",
+      "        self.conns = [0] * len(servers)",
+      "        self.round_robin = strategy == \"round-robin\"",
+      "        self.cursor = 0",
+      "",
+      "    def _pick(self):",
+      "        n = len(self.names)",
+      "        if self.round_robin:",
+      "            for k in range(n):  # at most one lap",
+      "                i = (self.cursor + k) % n",
+      "                if self.up[i]:",
+      "                    self.cursor = (i + 1) % n",
+      "                    return i",
+      "            return -1",
+      "        best = -1",
+      "        for i in range(n):  # strict < keeps the earliest on ties",
+      "            if self.up[i] and (best == -1 or self.conns[i] < self.conns[best]):",
+      "                best = i",
+      "        return best",
+      "",
+      "    def route(self):",
+      "        i = self._pick()",
+      "        if i == -1:  # everything is down",
+      "            return None",
+      "        self.conns[i] += 1",
+      "        return self.names[i]",
+      "",
+      "    def finish(self, server):",
+      "        i = self.index[server]",
+      "        if self.conns[i] > 0:",
+      "            self.conns[i] -= 1",
+      "",
+      "    def set_health(self, server, up):",
+      "        self.up[self.index[server]] = up  # open connections stay",
+      "",
+      "    def open(self, server):",
+      "        return self.conns[self.index[server]]"
+    ],
+    "walkthrough": [
+      "<p>Keep three arrays indexed by position: names, up or down, and open connections. A map from name to position serves <code>finish</code>, <code>setHealth</code> and <code>open</code>. The two strategies differ only in how <code>pick</code> chooses a position.</p>",
+      "<p>Trace the second example (least connections):</p>",
+      "<ol>",
+      "<li>Counts [0, 0, 0]. Three routes give s1, s2, s3, each time the earliest of the smallest. Counts [1, 1, 1].</li>",
+      "<li><code>finish(\"s2\")</code>: counts [1, 0, 1]. The next route picks s2, the only server with 0. Counts [1, 1, 1].</li>",
+      "<li>All equal again, so s1 wins the tie. Counts [2, 1, 1].</li>",
+      "<li>s2 goes down. Only s1 (2) and s3 (1) are candidates, so s3 gets it. Counts [2, 1, 2]: s2 still holds its connection until it finishes.</li>",
+      "</ol>",
+      "<p>For round robin, the cursor sits just after the last pick, so the scan in the first example goes s1, s2, s3 (s2 is down by then), s1, then skips s2 and lands on s3. Moving the cursor past the <em>picked</em> server, not past the dead one, is what stops the server after a dead one from getting a double share.</p>",
+      "<p>In an interview, the choice is the point: round robin when requests cost about the same, least connections when some requests hold a server far longer, like these card payments.</p>"
+    ],
+    "time": "O(n)",
+    "timeWhy": "route scans at most n servers; finish, setHealth and open are O(1).",
+    "space": "O(n)",
+    "spaceWhy": "A few values per server.",
+    "takeaway": "Round robin spreads requests evenly when they cost the same; least connections adapts when some requests hold a server much longer. Either way, skip unhealthy servers with a bounded scan and let their open connections drain."
+  },
+  "related": ["load-balancing"]
+}

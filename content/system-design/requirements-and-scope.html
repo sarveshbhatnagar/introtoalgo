@@ -1,0 +1,253 @@
+<!--
+{
+  "title": "Requirements and Scope",
+  "description": "Turn a one-line prompt into functional and non-functional requirements, ask the questions that change the design, and rank the answers into priorities.",
+  "minutes": 15,
+  "tags": ["interview", "requirements", "fundamentals"]
+}
+-->
+<p>A candidate is asked to design a restaurant reservation system. They build a fast, well-cached search for open tables and a booking endpoint behind it. Thirty minutes in, the interviewer asks: "Two diners just booked table 7 for 19:00 on Friday. Who gets it?" The cache-first design has no answer, and there is no time left to rebuild the write path.</p>
+
+<p>One question in the first five minutes would have saved it: "Is it ever acceptable to double-book a table?" Requirements decide which parts of the design must be strict, which can be loose, and which you can skip.</p>
+
+<h2>Two kinds of requirement</h2>
+
+<p><strong>Functional requirements</strong> are what the system does: the verbs a user performs. Write them as short sentences: "a diner searches for open tables by restaurant, date and party size", "a diner books a table", "a diner cancels".</p>
+
+<p><strong>Non-functional requirements</strong> are how well it must do them: latency, availability, consistency, durability and scale. They are where designs differ. Two systems with the same features can need completely different architectures because one must never lose data and the other must answer in 50 ms.</p>
+
+<p>A third list matters as much: <strong>out of scope</strong>. Saying "I'll leave out payments and reviews" buys you time for the parts that carry signal, and the interviewer can still pull something back in.</p>
+
+<x-callout type="key">
+<p>Non-functional requirements are per path, not per system. Search can be fast and slightly stale while booking is slower and strictly correct, in the same product.</p>
+</x-callout>
+
+<h2>The questions that change the design</h2>
+
+<p>Ask in this order: features, then scale, then quality. Each question earns its place only if a different answer would change what you build.</p>
+
+<ul>
+<li><strong>Who uses it, and for what?</strong> The two or three core actions. Diners search and book; do restaurants also manage their tables in our system?</li>
+<li><strong>What is out?</strong> Payments, reviews, waitlists. Propose the cut yourself.</li>
+<li><strong>How many?</strong> Daily users or daily actions, and the read/write ratio. This decides caching, replicas and partitioning.</li>
+<li><strong>How fresh must reads be?</strong> Can search be a few seconds behind? This decides whether replicas and caches are allowed on that path.</li>
+<li><strong>What must never go wrong?</strong> Double bookings, lost writes, charging twice. This decides where you need strong consistency or transactions.</li>
+<li><strong>How available, and where?</strong> One country or global? Is a minute of downtime on booking acceptable?</li>
+</ul>
+
+<x-interview title="Scoping the reservation system" tone="weak">
+<x-interviewer>Design a restaurant reservation system.</x-interviewer>
+<x-you>OK. Should it be scalable and highly available?</x-you>
+<x-interviewer>Sure.</x-interviewer>
+<x-you>And low latency? Then I'll use microservices with a cache and a message queue.</x-you>
+<x-coach>Every system should be "scalable and available", so the question has no answer that changes anything. The tools arrive before a single number or priority.</x-coach>
+</x-interview>
+
+<x-interview title="Scoping the reservation system" tone="strong">
+<x-interviewer>Design a restaurant reservation system.</x-interviewer>
+<x-you>The core flows I see are: diners search open tables by restaurant, date and party size, then book or cancel. Restaurants set up their tables. I'll leave out payments, reviews and waitlists. Does that match?</x-you>
+<x-interviewer>Yes. About 20 million searches and 1 million bookings a day, in one country.</x-interviewer>
+<x-you>So searches outnumber bookings 20 to 1. Can search results be a few seconds stale? And I assume a double booking is never acceptable.</x-you>
+<x-interviewer>Stale search is fine. No double bookings, ever.</x-interviewer>
+<x-you>Then I'll make booking strictly consistent on one source of truth, and serve search from replicas and caches. Confirmation emails can be a minute late.</x-you>
+<x-coach>Each question had an answer that changed the design, and the last turn turns the answers into a decision per path.</x-coach>
+</x-interview>
+
+<h2>From answers to priorities</h2>
+
+<p>Write the result where the interviewer can see it, with numbers:</p>
+
+<ul>
+<li><strong>Functional:</strong> search open tables; book a table; cancel; restaurants manage tables and opening hours.</li>
+<li><strong>Non-functional:</strong> no double bookings; a confirmed booking is never lost; search answers in under 200 ms and may be a few seconds stale; booking stays available at 99.9%.</li>
+<li><strong>Out of scope:</strong> payments, reviews, waitlists.</li>
+</ul>
+
+<p>Put numbers on vague words. "Highly available" means nothing; 99.9% means about 0.001 × 30 × 24 × 60 ≈ 43 minutes of downtime a month, and 99.99% means about 4 minutes. Four minutes is too short for a person to react, so 99.99% means automatic failover to a standby that is already running.</p>
+
+<p>Then rank. When two requirements pull against each other, the ranking decides. Here, correctness of bookings beats booking latency, and search freshness is the first thing to give up. The diagram shows where each priority lands.</p>
+
+<x-arch caption="Search reads replicas that may lag; every booking is decided on the primary; emails leave through a queue. One product, three sets of priorities.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "diner", "label": "Diner", "kind": "client", "col": 0, "row": 1 },
+    { "id": "api", "label": "Reservation API", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "replica", "label": "Read replica", "kind": "database", "col": 2, "row": 0 },
+    { "id": "primary", "label": "Primary DB", "kind": "database", "col": 2, "row": 1 },
+    { "id": "queue", "label": "Booking events", "kind": "queue", "col": 2, "row": 2 },
+    { "id": "email", "label": "Email worker", "kind": "worker", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "diner", "to": "api" },
+    { "from": "api", "to": "replica", "label": "search" },
+    { "from": "api", "to": "primary", "label": "book" },
+    { "from": "primary", "to": "replica", "label": "replication", "style": "async" },
+    { "from": "api", "to": "queue", "label": "booked", "style": "async" },
+    { "from": "queue", "to": "email", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through a search that sees stale data, and watch why it does no harm.</p>
+
+<x-tracer title="A stale search, a refused booking, a late email">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "diner", "label": "Diner", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Reservation API", "kind": "service", "col": 1, "row": 1 },
+      { "id": "replica", "label": "Read replica", "kind": "database", "col": 2, "row": 0 },
+      { "id": "primary", "label": "Primary DB", "kind": "database", "col": 2, "row": 1 },
+      { "id": "queue", "label": "Booking events", "kind": "queue", "col": 2, "row": 2 },
+      { "id": "email", "label": "Email worker", "kind": "worker", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "diner", "to": "api" },
+      { "from": "api", "to": "replica" },
+      { "from": "api", "to": "primary" },
+      { "from": "primary", "to": "replica", "style": "async" },
+      { "from": "api", "to": "queue", "style": "async" },
+      { "from": "queue", "to": "email", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A diner searches restaurant 42 for 4 people on Friday. Search may be a few seconds stale, so it reads a replica.",
+      "arch": { "active": ["diner", "replica", ["diner", "api"], ["api", "replica"]], "dim": ["queue", "email"] }
+    },
+    {
+      "caption": "The replica says table 7 is free at 19:00. It is wrong: someone booked it on the primary 0.5 s ago, and replication has not caught up. That is what replica lag means.",
+      "arch": { "active": ["replica"], "dim": ["queue", "email"], "notes": { "replica": "t7 19:00 free", "primary": "t7 19:00 taken" } }
+    },
+    {
+      "caption": "The diner books table 7 at 19:00. Bookings always go to the primary, as a conditional write: reserve only if still free.",
+      "arch": { "active": ["primary", ["diner", "api"], ["api", "primary"]], "dim": ["queue", "email"] }
+    },
+    {
+      "caption": "The condition fails. The API answers <code>409 Conflict</code> with other free times. The stale search cost one retry, never a double booking.",
+      "arch": { "fail": [["api", "primary"]], "active": [["api", "diner"]], "dim": ["queue", "email"], "notes": { "primary": "already taken" } },
+      "vars": { "double bookings": 0 }
+    },
+    {
+      "caption": "The diner picks 19:30. The conditional write succeeds and is committed on the primary.",
+      "arch": { "active": ["primary", ["api", "primary"]], "mark": ["primary"], "dim": ["queue", "email"], "notes": { "primary": "t7 19:30 booked" } },
+      "vars": { "double bookings": 0 }
+    },
+    {
+      "caption": "The API publishes a <code>booked</code> event and replies <code>201</code> without waiting for the email. (A crash between the commit and the publish would lose this email; data modeling shows the fix.)",
+      "arch": { "active": ["queue", ["api", "queue"], ["api", "diner"]], "mark": ["diner"] },
+      "vars": { "double bookings": 0 }
+    },
+    {
+      "caption": "The email worker is down. Bookings keep succeeding; events wait in the queue and the emails go out late. That matches the priority we set.",
+      "arch": { "fail": ["email"], "active": ["queue"], "mark": ["primary"], "notes": { "queue": "3,000 waiting" } },
+      "vars": { "double bookings": 0 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>The queue figure is arithmetic, not a guess: at the peak of 50 bookings a second (5 times the average of 1 million ÷ 100,000 = 10), one minute of outage queues 50 × 60 = 3,000 emails.</p>
+
+<h2>When you cannot get an answer</h2>
+
+<p>Sometimes the interviewer says "you decide". It tests judgment. There are three ways to handle unknowns.</p>
+
+<x-tradeoffs caption="Handling unknown requirements">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Ask everything up front",
+      "good": "Nothing is missed.",
+      "bad": "Ten minutes of questions and no design. Looks like stalling.",
+      "pick": "Never as a habit. Only when the prompt is truly unfamiliar."
+    },
+    {
+      "name": "Assume silently",
+      "good": "Fast.",
+      "bad": "The interviewer cannot correct a wrong assumption they never heard.",
+      "pick": "Never."
+    },
+    {
+      "name": "Ask the few that matter, state the rest",
+      "good": "Fast, and every assumption is visible and correctable.",
+      "bad": "You may pick an assumption the interviewer then changes; adapt when they do.",
+      "pick": "Almost always. Ask 4 to 6 questions, then say \"I'll assume X unless you'd like otherwise.\"",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>In the interview</h2>
+
+<p>Spend about 5 minutes here, as in <a href="/system-design/a-framework-for-any-design.html">the framework</a>. Phrases that show judgment:</p>
+
+<ul>
+<li>"The core flows I see are X, Y and Z. I'll leave out A and B. Does that match what you want?"</li>
+<li>"Is it ever acceptable to [double-book / lose a message / show a stale price]?"</li>
+<li>"Reads outnumber writes 20 to 1, so the read path is the one to optimize."</li>
+<li>"I'll assume one country. If it were global, the booking path would change most."</li>
+</ul>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Why not make search strongly consistent too?"</strong> Every search would read the primary: 1,000 reads a second at peak (20 million ÷ 100,000 = 200 on average, times 5) on the one machine that must stay fast for bookings. Staleness costs a rare 409, which is cheap.</li>
+<li><strong>"The primary dies just after confirming a booking. Is it lost?"</strong> With async replication it can be, which breaks "never lost". So the commit waits for one synchronous standby before the API returns 201. That adds a few milliseconds to each booking, which the ranking allows.</li>
+<li><strong>"What if the restaurant overbooks on purpose?"</strong> That is a new functional requirement (a per-restaurant overbooking limit). It changes the condition on the write, not the architecture.</li>
+<li><strong>"Now it's global."</strong> Search can be served from every region. Booking for a given restaurant still needs one place that decides, normally in or near the restaurant's region.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Non-functional requirements without numbers">
+<p>"Fast, scalable, highly available" fits every system and decides nothing. Say "search under 200 ms, booking 99.9% available, no double bookings". Numbers can be argued with; adjectives cannot.</p>
+</x-callout>
+
+<x-callout type="mistake" title="One consistency level for the whole system">
+<p>Making everything strongly consistent overloads the source of truth; making everything eventually consistent double-books tables. Decide per path.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Which of these is a non-functional requirement?",
+      "options": [
+        { "text": "A diner can cancel a booking", "why": "That is something a user does: functional." },
+        { "text": "Search results may be up to 5 seconds stale", "correct": true, "why": "It says how well search must work, not what it does. It also allows replicas on that path." },
+        { "text": "Restaurants can add tables", "why": "Another user action: functional." }
+      ]
+    },
+    {
+      "question": "The interviewer wants booking 99.99% available instead of 99.9%. About how much downtime a month does that allow?",
+      "options": [
+        { "text": "About 43 minutes", "why": "That is 99.9%: 0.001 × 30 × 24 × 60." },
+        { "text": "About 4 minutes", "correct": true, "why": "0.0001 × 43,200 minutes ≈ 4.3. Too short for a person to respond, so failover must be automatic." },
+        { "text": "About 26 seconds", "why": "That is 99.999%, one more nine." }
+      ]
+    },
+    {
+      "question": "A search read from a replica shows a table as free, but it was booked a moment ago. What should the booking request do?",
+      "options": [
+        { "text": "Book it anyway; the search said it was free", "why": "That is a double booking, the one thing the requirements forbid." },
+        { "text": "Make every search read the primary", "why": "That removes the staleness at the cost of loading the primary 20 times more. The write check already prevents the harm." },
+        { "text": "Write to the primary only if the table is still free, and return a conflict if not", "correct": true, "why": "Correctness is enforced where the decision is made. Stale search costs one retry." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practice next</h2>
+
+<p>Turn the scale answers into rates and bytes in <a href="/system-design/back-of-the-envelope-estimation.html">Back-of-the-Envelope Estimation</a>. For a case where consistency on one path decides the design, see <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>.</p>

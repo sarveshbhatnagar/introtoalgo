@@ -1,0 +1,427 @@
+<!--
+{
+  "title": "Design a RAG System",
+  "description": "Build a question-answering service over company documents: ingestion, hybrid retrieval and reranking, permission filtering, caching, cost and evaluation.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "rag", "search", "ai systems", "permissions"]
+}
+-->
+<p>An engineer asks the company's internal assistant how to rotate the staging database password. Three seconds later they get four clear steps, each with a link to the runbook page it came from. Behind that answer, a system found 8 relevant passages among 50 million, checked the engineer was allowed to read every one, and gave them to a language model with instructions to answer only from them.</p>
+
+<p>This is retrieval-augmented generation, covered as an idea in <a href="/ai/rag-basics.html">RAG basics</a> and <a href="/ai/chunking-and-retrieval.html">chunking and retrieval</a>. Interviewers ask it as a system design question because the model call is the easy part. The hard parts are keeping millions of documents indexed and fresh, finding the right passages fast, never leaking a document to someone who cannot open it, and knowing whether the answers are any good. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a system that answers employees' questions using the company's documents.</x-interviewer>
+<x-you>Which documents, and do they all have the same audience? A wiki, tickets, shared drives? Can every employee read everything?</x-you>
+<x-interviewer>Wiki, ticket system and shared drives, about 10 million documents. No, permissions vary a lot: HR, legal and some engineering spaces are restricted.</x-interviewer>
+<x-you>Then permission checks are a hard requirement, not a feature. How many people, and how fresh must answers be after a page changes?</x-you>
+<x-interviewer>20,000 employees. A changed page should show up within minutes.</x-interviewer>
+<x-you>My priorities: never show anyone content they can't open, cite sources for every answer, say "I don't know" rather than guess, stream the first words within about 2 seconds, and keep cost per question under control. I'll leave out actions such as filing tickets, and training our own models.</x-you>
+<x-coach>Asking about permissions in the first minute separates a candidate who has built one of these from one who has only seen a demo.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> ask a question in plain language and get an answer with citations; answer only from documents the asker may read; say when the documents do not contain the answer; ingest from the wiki, tickets and drives as they change; collect feedback on answers.</li>
+<li><strong>Non-functional:</strong> zero permission leaks; first words within 2 seconds, full answer within about 10; edits searchable within 10 minutes, and removed access effective within 5; cost per question measured and bounded; available during working hours in every region.</li>
+<li><strong>Out of scope:</strong> taking actions, training or fine-tuning models, public customers.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Chunks:</strong> 10 million documents cut into about 5 passages each is 50 million chunks.</li>
+<li><strong>Questions:</strong> 20,000 people × 10 questions a day = 200,000 a day. Spread over 8 working hours, 200,000 ÷ 28,800 s ≈ 7 a second; with a 3x peak, about 20 a second. A small rate, but each request is expensive.</li>
+<li><strong>Model input:</strong> 8 chunks of about 500 tokens is 4,000 tokens of context; with instructions and a 300-token answer, about 4,500 tokens per question. 200,000 × 4,500 = 900 million tokens a day. This number, not the request rate, drives cost.</li>
+<li><strong>Changes:</strong> if 1% of documents change each day, that is 100,000 documents and about 500,000 chunks to re-embed, about 6 a second on average.</li>
+</ul>
+
+<x-estimate title="Size of the vector index">
+<script type="application/json">
+{
+  "question": "Suppose the embedding model turns each chunk into 1,024 numbers stored as 4-byte floats. How much memory do the vectors for all chunks take?",
+  "givens": ["10 million documents, about 5 chunks each", "1,024 numbers per vector", "4 bytes per number"],
+  "unit": "bytes",
+  "answer": "200 GB",
+  "accept": ["60 GB", "600 GB"],
+  "steps": ["Chunks: 10 million × 5 = 50 million", "One vector: 1,024 × 4 B ≈ 4 KB", "All vectors: 50 × 10<sup>6</sup> × 4 KB = 200 GB"],
+  "note": "Too much for one machine's memory with room to spare. Storing each number in 1 byte instead of 4 cuts it to about 50 GB at a small cost in accuracy; sharding the index is the other lever."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Tokens sent to the model per day">
+<script type="application/json">
+{
+  "question": "About how many tokens a day does the answer step consume?",
+  "givens": ["200,000 questions a day", "8 retrieved chunks of about 500 tokens each", "About 500 more tokens for instructions, question and answer"],
+  "unit": "count",
+  "answer": "900 million",
+  "accept": ["300 million", "3 billion"],
+  "choices": ["9 million", "90 million", "900 million", "9 billion"],
+  "steps": ["Per question: 8 × 500 + 500 = 4,500 tokens", "Per day: 200,000 × 4,500 = 900 million tokens"],
+  "note": "Halving the chunks sent per question roughly halves this. That is why retrieval quality is also a cost lever."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the endpoint an employee's chat window calls, and the one connectors call when a document changes. How does the answer reach the user: one response, or a stream?</p>
+</x-task>
+<x-answer>
+<p>An ask endpoint that streams the answer and ends with the citations, a feedback endpoint, and an internal change-event endpoint for connectors. Streaming matters because the model takes seconds to write a full answer.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+POST /ask                       Authorization: the employee's identity
+  body: { "question": "How do I rotate the staging DB password?", "conversation_id": "c_19"? }
+  200  text/event-stream
+       event: token     data: "1. Open the "
+       ...
+       event: done      data: { "answer_id": "a_77", "citations": [
+                          { "doc_id": "wiki-4410", "title": "Staging runbook", "url": "..." } ] }
+  429  too many questions from this user
+  503  model unavailable; body holds the top documents as plain search results
+
+POST /answers/{id}/feedback     body: { "helpful": false, "comment": "outdated" }
+
+POST /ingest/events             internal, from connectors
+  body: { "source": "wiki", "doc_id": "wiki-4410", "change": "updated" | "deleted" | "acl" }
+  202 Accepted
+</pre>
+</x-code>
+
+<p>The decision to argue is <strong>streaming</strong>. A full answer takes several seconds to generate, but the first words can arrive in about one. Streaming over server-sent events makes the 2-second target reachable. Citations come at the end because the model decides which sources it used as it writes. The 503 shape matters too: when the model is down, ranked documents are still a useful answer.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>What does one indexed chunk hold so that you can search it, cite it, filter it by permission and know when to re-embed it?</p>
+</x-task>
+<x-answer>
+<p>The chunk text, its vector, its document id, title and link for citations, the groups allowed to read it, and a hash of its text so unchanged chunks are not embedded again. Search needs vectors and words in one index, with filters.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Documents and chunks">
+<pre lang="sql">
+documents                         -- source of truth for what is indexed
+  doc_id          VARCHAR(64) PRIMARY KEY     -- "wiki-4410"
+  source          VARCHAR(16)
+  title, url      TEXT
+  allowed_groups  TEXT[]          -- copied from the source system
+  content_hash    CHAR(64)
+  updated_at      TIMESTAMP
+
+chunks                            -- lives in the search index
+  chunk_id        VARCHAR(80)     -- "wiki-4410#3"
+  doc_id          VARCHAR(64)
+  text            TEXT            -- about 500 tokens, about 2 KB
+  embedding       VECTOR(1024)
+  allowed_groups  TEXT[]          -- filter field
+  text_hash       CHAR(64)        -- skip re-embedding unchanged chunks
+  index_version   INT             -- which chunker and embedding model made it
+</pre>
+</x-code>
+
+<p>The hot query is "nearest chunks to this vector, and best keyword matches for these words, among chunks this person may read". That needs a <strong>search index that supports vector search, keyword search and filters together</strong>: a search engine with vector support, or a vector database with keyword support. At smaller scale, a relational database with a vector extension is a fine start. The document table is ordinary relational data that tells ingestion what is indexed. Vector search here is approximate: it trades a little recall for speed, so measure recall rather than assume it.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch both paths: how a changed document becomes searchable chunks, and how a question becomes a cited answer. Where does the permission check happen?</p>
+</x-task>
+<x-answer>
+<p>Ingestion: connectors send change events, workers fetch, chunk and embed, then upsert into the search index along with each document's allowed groups. Query: the answer service embeds the question, runs a filtered hybrid search, reranks, and sends the top chunks to the model. Permissions are applied inside the search, as a filter.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<x-arch caption="Ingestion (top) keeps the index fresh in the background. A question (bottom) is embedded with the same model, searched with a permission filter, reranked and answered.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "src", "label": "Doc sources", "kind": "external", "col": 0, "row": 0 },
+    { "id": "ingest", "label": "Ingestion workers", "kind": "worker", "col": 1, "row": 0, "stack": true },
+    { "id": "embed", "label": "Embedding model", "kind": "service", "col": 1, "row": 1 },
+    { "id": "user", "label": "Employee", "kind": "client", "col": 0, "row": 2 },
+    { "id": "answer", "label": "Answer service", "kind": "service", "col": 1, "row": 2, "stack": true },
+    { "id": "index", "label": "Hybrid search index", "kind": "search", "col": 2, "row": 1 },
+    { "id": "llm", "label": "Language model", "kind": "service", "col": 1, "row": 3 },
+    { "id": "rerank", "label": "Reranker", "kind": "service", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "src", "to": "ingest", "label": "changes, ACLs" },
+    { "from": "ingest", "to": "embed", "label": "embed chunks" },
+    { "from": "ingest", "to": "index", "label": "upsert" },
+    { "from": "user", "to": "answer", "label": "POST /ask" },
+    { "from": "answer", "to": "embed", "label": "embed" },
+    { "from": "answer", "to": "index", "label": "filtered search" },
+    { "from": "answer", "to": "rerank", "label": "top 50" },
+    { "from": "answer", "to": "llm", "label": "prompt + 8 chunks" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Both paths use the same embedding model, because vectors from different models cannot be compared. Step through one question, then an edit and a permission change.</p>
+
+<x-tracer title="A question, an edit, a permission change, an outage">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "src", "label": "Doc sources", "kind": "external", "col": 0, "row": 0 },
+      { "id": "ingest", "label": "Ingestion workers", "kind": "worker", "col": 1, "row": 0 },
+      { "id": "embed", "label": "Embedding model", "kind": "service", "col": 1, "row": 1 },
+      { "id": "user", "label": "Employee", "kind": "client", "col": 0, "row": 2 },
+      { "id": "answer", "label": "Answer service", "kind": "service", "col": 1, "row": 2 },
+      { "id": "index", "label": "Hybrid search index", "kind": "search", "col": 2, "row": 1 },
+      { "id": "llm", "label": "Language model", "kind": "service", "col": 1, "row": 3 },
+      { "id": "rerank", "label": "Reranker", "kind": "service", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "src", "to": "ingest" },
+      { "from": "ingest", "to": "embed" },
+      { "from": "ingest", "to": "index" },
+      { "from": "user", "to": "answer" },
+      { "from": "answer", "to": "embed" },
+      { "from": "answer", "to": "index" },
+      { "from": "answer", "to": "rerank" },
+      { "from": "answer", "to": "llm" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Priya asks how to rotate the staging database password. The answer service looks up her groups in the company directory, cached for a minute: <code>eng</code> and <code>all-staff</code>.",
+      "arch": { "active": ["user", "answer", ["user", "answer"]], "dim": ["src", "ingest", "embed"] },
+      "vars": { "elapsed ms": 0, "candidates": 0 }
+    },
+    {
+      "caption": "It embeds the question with the same model used for the chunks, so both live in the same vector space. Budget: about 50 ms.",
+      "arch": { "active": ["answer", "embed", ["answer", "embed"]], "dim": ["src", "ingest", "index", "rerank", "llm"], "notes": { "embed": "query vector" } },
+      "vars": { "elapsed ms": 50, "candidates": 0 }
+    },
+    {
+      "caption": "One search runs keyword and vector matching, each limited to chunks whose groups include <code>eng</code> or <code>all-staff</code>, and fuses the two lists into 50 candidates. Budget: about 100 ms.",
+      "arch": { "active": ["index", ["answer", "index"]], "dim": ["src", "ingest", "embed", "rerank", "llm"], "notes": { "index": "eng, all-staff" } },
+      "vars": { "elapsed ms": 150, "candidates": 50 }
+    },
+    {
+      "caption": "The reranker reads the question and each candidate together and scores how well it answers. The 8 best are kept. Budget: about 200 ms.",
+      "arch": { "active": ["rerank", ["answer", "rerank"]], "dim": ["src", "ingest", "embed", "llm"], "notes": { "rerank": "50 to 8" } },
+      "vars": { "elapsed ms": 350, "candidates": 8 }
+    },
+    {
+      "caption": "The prompt holds the instructions, the 8 numbered chunks and the question: about 4,500 tokens. Assume the model's first token takes about 1 second.",
+      "arch": { "active": ["llm", ["answer", "llm"]], "dim": ["src", "ingest", "embed", "index", "rerank"] },
+      "vars": { "elapsed ms": 1350, "candidates": 8 }
+    },
+    {
+      "caption": "Tokens stream to Priya, ending with citations to the runbook. First words at 1.35 seconds, under the 2-second target.",
+      "arch": { "active": [["llm", "answer"], ["answer", "user"]], "mark": ["user"], "dim": ["src", "ingest", "embed", "index", "rerank"] },
+      "vars": { "elapsed ms": 1350, "citations": 2 }
+    },
+    {
+      "caption": "Someone edits the runbook. The wiki sends a change event; a worker re-chunks the page into 12 chunks and compares text hashes: only 2 changed, so only 2 are embedded and upserted.",
+      "arch": { "active": ["src", "ingest", "embed", "index", ["src", "ingest"], ["ingest", "embed"], ["ingest", "index"]], "dim": ["user", "answer", "rerank", "llm"], "notes": { "ingest": "2 of 12 changed" } },
+      "vars": { "chunks embedded": 2 }
+    },
+    {
+      "caption": "The page is moved into a space only the <code>sre</code> group can read. An ACL event updates <code>allowed_groups</code> on its 12 chunks. No re-embedding: the text did not change.",
+      "arch": { "active": ["src", "ingest", "index", ["src", "ingest"], ["ingest", "index"]], "dim": ["user", "answer", "rerank", "llm", "embed"], "notes": { "index": "groups: sre" } },
+      "vars": { "chunks embedded": 0 }
+    },
+    {
+      "caption": "Priya asks again. The filter now excludes those chunks, so the model never sees them and cannot leak them.",
+      "arch": { "active": ["answer", "index", ["user", "answer"], ["answer", "index"]], "dim": ["src", "ingest", "embed"], "notes": { "index": "0 runbook chunks" } },
+      "vars": { "candidates": 50 }
+    },
+    {
+      "caption": "Later the model endpoint is down. The service still searches and reranks, then returns the top documents as links with \"answers are unavailable right now\".",
+      "arch": { "fail": ["llm"], "active": ["index", "rerank", ["answer", "index"], ["answer", "rerank"], ["answer", "user"]], "dim": ["src", "ingest", "embed"] },
+      "vars": { "status": 503 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>The ingestion pipeline</h3>
+
+<p>Connectors subscribe to each source's change events and also crawl on a schedule, so a missed event is caught by the next crawl. Each change becomes a message on a queue, and workers process documents independently:</p>
+
+<ol>
+<li><strong>Fetch and extract</strong> the text, including from PDFs and slides. Extraction errors are the most common silent failure, so count them per source.</li>
+<li><strong>Chunk</strong> along the document's own structure, headings first, at about 500 tokens with a little overlap, and put the title and section heading at the top of each chunk so it makes sense alone.</li>
+<li><strong>Hash each chunk</strong> and embed only the ones whose hash changed, in batches. Most edits touch a few chunks.</li>
+<li><strong>Upsert and delete</strong> in the index: write new and changed chunks, and remove chunks that no longer exist, by <code>doc_id</code>.</li>
+</ol>
+
+<p>Changing the embedding model or the chunker is different: old and new vectors cannot be compared. Build a new index alongside the old one, with a new <code>index_version</code>, and switch queries when it is complete. If the embedding service handles 1,000 chunks a second (an assumption; measure yours), backfilling 50 million chunks takes 50,000 seconds, about 14 hours. Meanwhile, keep writing live changes to both indexes.</p>
+
+<h3>Retrieval quality versus latency</h3>
+
+<p>Vector search finds passages with the same meaning in different words. Keyword search finds exact terms: error codes, product names, "staging". Questions inside a company are full of exact terms, so use both. A common way to combine the lists is <strong>reciprocal rank fusion</strong>: each list gives a chunk 1 ÷ (60 + rank) points, and the totals are sorted.</p>
+
+<table>
+<thead><tr><th>Chunk</th><th>Keyword rank</th><th>Vector rank</th><th>Score</th></tr></thead>
+<tbody>
+<tr><td>Staging runbook, step list</td><td>1</td><td>4</td><td>1/61 + 1/64 = 0.0320</td></tr>
+<tr><td>Staging environment setup</td><td>3</td><td>6</td><td>1/63 + 1/66 = 0.0310</td></tr>
+<tr><td>Password policy overview</td><td>not found</td><td>1</td><td>1/61 = 0.0164</td></tr>
+</tbody>
+</table>
+
+<p>Chunks found by both methods rise to the top, even when neither ranked them first. Then a <strong>reranker</strong>, a model that reads the question and one chunk together, scores the top candidates more accurately than either search can, at the cost of one model pass per candidate.</p>
+
+<x-tradeoffs caption="Retrieval pipelines">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Vector search only",
+      "good": "Finds paraphrases. One index, one query, tens of milliseconds.",
+      "bad": "Misses exact identifiers such as an error code or a ticket number.",
+      "pick": "Prose-heavy content with few special terms."
+    },
+    {
+      "name": "Hybrid search",
+      "good": "Catches both meaning and exact terms. Barely slower than either alone.",
+      "bad": "Two scoring systems to tune; fusion is a heuristic.",
+      "pick": "The latency budget is tight, for example search-as-you-type."
+    },
+    {
+      "name": "Hybrid plus reranker",
+      "good": "The best top 8 for the money: the model gets fewer, better chunks.",
+      "bad": "Adds about 200 ms here and a model to run and scale.",
+      "pick": "Answers take seconds anyway. This design.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>I would pick hybrid plus reranker: 200 ms is small next to a second of generation, and better chunks let you send 8 instead of 20, which cuts tokens. What would change my mind: a strict latency target with no generation step, where hybrid alone is enough.</p>
+
+<h3>Permissions</h3>
+
+<p>The model uses whatever text it is given, and a prompt instruction is not a security boundary. So restricted text must never reach the prompt. Filter in the retrieval step, using permissions copied from the source onto every chunk.</p>
+
+<ul>
+<li><strong>Filter inside the search, not after it.</strong> Taking the top 50 and then dropping what the user cannot read can leave nothing. Someone in a small team may find 48 of the top 50 hidden. Search engines with filtered vector search apply the filter while searching.</li>
+<li><strong>Sync permission changes fast and separately.</strong> An ACL change only updates the <code>allowed_groups</code> field, so it is cheap. Run it more often than content sync: removed access within 5 minutes.</li>
+<li><strong>Read the asker's groups fresh.</strong> Access is also removed when a person leaves a group. Look groups up in the directory, cached for a minute, not in a login token that lives for hours.</li>
+<li><strong>Check again at answer time for sensitive sources.</strong> For HR or legal spaces, ask the source system whether the user can still open each cited document before returning it. It costs a call per document and closes the window between a permission change and the sync.</li>
+</ul>
+
+<p>Retrieved documents are also untrusted input: a page can contain text written to steer the model. Treat chunk text as data in the prompt, and see <a href="/ai/prompt-injection.html">prompt injection</a> for defences.</p>
+
+<x-callout type="mistake" title="One shared index with no filter, plus a polite instruction">
+<p>"Answer only from documents the user can access" in the prompt does nothing; the model cannot check permissions. If the chunk is in the prompt, it can appear in the answer. The filter must run before the model sees anything.</p>
+</x-callout>
+
+<h3>Caching and cost</h3>
+
+<p>Cost is the 900 million tokens a day. The levers, in order:</p>
+
+<ul>
+<li><strong>Send fewer, better chunks.</strong> A reranker that lets you send 6 chunks instead of 8 cuts the context from 4,000 to 3,000 tokens per question.</li>
+<li><strong>Cache answers to repeated questions</strong>, keyed by the normalized question and the user's group set. Leaving groups out of the key leaks answers between users with different access. Store which documents each answer cites, and delete those entries when any of them gets a content or ACL event; otherwise a cached answer keeps quoting a page after it was edited or restricted. Free-form questions repeat less than you hope, so measure the hit rate before counting on it.</li>
+<li><strong>Keep the prompt's fixed part at the start.</strong> Some model servers can reuse work for a repeated prompt prefix; stable instructions first make that possible.</li>
+<li><strong>Route easy questions to a smaller, cheaper model</strong>, checked with the evaluation set below.</li>
+</ul>
+
+<p>Be careful with a "semantic" cache that returns an answer for a similar question. "Parental leave in France" and "parental leave in Germany" are similar and have different answers.</p>
+
+<h3>Evaluation</h3>
+
+<p>Without measurement, every change to chunking, models or prompts is a guess. Build a golden set of a few hundred real questions, each labelled with the documents that answer it, and score every change against it before shipping (see <a href="/ai/evals.html">evals</a>):</p>
+
+<ul>
+<li><strong>Retrieval recall at 8:</strong> how often is a right chunk among the 8 sent? If it is not there, the model cannot answer well, whatever the prompt says.</li>
+<li><strong>Faithfulness:</strong> is every claim in the answer supported by a cited chunk? A model can grade this at scale; check its grades against people on a sample.</li>
+<li><strong>Correct "I don't know":</strong> include questions the documents cannot answer, and score the refusals.</li>
+</ul>
+
+<p>In production, track thumbs down, citation clicks, the "I don't know" rate and answers per source, and add failed questions to the golden set.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x the questions, about 200 a second at peak, the model and the reranker run out first; the index barely notices. Add model capacity, cache more, and cut tokens. At 10x the documents, 2 TB of vectors at 4 bytes per number, shard the index by chunk and query all shards in parallel, and store numbers in 1 byte each.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>The language model</td><td>No generated answers.</td><td>Return reranked documents as search results, with a clear notice.</td></tr>
+<tr><td>The reranker</td><td>Candidates arrive in fused order.</td><td>Skip reranking and send the top 8 fused chunks; quality dips, nothing breaks.</td></tr>
+<tr><td>An index shard</td><td>Its chunks are missing from results.</td><td>Run replicas per shard; if one is lost, answer from the rest and note lower confidence.</td></tr>
+<tr><td>The ingestion pipeline</td><td>The index stops updating; answers grow stale.</td><td>Queue changes durably and catch up. Keep ACL sync on its own path so removed access still applies.</td></tr>
+<tr><td>A connector misses events</td><td>Some edits never arrive.</td><td>The scheduled crawl compares hashes and catches them.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Chunks documents, stores embeddings in a vector database, retrieves the top results and sends them to a model.</td></tr>
+<tr><td>Mid</td><td>Adds incremental ingestion, hybrid search and a reranker with a latency budget, and streams the answer with citations.</td></tr>
+<tr><td>Senior</td><td>Treats permissions as a filter inside retrieval with its own fast sync, sizes cost in tokens and pulls the right levers, plans re-indexing for model changes, and defines how quality is measured before shipping.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Restricted documents" tone="weak">
+<x-interviewer>Some documents are HR-only. How do you handle that?</x-interviewer>
+<x-you>I'd tell the model in the system prompt not to share HR content with people outside HR.</x-you>
+<x-coach>The model has no idea who can read what, and prompts can be talked around. This answer leaks restricted documents.</x-coach>
+</x-interview>
+
+<x-interview title="Restricted documents" tone="strong">
+<x-interviewer>Some documents are HR-only. How do you handle that?</x-interviewer>
+<x-you>Every chunk carries its document's allowed groups, copied from the source. Retrieval filters on the asker's groups inside the search, so restricted text never reaches the prompt. Permission changes sync on their own fast path, within 5 minutes.</x-you>
+<x-interviewer>And in those 5 minutes?</x-interviewer>
+<x-you>For HR and legal I'd also ask the source system, at answer time, whether the person can still open each cited document. It costs a call per document, which is worth it for those spaces.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you handle follow-up questions in a conversation?</h3>
+<p>Rewrite the follow-up into a standalone question using the recent turns ("And for production?" becomes "How do I rotate the production database password?"), then retrieve with that. Retrieving on the raw follow-up finds nothing useful.</p>
+
+<h3>The answer is wrong but the right document exists. How do you debug it?</h3>
+<p>Check retrieval first: was the right chunk in the 50 candidates, and in the final 8? If not, fix chunking, search or ranking. If it was, look at the prompt and the model's use of it.</p>
+
+<h3>Why not put all the documents in the context window?</h3>
+<p>Ten million documents fit in no context window, and large windows cost tokens on every question. Models also use long contexts unevenly. Retrieval sends a few thousand relevant tokens instead.</p>
+
+<h3>How do you handle tables and spreadsheets?</h3>
+<p>Chunk them by rows with the header repeated in each chunk. For numeric questions such as "sum this column", give the model a tool that queries the data instead.</p>
+
+<h3>How would you deploy this in several regions?</h3>
+<p>Replicate the index to each region and run answer services and models close to users. Ingestion can stay central. If documents must stay in a region by law, keep separate indexes and route by the user's region.</p>
+
+<x-checklist title="Self-review: RAG system">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked which sources there are and whether permissions vary", "I set freshness targets for edits and for removed access separately", "I required citations and an honest \"I don't know\""] },
+    { "title": "Numbers and interfaces", "items": ["I estimated chunks, vector memory and tokens per day", "I said cost is driven by tokens, not requests per second", "I streamed the answer and gave the API a fallback when the model is down"] },
+    { "title": "Design and depth", "items": ["I made ingestion incremental with change events, crawls and chunk hashes", "I planned a full re-index when the embedding model or chunker changes", "I used hybrid search and a reranker, with a latency budget", "I filtered by permission inside retrieval and kept the cache key permission-aware", "I defined a golden set and measured retrieval recall and faithfulness"] },
+    { "title": "Failure", "items": ["I said what happens when the model, the reranker and the ingestion pipeline each fail"] }
+  ]
+}
+</script>
+</x-checklist>

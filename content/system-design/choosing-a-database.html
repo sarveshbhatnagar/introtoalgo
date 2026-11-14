@@ -1,0 +1,244 @@
+<!--
+{
+  "title": "Choosing a Database",
+  "description": "Pick relational, key-value, document, wide-column, graph or time-series from access patterns, guarantees and scale, and defend it in one sentence.",
+  "minutes": 17,
+  "tags": ["databases", "building blocks", "storage", "data modeling"]
+}
+-->
+<p>A team stores readings from 50,000 sensors in a relational table. Each sensor reports every 10 seconds, so that is 50,000 ÷ 10 = 5,000 inserts a second, 5,000 × 86,400 = 432 million rows a day. They keep 30 days. Every night a job deletes the day that just turned 31 days old, 432 million rows one by one, updating every index as it goes, and the dashboards time out while it runs.</p>
+
+<p>The database is not broken; it was built for a different job. A time-series store writes data in chunks by time and expires a whole day by dropping one chunk. The access pattern picks the database.</p>
+
+<h2>The idea</h2>
+
+<p>Ask three questions, in this order, and the category usually falls out:</p>
+
+<ol>
+<li><strong>How is the data read and written?</strong> By one key, by time range, by following relationships, or with joins and ad hoc filters? Write the top three queries down, as in <a href="/system-design/data-modeling.html">data modeling</a>.</li>
+<li><strong>What must never go wrong?</strong> If two writes must succeed or fail together (take stock, create the order), you need transactions. If a stale read for a second is fine, you have more choices.</li>
+<li><strong>How big and how fast?</strong> Rows, bytes and writes a second.</li>
+</ol>
+
+<p>The default is a relational database: transactions, constraints, joins, and queries you did not plan for. Move away from it only when a question above gives you a reason, and say it.</p>
+
+<h2>The six categories</h2>
+
+<p>Each category is good at one access pattern and pays for it elsewhere. Products blur the lines; treat these as shapes.</p>
+
+<x-tradeoffs caption="Database categories">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Relational",
+      "good": "Transactions across rows and tables, constraints, joins, ad hoc queries. Examples: PostgreSQL, MySQL.",
+      "bad": "Scaling writes past one server means sharding by hand. Schema changes on huge tables need care.",
+      "pick": "Money, orders, inventory, anything with relationships. The default.",
+      "default": true
+    },
+    {
+      "name": "Key-value",
+      "good": "Get and put by key in about a millisecond, and it partitions by key easily. Examples: Redis, DynamoDB.",
+      "bad": "No queries except by key. No joins.",
+      "pick": "Sessions, carts, feature flags, lookups by id."
+    },
+    {
+      "name": "Document",
+      "good": "Stores a whole nested object (a product with its variants) and reads it in one go. Flexible fields. Example: MongoDB.",
+      "bad": "Data shared between documents is copied or joined in the app. Multi-document transactions are limited or slower.",
+      "pick": "Self-contained records read whole, with fields that vary by type."
+    },
+    {
+      "name": "Wide-column",
+      "good": "Huge write rates over many nodes. Rows sorted within a partition, so \"latest 50 for this user\" is one read. Example: Cassandra.",
+      "bad": "You design tables per query. Weak or no transactions across partitions.",
+      "pick": "Massive append-heavy data read by partition key: messages, activity logs."
+    },
+    {
+      "name": "Graph",
+      "good": "Follows relationships many hops deep without join cost per hop. Example: Neo4j.",
+      "bad": "Harder to partition. Overkill for one or two hops.",
+      "pick": "The question is about paths: fraud rings, \"friends of friends who like X\"."
+    },
+    {
+      "name": "Time-series",
+      "good": "Appends by time, compresses well, rolls up and expires old data cheaply. Example: InfluxDB.",
+      "bad": "Poor at updates and at lookups not driven by time.",
+      "pick": "Metrics, sensor readings, prices over time."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>A lookup to run in your head:</p>
+
+<table>
+<thead><tr><th>If you hear</th><th>Lean toward</th><th>Say why like this</th></tr></thead>
+<tbody>
+<tr><td>"Must not double-charge", "stock cannot go negative"</td><td>Relational</td><td>"These two writes must commit together, so I want a transaction."</td></tr>
+<tr><td>"Look up by id", millions of reads a second</td><td>Key-value</td><td>"Every read is by one key, so I don't need a query engine."</td></tr>
+<tr><td>"Each item has different fields", read whole</td><td>Document</td><td>"The record is read as one unit and its shape varies."</td></tr>
+<tr><td>"Billions of messages, newest first per chat"</td><td>Wide-column</td><td>"Partition by chat, sort by time; one partition read per page."</td></tr>
+<tr><td>"Paths three or more hops deep"</td><td>Graph</td><td>"Each hop would be a join; a graph store follows edges directly."</td></tr>
+<tr><td>"Per-minute averages, keep 30 days"</td><td>Time-series</td><td>"Writes are appends by time and old data expires in bulk."</td></tr>
+</tbody>
+</table>
+
+<h2>One system, several stores</h2>
+
+<p>Real systems often use several stores. Each extra store is one more thing to run, back up and keep in sync, so add one only with a reason.</p>
+
+<x-tracer title="A checkout touches three stores">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "shopper", "label": "Shopper", "kind": "client", "col": 0, "row": 1 },
+      { "id": "app", "label": "Shop service", "kind": "service", "col": 1, "row": 1 },
+      { "id": "kv", "label": "Carts (key-value)", "kind": "database", "col": 2, "row": 0 },
+      { "id": "sql", "label": "Orders (relational)", "kind": "database", "col": 2, "row": 2 },
+      { "id": "ts", "label": "Metrics (time-series)", "kind": "database", "col": 3, "row": 1 }
+    ],
+    "edges": [
+      { "from": "shopper", "to": "app" },
+      { "from": "app", "to": "kv" },
+      { "from": "app", "to": "sql" },
+      { "from": "app", "to": "ts", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A shopper clicks Place order.",
+      "arch": { "active": ["shopper", ["shopper", "app"]] }
+    },
+    {
+      "caption": "The service reads the cart by session id from the key-value store: one key, about 1 ms.",
+      "arch": { "active": ["kv", ["app", "kv"]], "notes": { "kv": "get cart:s91" } },
+      "vars": { "items": 2 }
+    },
+    {
+      "caption": "It opens a transaction in the relational database: take 2 units of stock and insert the order. Both happen or neither does.",
+      "arch": { "active": ["sql", ["app", "sql"]], "notes": { "sql": "BEGIN" } },
+      "vars": { "items": 2 }
+    },
+    {
+      "caption": "Another shopper is buying the last unit at the same moment. A constraint that stock stays at 0 or above makes one of them fail cleanly instead of overselling.",
+      "arch": { "active": ["sql"], "notes": { "sql": "COMMIT" } },
+      "vars": { "items": 2, "stock left": 0 }
+    },
+    {
+      "caption": "The service deletes the cart key. If this fails, the worst case is a stale cart, not a wrong order.",
+      "arch": { "active": ["kv", ["app", "kv"]], "mark": ["sql"], "notes": { "kv": "del cart:s91" } }
+    },
+    {
+      "caption": "It sends \"checkout took 180 ms\" to the time-series store without waiting. A lost metric hurts nobody.",
+      "arch": { "active": ["ts", ["app", "ts"]], "mark": ["sql"], "notes": { "ts": "+1 point" } }
+    },
+    {
+      "caption": "The confirmation goes back to the shopper.",
+      "arch": { "active": [["app", "shopper"]], "mark": ["shopper", "sql"] }
+    },
+    {
+      "caption": "Now the key-value node dies. Carts kept on one unreplicated node are lost: annoying. Orders are untouched, because they live in a replicated store with transactions.",
+      "arch": { "fail": ["kv"], "mark": ["sql"], "dim": [["app", "ts"]] }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Scale changes less than people think</h2>
+
+<p>"It needs to scale" is not a reason by itself. Do the arithmetic. One relational server on good hardware handles thousands to tens of thousands of simple writes a second and several terabytes (a rough rule of thumb), and <a href="/system-design/replication.html">read replicas</a> multiply read capacity.</p>
+
+<p>Leave it when the numbers do: writes beyond one primary, or data many times one machine, read mostly by one key. Then a store that partitions itself (key-value or wide-column) saves you <a href="/system-design/sharding-and-partitioning.html">sharding</a> by hand, and costs you cross-partition transactions and joins.</p>
+
+<x-estimate title="Does it fit on one server?">
+<script type="application/json">
+{
+  "question": "How much data does the orders table add in one year?",
+  "givens": ["2 million orders a day", "About 1 KB per order row, including its index entries", "Nothing is deleted"],
+  "unit": "bytes",
+  "answer": "730 GB",
+  "accept": ["300 GB", "3 TB"],
+  "steps": ["2 × 10<sup>6</sup> × 365 = 7.3 × 10<sup>8</sup> orders a year", "7.3 × 10<sup>8</sup> × 10<sup>3</sup> B = 7.3 × 10<sup>11</sup> B ≈ 730 GB", "Writes: 2 million ÷ 86,400 s ≈ 23 a second on average"],
+  "note": "Under 1 TB a year and 23 writes a second is comfortable for one relational primary with replicas. Scale is not a reason to leave it here."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Choose the database right after you list the access patterns. Name the category, give the reason in one sentence that cites a query, a guarantee or a number, then say what would change your mind.</p>
+
+<x-interview title="Picking the store for a chat app" tone="weak">
+<x-interviewer>Where do you store the messages?</x-interviewer>
+<x-you>I'd use NoSQL, because it scales better than SQL.</x-you>
+<x-coach>No access pattern, no number, no cost. "NoSQL" is four different categories.</x-coach>
+</x-interview>
+
+<x-interview title="Picking the store for a chat app" tone="strong">
+<x-interviewer>Where do you store the messages?</x-interviewer>
+<x-you>The main read is "the latest 50 messages in this chat", and we estimated 20,000 writes a second. So I'd use a wide-column store partitioned by chat id and sorted by time: one partition read per page, and writes spread across nodes. Users, billing and group membership go in a relational database, because those need constraints and transactions.</x-you>
+<x-interviewer>Why not put everything in the relational database?</x-interviewer>
+<x-you>At this write rate I'd be sharding it by hand within a year. If the numbers were 10 times smaller, I would, and keep one store to operate.</x-you>
+<x-coach>It names the query, the number, the cost, and the condition under which the simpler choice wins.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Can a relational database scale?"</strong> Yes: replicas for reads, partitioning for writes, and caches in front. The cost is operational work and harder cross-shard queries.</li>
+<li><strong>"Document or relational for a product catalogue?"</strong> Document if products are read whole and fields vary by type; relational if they join orders and stock in transactions.</li>
+<li><strong>"When would you add a graph database?"</strong> When the core query walks three or more hops over a large graph. For "my friends", a join table is enough.</li>
+<li><strong>"Couldn't the sensor table stay relational?"</strong> Often, yes: partition it by day, and expiring a day becomes dropping one partition instead of 432 million deletes. A time-series store does that for you and adds compression and roll-ups.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Choosing by fashion">
+<p>"NoSQL scales" is a slogan, not a reason. If you cannot name the query the store makes fast and the guarantee you need, you have not chosen yet.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Thinking schemaless means no schema">
+<p>A document store does not check the shape of your data, so the schema moves into your code, and every reader must handle every old shape ever written.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "20,000 delivery vans each report their position every 5 seconds. Dashboards show per-minute averages for the last 7 days. Which store fits best?",
+      "options": [
+        { "text": "Graph", "why": "There are no relationships to walk; this is appends by time." },
+        { "text": "Time-series", "correct": true, "why": "20,000 ÷ 5 = 4,000 appends a second, read by time range and expired after 7 days: the time-series pattern." },
+        { "text": "Document", "why": "Each reading is tiny and uniform; nothing here is a nested object read whole." }
+      ]
+    },
+    {
+      "question": "A wallet app moves money between two users' balances. Which property decides the store?",
+      "options": [
+        { "text": "Write rate", "why": "It matters, but even a fast store is wrong if a transfer can half-happen." },
+        { "text": "Both balance updates must commit together or not at all", "correct": true, "why": "That is a transaction across two rows, the relational default's strength." },
+        { "text": "Flexible fields", "why": "A balance has a fixed shape; schema flexibility buys nothing here." }
+      ]
+    },
+    {
+      "question": "Orders add 730 GB a year at about 23 writes a second. A candidate proposes a wide-column store \"for scale\". Best response?",
+      "options": [
+        { "text": "Agree: 730 GB is too much for one server", "why": "Several terabytes on one server is normal." },
+        { "text": "Push back: this fits a relational primary with replicas, and orders need transactions", "correct": true, "why": "The scale is modest and the guarantees matter. Leaving relational would cost transactions for no gain." },
+        { "text": "Use a graph database instead", "why": "Orders are not a path-walking problem." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Whatever store you pick, its speed comes from <a href="/system-design/indexing.html">indexing</a>, which is next. To see a store chosen from access patterns inside a full design, work through <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>

@@ -1,0 +1,233 @@
+<!--
+{
+  "title": "API Design",
+  "description": "Design endpoints the way interviewers expect: REST resources, cursor pagination, idempotency keys, versioning, errors, and when RPC or events fit.",
+  "minutes": 16,
+  "tags": ["interview", "api", "rest", "idempotency"]
+}
+-->
+<p>A diner taps "Book" for 4 people at 19:30. The server books a table, but the phone loses signal before the reply arrives. The app sees a timeout and retries, and the server books a second table. The restaurant keeps one empty all evening. If 0.5% of bookings succeed but lose their reply and get retried, the reservation system from <a href="/system-design/requirements-and-scope.html">requirements and scope</a>, with 1 million bookings a day, makes 1,000,000 × 0.005 = 5,000 duplicate bookings a day.</p>
+
+<p>That is an API design bug. An API is a contract with clients you cannot update all at once, so settle the parts that are expensive to change first: resources, paging, retries, errors and versions.</p>
+
+<h2>Resources and methods</h2>
+
+<p>Start from the functional requirements: each one becomes an endpoint. In REST, URLs name things (nouns) and HTTP methods say what you do to them. Spend about 3 minutes on this in an interview, as in <a href="/system-design/a-framework-for-any-design.html">the framework</a>.</p>
+
+<x-code single title="Reservation API (version 1)">
+<pre lang="text">
+GET    /v1/restaurants/{id}/availability?date=2026-12-04&party_size=4
+         200  { "slots": [ { "time": "19:00", "tables_free": 2 }, ... ] }
+
+POST   /v1/reservations          Idempotency-Key: 6f1c...e2
+         body { "restaurant_id": 42, "time": "...", "party_size": 4 }
+         201  { "id": "r-5521", "status": "confirmed" }
+         409  slot_taken     422  invalid_party_size     429  rate_limited
+
+GET    /v1/reservations/{id}                  200 | 404
+DELETE /v1/reservations/{id}                  204 | 404
+GET    /v1/users/me/reservations?limit=20&cursor=...
+         200  { "items": [ ... ], "next_cursor": "eyJ0IjoiMjAyNi0..." }
+</pre>
+</x-code>
+
+<p>The client asks for a time and party size; the server picks a free table that fits. That is why a blind retry books a second table instead of failing.</p>
+
+<p>Method semantics matter for retries. <code>GET</code> changes nothing, so it is always safe to repeat. <code>PUT</code> and <code>DELETE</code> are idempotent by definition: doing them twice leaves the same state as once (the second <code>DELETE</code> may return 404, but nothing new happens). <code>POST</code> creates something new each time, so repeating it is the dangerous case.</p>
+
+<h2>Idempotency keys</h2>
+
+<p>The fix for the double booking: the client generates a unique key per user action (a random UUID when the diner taps "Book") and sends the same key with every retry of that action. The server remembers each key with the response it produced, and answers a repeat with the stored response instead of booking again.</p>
+
+<x-tracer title="A booking, a lost reply, a safe retry">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "Diner's phone", "kind": "client", "col": 0, "row": 0 },
+      { "id": "api", "label": "Reservation API", "kind": "service", "col": 1, "row": 0 },
+      { "id": "db", "label": "Reservations DB", "kind": "database", "col": 2, "row": 0 }
+    ],
+    "edges": [
+      { "from": "app", "to": "api", "label": "POST /reservations" },
+      { "from": "api", "to": "db", "label": "one transaction" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The diner taps Book. The app creates key <code>6f1c</code> for this action and sends it in the <code>Idempotency-Key</code> header.",
+      "arch": { "active": ["app", ["app", "api"]] },
+      "vars": { "key": "6f1c", "bookings": 0 }
+    },
+    {
+      "caption": "In one transaction the API inserts the key (only if absent), books table 7 and stores the response it will send. One transaction means a crash leaves either all three or none.",
+      "arch": { "active": ["api", "db", ["api", "db"]], "notes": { "db": "6f1c → r-5521" } },
+      "vars": { "key": "6f1c", "bookings": 1 }
+    },
+    {
+      "caption": "The reply is lost on the way back. The app only sees a timeout: it cannot know whether the booking happened.",
+      "arch": { "fail": [["api", "app"]], "mark": ["db"] },
+      "vars": { "key": "6f1c", "bookings": 1 }
+    },
+    {
+      "caption": "The app retries with the same key and the same body. A new key here would book a second table.",
+      "arch": { "active": ["app", ["app", "api"]], "mark": ["db"] },
+      "vars": { "key": "6f1c", "bookings": 1 }
+    },
+    {
+      "caption": "The key insert finds <code>6f1c</code> already there with a stored response. Nothing is booked.",
+      "arch": { "active": ["db", ["api", "db"]], "notes": { "db": "6f1c seen" } },
+      "vars": { "key": "6f1c", "bookings": 1 }
+    },
+    {
+      "caption": "The API replays the stored <code>201</code> with <code>r-5521</code>. The diner sees one booking; the restaurant holds one table.",
+      "arch": { "active": [["api", "app"]], "mark": ["app", "db"] },
+      "vars": { "key": "6f1c", "bookings": 1, "status": 201 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>Details interviewers check. A repeat that arrives while the first request is still running must not run in parallel: the key row is claimed first, so the second request waits or gets a "still in progress" error to retry. The same key with a different body is a client bug: reject it with 422. Keys are kept for a window longer than any client retries (24 hours is a typical choice) and then deleted.</p>
+
+<p>Be precise about what this buys. The network can still deliver the request twice; the key makes the <em>effect</em> happen once. That only holds if the key and the booking commit together. More in <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>.</p>
+
+<h2>Pagination</h2>
+
+<p>A diner's reservation history is a list that grows. Never return it all; return pages of, say, 20. There are two ways to say "the next page".</p>
+
+<p><strong>Offset</strong>: <code>?offset=20&amp;limit=20</code>, which the database runs as "sort, skip 20, take 20". Two problems. If a new reservation is added while the diner pages, everything shifts down by one: the last item of page 1 appears again at the top of page 2. And the database still reads every skipped row, so <code>offset=100000</code> reads 100,020 rows to return 20.</p>
+
+<p><strong>Cursor</strong>: the response includes <code>next_cursor</code>, an opaque token encoding the sort key of the last item returned, for example its <code>(created_at, id)</code>. The next query asks for items after that point, which an index answers directly, and inserts elsewhere in the list do not shift anything.</p>
+
+<x-tradeoffs caption="Two ways to page a list">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Offset and limit",
+      "good": "Simple. Lets a user jump to page 37.",
+      "bad": "Items repeat or vanish when the list changes. Deep pages get slower, because skipped rows are still read.",
+      "pick": "Small, rarely changing lists, or an admin table that needs page numbers."
+    },
+    {
+      "name": "Cursor",
+      "good": "Stable while the list changes. Every page costs the same, through an index.",
+      "bad": "No jumping to page N. The sort order must have a unique tiebreaker such as the id.",
+      "pick": "Feeds, histories, any list that grows. The usual interview answer.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Errors and versioning</h2>
+
+<p>Use the status code for the category and a body for the detail: <code>{"error": {"code": "slot_taken", "message": "Table 7 was just booked", "retryable": false}}</code>. A machine-readable <code>code</code> lets the app react (show other times), and <code>retryable</code> tells clients which failures to retry. 4xx means the client must change something; 5xx and 429 may succeed later, with backoff.</p>
+
+<p>Adding a field is safe; clients ignore what they do not know. Removing or renaming a field, or changing what one means, breaks clients that may live on phones for years. Put a major version in the path (<code>/v1/</code>) for a public API: it is visible in logs and easy to route. Run old and new side by side until traffic on the old one fades.</p>
+
+<h2>When REST is the wrong shape</h2>
+
+<x-tradeoffs caption="Request styles">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "REST over HTTP",
+      "good": "Understood by every client and tool. GETs can be cached by browsers and CDNs.",
+      "bad": "Loose contracts unless you add a schema. Chatty for complex reads.",
+      "pick": "Public and mobile APIs. The default.",
+      "default": true
+    },
+    {
+      "name": "RPC (gRPC, for example)",
+      "good": "Typed, generated client code and compact binary messages.",
+      "bad": "Poor fit for browsers without a proxy. Harder to inspect by hand.",
+      "pick": "Internal service-to-service calls with many methods and high volume."
+    },
+    {
+      "name": "Events on a queue",
+      "good": "The sender does not wait and does not know who listens. Consumers can be added freely.",
+      "bad": "No direct reply. Ordering and duplicates must be handled by consumers.",
+      "pick": "Something happened that others react to: a booking triggers an email and analytics."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>For pushing updates to a client (a table frees up), none of these is enough on its own; see <a href="/system-design/realtime-communication.html">realtime communication</a>.</p>
+
+<h2>In the interview</h2>
+
+<p>Write the 3 to 5 endpoints for the core flows, with error cases, then argue the one decision that matters most for this problem. Phrases that show judgment:</p>
+
+<ul>
+<li>"Booking is a POST that clients will retry on bad networks, so it takes an idempotency key."</li>
+<li>"History grows and changes while you scroll, so I'll page it with a cursor."</li>
+<li>"Public clients get REST; the booking service tells the email service through an event, because it should not wait for an email."</li>
+</ul>
+
+<x-interview title="Defending the booking endpoint" tone="strong">
+<x-interviewer>Why not just check for a duplicate reservation before inserting?</x-interviewer>
+<x-you>The original and a retry can both check, both find nothing, and both insert. And "same diner, same time" is not always a duplicate: someone might book for two groups. The key says exactly which request is a retry. It's stored in the same transaction as the booking, so there is no gap.</x-you>
+<x-coach>It names the race in the alternative and why the key avoids it.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Who generates the key?"</strong> The client, once per user action, before the first attempt. A key generated by the server cannot recognize a retry.</li>
+<li><strong>"How do you rate limit this API?"</strong> Per user or API key, returning 429 with a <code>Retry-After</code> header. See <a href="/system-design/rate-limiting.html">rate limiting</a>.</li>
+<li><strong>"Would you use GraphQL?"</strong> When many client screens need different shapes of the same data. For a few fixed flows, REST is simpler to cache and secure.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Verbs in URLs">
+<p><code>POST /createReservation</code> and <code>GET /getUserReservations</code> hide the resources. Use <code>POST /reservations</code> and <code>GET /users/me/reservations</code>; the method is the verb.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Storing the key outside the transaction">
+<p>Writing the idempotency key to a cache and the booking to the database leaves a gap: a crash between them books with no key, and the retry books again. Store both in one transaction.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "A history list is paged with <code>offset</code>, 20 per page. A diner reads page 1, then a new reservation is added at the top, then they load page 2. What do they see?",
+      "options": [
+        { "text": "Exactly the next 20 items", "why": "Offsets count from the top, and the top just moved." },
+        { "text": "The last item of page 1 again, at the top of page 2", "correct": true, "why": "Everything shifted down by one, so position 21 now holds the old 20th item. Cursors avoid this." },
+        { "text": "An error", "why": "Nothing fails; the result is silently wrong, which is worse." }
+      ]
+    },
+    {
+      "question": "Which request is safe for a client to retry with no extra mechanism?",
+      "options": [
+        { "text": "<code>POST /v1/reservations</code>", "why": "Each POST creates a new reservation. Retrying needs an idempotency key." },
+        { "text": "<code>DELETE /v1/reservations/r-5521</code>", "correct": true, "why": "Deleting twice leaves the same state as deleting once. The second call may return 404, but nothing new happens." },
+        { "text": "<code>POST /v1/payments</code>", "why": "Repeating it could charge twice. It needs an idempotency key even more than booking does." }
+      ]
+    },
+    {
+      "question": "A list is sorted by an indexed column. With <code>offset=100000&amp;limit=20</code>, about how many rows does the database read?",
+      "options": [
+        { "text": "20", "why": "That is what a cursor query reads. Offset still reads the rows it skips." },
+        { "text": "About 100,000", "correct": true, "why": "100,000 skipped plus 20 returned: 100,020 rows read to return 20." },
+        { "text": "Every row in the table", "why": "Walking the index in order, it can stop after offset + limit rows. The cost is the skipping, not the table size." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practice next</h2>
+
+<p>The endpoints decide the queries; <a href="/system-design/data-modeling.html">Data Modeling</a> turns those queries into tables and keys. For an API where idempotency is the whole game, see <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>.</p>

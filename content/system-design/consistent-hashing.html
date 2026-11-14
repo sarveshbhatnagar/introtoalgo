@@ -1,0 +1,401 @@
+<!--
+{
+  "title": "Consistent Hashing",
+  "description": "Spread keys over servers so that adding or removing one moves only its share: the hash ring, virtual nodes, and what moves when a node joins or dies.",
+  "minutes": 18,
+  "tags": ["consistent hashing", "partitioning", "caching", "building blocks"]
+}
+-->
+<p>A cache cluster has 4 nodes holding 10 million keys and serves 50,000 reads a second. 95% are hits, so the database sees 50,000 × 0.05 = 2,500 reads a second. Each key's node is chosen with <code>hash(key) mod 4</code>. Traffic grows, so someone adds a fifth node and the code switches to <code>mod 5</code>.</p>
+
+<p>A key stays on the same node only if its hash leaves the same remainder for 4 and 5, which happens for 4 values in every 20. So 80% of keys now point at a node that does not have them. The hit rate falls to about 0.95 × 0.2 = 19%, and the database goes from 2,500 to 50,000 × 0.81 = 40,500 reads a second. Adding capacity caused the outage.</p>
+
+<h2>The idea</h2>
+
+<p>Consistent hashing places keys so that when a node joins or leaves, only about 1/N of them move, not almost all. Going from 4 to 5 nodes, the new node takes its fair share of 10 million ÷ 5 = 2 million keys, and every other key stays where it was.</p>
+
+<p>It fits wherever keys spread over a changing set of machines: cache clusters, partitioned key-value stores, sticky load balancing. The cost is a little bookkeeping in every client.</p>
+
+<h2>The ring</h2>
+
+<p>Hash every server name and every key into the same range of numbers, and bend that range into a circle. Real rings use 0 to 2<sup>32</sup> − 1 or more; to trace by hand, use 0 to 99. A key belongs to the first server clockwise from its position, wrapping past 99 to 0.</p>
+
+<x-figure caption="Three servers on a ring of 100 positions. Each key belongs to the next server clockwise: 5 → A, 25 → B, 52 and 68 → C, and 90 wraps past 0 to A.">
+<svg viewBox="0 0 400 270" aria-label="A ring of positions 0 to 99. Servers A at 10, B at 40 and C at 75 sit on the ring. Keys at 5, 25, 52, 68 and 90 each belong to the next server clockwise.">
+  <circle cx="200" cy="135" r="95" class="f-none s-line" stroke-width="2"/>
+  <line x1="200" y1="32" x2="200" y2="48" class="s-muted" stroke-width="2"/>
+  <text x="200" y="24" text-anchor="middle" class="f-muted">0</text>
+  <circle cx="229.4" cy="44.6" r="5" class="f-muted"/>
+  <text x="222.6" y="72" text-anchor="middle" class="f-muted">5</text>
+  <circle cx="295" cy="135" r="5" class="f-muted"/>
+  <text x="270" y="140" text-anchor="middle" class="f-muted">25</text>
+  <circle cx="188.1" cy="229.3" r="5" class="f-muted"/>
+  <text x="191" y="211" text-anchor="middle" class="f-muted">52</text>
+  <circle cx="114" cy="175.4" r="5" class="f-muted"/>
+  <text x="136" y="170" text-anchor="middle" class="f-muted">68</text>
+  <circle cx="144.2" cy="58.1" r="5" class="f-muted"/>
+  <text x="158" y="82" text-anchor="middle" class="f-muted">90</text>
+  <circle cx="255.8" cy="58.1" r="11" class="f-accent"/>
+  <text x="255.8" y="63" text-anchor="middle" class="t-bold f-bg">A</text>
+  <text x="300" y="40" text-anchor="middle" class="t-sans">A at 10</text>
+  <circle cx="255.8" cy="211.9" r="11" class="f-accent"/>
+  <text x="255.8" y="217" text-anchor="middle" class="t-bold f-bg">B</text>
+  <text x="300" y="242" text-anchor="middle" class="t-sans">B at 40</text>
+  <circle cx="105" cy="135" r="11" class="f-accent"/>
+  <text x="105" y="140" text-anchor="middle" class="t-bold f-bg">C</text>
+  <text x="50" y="140" text-anchor="middle" class="t-sans">C at 75</text>
+</svg>
+</x-figure>
+
+<p>Each arrow points from a key to its owner. Watch what moves when a server joins, then leaves.</p>
+
+<x-tracer title="Join and leave on a ring of 100">
+<script type="application/json">
+{
+  "steps": [
+    {
+      "caption": "Servers A, B and C sit at 10, 40 and 75. A owns 76 to 99 and 0 to 10 (35 positions), B owns 11 to 40 (30), C owns 41 to 75 (35).",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "B"], ["k52", "C"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["A", "B", "C"],
+        "labels": { "A": "at 10", "B": "at 40", "C": "at 75" }
+      },
+      "vars": { "keys moved": 0 }
+    },
+    {
+      "caption": "Key 90: no server between 90 and 99, so the walk wraps past 0 to A.",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "B"], ["k52", "C"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["k90", "A"],
+        "highlightEdges": [["k90", "A"]],
+        "labels": { "A": "at 10", "B": "at 40", "C": "at 75" }
+      },
+      "vars": { "keys moved": 0 }
+    },
+    {
+      "caption": "Server D joins at 60. It takes positions 41 to 60 from C, the next server clockwise. Only keys in that stretch can move.",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 }, { "id": "D", "x": 24, "y": 86 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "B"], ["k52", "C"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["D"],
+        "labels": { "A": "at 10", "B": "at 40", "C": "at 75", "D": "at 60" }
+      },
+      "vars": { "keys moved": 0 }
+    },
+    {
+      "caption": "Key 52 is in 41 to 60, so it moves from C to D. Key 68 is past 60 and stays on C. Keys on A and B are not touched. 1 of 5 keys moved.",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 }, { "id": "D", "x": 24, "y": 86 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "B"], ["k52", "D"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["k52", "D"],
+        "highlightEdges": [["k52", "D"]],
+        "mark": ["k5", "k25", "k68", "k90"],
+        "labels": { "A": "at 10", "B": "at 40", "C": "at 75", "D": "at 60" }
+      },
+      "vars": { "keys moved": 1 }
+    },
+    {
+      "caption": "Now B leaves. Its keys (positions 11 to 40) go to the next server clockwise, which is now D. Key 25 moves to D. Nothing else changes.",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 }, { "id": "D", "x": 24, "y": 86 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "D"], ["k52", "D"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["k25", "D"],
+        "highlightEdges": [["k25", "D"]],
+        "dim": ["B"],
+        "labels": { "A": "at 10", "B": "gone", "C": "at 75", "D": "at 60" }
+      },
+      "vars": { "keys moved": 2 }
+    },
+    {
+      "caption": "The catch: D inherited all of B's range and owns 11 to 60, 50 of 100 positions, while C owns 15. One point per server gives lopsided shares.",
+      "graph": {
+        "directed": true,
+        "nodes": [
+          { "id": "A", "x": 76, "y": 14 }, { "id": "B", "x": 76, "y": 86 }, { "id": "C", "x": 5, "y": 50 }, { "id": "D", "x": 24, "y": 86 },
+          { "id": "k5", "x": 57, "y": 29 }, { "id": "k25", "x": 72, "y": 50 }, { "id": "k52", "x": 47, "y": 72 }, { "id": "k68", "x": 30, "y": 59 }, { "id": "k90", "x": 37, "y": 32 }
+        ],
+        "edges": [["k5", "A"], ["k25", "D"], ["k52", "D"], ["k68", "C"], ["k90", "A"]],
+        "highlight": ["D"],
+        "dim": ["B"],
+        "labels": { "A": "35 positions", "B": "gone", "C": "15 positions", "D": "50 positions" }
+      },
+      "vars": { "keys moved": 2 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Virtual nodes</h2>
+
+<p>The fix is to give each server many points on the ring, called virtual nodes: hash <code>"A#0"</code>, <code>"A#1"</code>, up to <code>"A#99"</code>. Each server owns 100 small scattered arcs instead of one big one. Three things improve:</p>
+
+<ul>
+<li><strong>Even shares.</strong> A server's share is the sum of many random arcs, so its deviation from the average shrinks roughly as 1 ÷ √v for v points each: about 10% at 100 points.</li>
+<li><strong>Even recovery.</strong> When a server leaves, each of its 100 arcs goes to a different neighbour, so its load spreads over all the others instead of landing on one.</li>
+<li><strong>Weights.</strong> A server with twice the memory gets 200 points and about twice the keys.</li>
+</ul>
+
+<p>A lookup is a <a href="/algorithms/binary-search.html">binary search</a> in the sorted list of points: the first point at or after the key's hash, wrapping to the start. The hash must mix its input well (here, the first 32 bits of MD5); a hash that mixes poorly can bunch the points of similar names like <code>"A#0"</code> and <code>"A#1"</code>,. If hashing itself is new, see <a href="/algorithms/hash-tables.html">hash tables</a>.</p>
+
+<x-code title="A ring with virtual nodes">
+<pre lang="js">
+const crypto = require("crypto");
+
+function hash(s) {                           // first 32 bits of MD5
+  return parseInt(crypto.createHash("md5").update(s).digest("hex").slice(0, 8), 16);
+}
+
+class Ring {
+  constructor(vnodes = 100) {
+    this.vnodes = vnodes;
+    this.points = [];                        // [position, node], sorted
+  }
+  add(node) {
+    for (let i = 0; i < this.vnodes; i++) this.points.push([hash(`${node}#${i}`), node]);
+    this.points.sort((a, b) => a[0] - b[0]);
+  }
+  remove(node) {
+    this.points = this.points.filter(([, n]) => n !== node);
+  }
+  lookup(key) {
+    const h = hash(key);
+    let lo = 0, hi = this.points.length;     // first point at or after h
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.points[mid][0] < h) lo = mid + 1; else hi = mid;
+    }
+    return this.points[lo % this.points.length][1];  // past the end: wrap to 0
+  }
+}
+</pre>
+<pre lang="py">
+import bisect
+import hashlib
+
+def ring_hash(s):
+    # first 32 bits of MD5
+    return int(hashlib.md5(s.encode()).hexdigest()[:8], 16)
+
+class Ring:
+    def __init__(self, vnodes=100):
+        self.vnodes = vnodes
+        self.points = []                    # (position, node), sorted
+
+    def add(self, node):
+        for i in range(self.vnodes):
+            bisect.insort(self.points, (ring_hash(f"{node}#{i}"), node))
+
+    def remove(self, node):
+        self.points = [p for p in self.points if p[1] != node]
+
+    def lookup(self, key):
+        # first point at or after the key's hash; past the end: wrap to 0
+        i = bisect.bisect_left(self.points, (ring_hash(key), ""))
+        return self.points[i % len(self.points)][1]
+</pre>
+</x-code>
+
+<h2>When a cache node dies</h2>
+
+<p>Back to the 4-node cache cluster, now on a ring with 100 virtual nodes each. Every app server holds the same ring and finds a key's node.</p>
+
+<x-tracer title="A cache node dies, then returns">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "App servers", "kind": "service", "col": 0, "row": 1 },
+      { "id": "a", "label": "Cache A", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "b", "label": "Cache B", "kind": "cache", "col": 2, "row": 1 },
+      { "id": "c", "label": "Cache C", "kind": "cache", "col": 2, "row": 2 },
+      { "id": "d", "label": "Cache D", "kind": "cache", "col": 2, "row": 3 },
+      { "id": "db", "label": "Database", "kind": "database", "col": 0, "row": 3 }
+    ],
+    "edges": [
+      { "from": "app", "to": "a" },
+      { "from": "app", "to": "b" },
+      { "from": "app", "to": "c" },
+      { "from": "app", "to": "d" },
+      { "from": "app", "to": "db" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "An app server needs <code>user:7</code>. It hashes the key, binary-searches its copy of the ring, and gets cache C. Hit.",
+      "arch": { "active": ["app", "c", ["app", "c"]], "notes": { "c": "hit user:7" } },
+      "vars": { "db reads/s": "2,500" }
+    },
+    {
+      "caption": "Cache C dies. Reads for its keys time out.",
+      "arch": { "fail": ["c", ["app", "c"]], "active": ["app"] },
+      "vars": { "db reads/s": "2,500" }
+    },
+    {
+      "caption": "Health checks remove C from every ring. Each of C's 100 arcs now belongs to the next point clockwise: A, B or D in roughly equal parts.",
+      "arch": { "fail": ["c"], "active": ["a", "b", "d"], "dim": [["app", "c"]], "notes": { "a": "+1/12 of keys", "b": "+1/12 of keys", "d": "+1/12 of keys" } },
+      "vars": { "db reads/s": "2,500" }
+    },
+    {
+      "caption": "C held about a quarter of the keys, and their new owners do not have them yet. Those reads miss and go to the database: 50,000 × (0.05 + 0.95 × 0.25) ≈ 14,000 reads a second, until refilled.",
+      "arch": { "fail": ["c"], "active": ["db", ["app", "db"]], "dim": [["app", "c"]], "notes": { "db": "≈ 14,000/s" } },
+      "vars": { "db reads/s": "≈ 14,000" }
+    },
+    {
+      "caption": "Keys on A, B and D are untouched and still hit, and the misses refill over time. With <code>mod N</code>, going from 4 to 3 nodes would move 75% of keys: about 38,000 database reads a second.",
+      "arch": { "fail": ["c"], "mark": ["a", "b", "d"], "dim": [["app", "c"]] },
+      "vars": { "db reads/s": "≈ 14,000" }
+    },
+    {
+      "caption": "C restarts. Its arcs move back to it, and only those keys miss again. Start it empty: values it held from before may have changed while it was down.",
+      "arch": { "active": ["c", ["app", "c"]], "mark": ["a", "b", "d"], "notes": { "c": "rejoins empty" } },
+      "vars": { "db reads/s": "brief rise" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Other ways to place keys</h2>
+
+<x-tradeoffs caption="Mapping keys to a changing set of nodes">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "hash mod N",
+      "good": "One line of code, perfectly even.",
+      "bad": "Changing N moves almost every key (80% going from 4 to 5).",
+      "pick": "The node count never changes."
+    },
+    {
+      "name": "Ring with virtual nodes",
+      "good": "Joins and leaves move about 1/N of keys. Supports weights. Each client computes placement alone.",
+      "bad": "Needs many points per node to be even. Every client must see the same membership.",
+      "pick": "Cache clusters and leaderless stores with nodes coming and going. The usual answer.",
+      "default": true
+    },
+    {
+      "name": "Rendezvous hashing",
+      "good": "Score each node with hash(key, node), take the highest. Even, minimal movement, no ring.",
+      "bad": "A lookup scores every node: O(N) per key.",
+      "pick": "A small node count, such as choosing among tens of servers."
+    },
+    {
+      "name": "Fixed partition table",
+      "good": "Hash into many fixed partitions; a table maps partitions to nodes. Moves are explicit and easy to reason about.",
+      "bad": "The table must be stored, versioned and distributed.",
+      "pick": "Databases that move data deliberately, as in <a href=\"/system-design/sharding-and-partitioning.html\">sharding</a>."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Adding the (N+1)th node moves about 1/(N+1) of keys with consistent hashing; with <code>mod N</code>, about N/(N+1).</li>
+<li>Virtual nodes: 100 to 200 per server is a common range; spread shrinks as 1 ÷ √v.</li>
+</ul>
+
+<x-estimate title="What mod N moves">
+<script type="application/json">
+{
+  "question": "A cache uses hash(key) mod 4 over 10 million keys. A fifth node is added and the code switches to mod 5. How many keys now map to a different node?",
+  "givens": ["10 million keys, hashes spread evenly", "Old placement: hash mod 4. New: hash mod 5"],
+  "unit": "count",
+  "answer": "8 million",
+  "accept": ["3 million", "10 million"],
+  "steps": ["A key stays only if hash mod 4 = hash mod 5. Over any 20 consecutive hashes that holds for 0, 1, 2 and 3: 4 in 20", "Moved: 10 million × 16/20 = 8 million", "With consistent hashing: about 10 million ÷ 5 = 2 million"]
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring it up when keys are spread across nodes that come and go. Say the problem it solves in numbers, then mention virtual nodes.</p>
+
+<x-interview title="Scaling a cache cluster">
+<x-interviewer>The cache needs a fifth node. Any problem?</x-interviewer>
+<x-you>If placement is <code>hash mod N</code>, going from 4 to 5 remaps 80% of keys and the database takes most of the reads at once. I'd use consistent hashing with about 100 virtual nodes per server: the new node takes roughly a fifth of the keys, spread evenly across the old ones, and nothing else moves.</x-you>
+<x-interviewer>Does that fix a single very hot key?</x-interviewer>
+<x-you>No. One key still lives on one node. For that I'd keep a copy of the hot key in each app server's memory for a few seconds, or replicate it to several nodes and pick one at random.</x-you>
+<x-coach>It quantifies the failure, picks the fix, and knows where it stops working.</x-coach>
+</x-interview>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"How do clients agree on the ring?"</strong> Membership comes from a configuration service or gossip. During a change clients briefly disagree, so a few requests miss.</li>
+<li><strong>"How does replication fit?"</strong> Store each key on the next 3 distinct servers clockwise, skipping extra points of a server already chosen.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="One point per server">
+<p>Shares come out uneven and a leaving server dumps its load on one neighbour, as the tracer showed.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Thinking it balances hot keys">
+<p>Consistent hashing balances the number of keys, not their traffic. A single key read 20,000 times a second still lands on one node.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "Ring of 0 to 99 with servers at 20, 50 and 80. Which server owns key 95?",
+      "options": [
+        { "text": "The server at 80", "why": "Ownership goes to the next server clockwise, not the previous one." },
+        { "text": "The server at 20", "correct": true, "why": "Nothing between 95 and 99, so the walk wraps past 0 and reaches 20 first." },
+        { "text": "The server at 50", "why": "The walk stops at the first server it meets, which is 20." }
+      ]
+    },
+    {
+      "question": "A 9-node ring with virtual nodes gets a tenth node. About what share of keys move?",
+      "options": [
+        { "text": "About 10%", "correct": true, "why": "The new node takes its fair share, 1/10, and nothing else moves." },
+        { "text": "About 90%", "why": "That is what <code>mod N</code> would move going from 9 to 10." },
+        { "text": "None until a node fails", "why": "The new node owns arcs immediately; keys in them now map to it." }
+      ]
+    },
+    {
+      "question": "Why do virtual nodes help when a server dies?",
+      "options": [
+        { "text": "The dead server's keys are copied in advance", "why": "That is replication, a separate choice." },
+        { "text": "Its many small arcs go to many different servers, so no single neighbour takes all its load", "correct": true, "why": "With one point per server, one neighbour inherits everything." },
+        { "text": "Lookups become faster", "why": "Lookups search more points, so they are slightly slower." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>Next in this module, <a href="/system-design/blob-storage.html">blob storage</a> moves from rows to large files. A ring with replication is the core of <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>

@@ -1,0 +1,414 @@
+<!--
+{
+  "title": "Design a Payment System",
+  "description": "Take card payments through an external processor with no double charges or lost money: idempotency keys, a state machine, a ledger, reconciliation.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "payments", "idempotency", "ledger", "consistency"]
+}
+-->
+<p>A customer presses "Pay $40" on an online shop. A second later they see "Thank you". In between, the shop's server asked a payment platform to charge the card, the platform asked a card processor, and the processor asked the card network and the bank. Any of those calls can time out after the money has moved. The system you design has to know, every time, whether this customer was charged, exactly once, and who is owed what.</p>
+
+<p>Interviewers ask this question to see whether you change your instincts when money is involved. Most designs trade a little correctness for availability. This one does the opposite, and the deep parts are about uncertainty: retries, lost responses, late notifications and books that must balance. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a payment system.</x-interviewer>
+<x-you>Whose payments, and who moves the money? Are we a platform that shops call to take card payments, using an external card processor, or are we building the processor itself?</x-you>
+<x-interviewer>A platform. Many online shops call your API; a third-party processor talks to the card networks. You keep a fee and pay the rest out to the shops.</x-interviewer>
+<x-you>How many payments a day, and do we need refunds?</x-you>
+<x-interviewer>About 5 million payments a day, averaging $40. Yes to refunds. Payouts happen daily.</x-interviewer>
+<x-you>Then my priorities are: never charge a customer twice, never lose track of a payment, and keep books that show exactly what each shop is owed. If I have to choose, I'll reject a payment rather than risk a double charge. I'll leave out fraud scoring, multiple currencies and the payout transfer itself.</x-you>
+<x-coach>Saying "reject rather than double charge" early tells the interviewer you know this design leans towards consistency, unlike a feed or a cache.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> create a payment for an order and charge the card through the processor; report its status; refund all or part of it; keep a ledger of what each shop is owed; reconcile with the processor daily.</li>
+<li><strong>Non-functional:</strong> a payment request retried any number of times charges at most once; no acknowledged payment is ever lost (zero data loss on a database failure); every movement of money is recorded and auditable for years; the API usually answers in about 2 seconds, mostly the processor's time, and gives up on the processor after 5; availability is high, but correctness wins any conflict.</li>
+<li><strong>Out of scope:</strong> fraud detection, currency conversion, sending payouts to bank accounts, storing raw card numbers (the processor holds them and gives us a token).</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>A day has 86,400 seconds; call it about 100,000 for quick sums, but use the real number when it matters.</p>
+
+<ul>
+<li><strong>Payments:</strong> 5 million ÷ 86,400 ≈ 58 a second on average. Sales days run hotter; plan for 10x, about 600 a second.</li>
+<li><strong>Money:</strong> 5 million × $40 = $200 million a day. A bug that loses 0.1% is $200,000 a day, which is why this design spends its effort on correctness, not throughput.</li>
+<li><strong>Payment records:</strong> 5 million × 365 ≈ 1.8 billion a year; at 1 KB each, about 1.8 TB a year.</li>
+<li><strong>Uncertain outcomes:</strong> if 1 call in 1,000 to the processor times out, that is 5,000 payments a day whose result you do not know at first. They are a normal, daily case, not an edge case.</li>
+</ul>
+
+<x-estimate title="Ledger growth">
+<script type="application/json">
+{
+  "question": "Each payment writes 3 ledger lines of about 200 bytes. How much ledger data do you keep after 7 years, the length of time auditors may ask for?",
+  "givens": ["5 million payments a day", "3 ledger lines per payment, about 200 bytes each", "Ledger lines are never deleted", "Keep 7 years"],
+  "unit": "bytes",
+  "answer": "7.7 TB",
+  "accept": ["2 TB", "30 TB"],
+  "steps": ["Lines per day: 5 million × 3 = 15 million", "Bytes per day: 15 × 10<sup>6</sup> × 200 B = 3 GB", "Per year: 3 GB × 365 ≈ 1.1 TB", "Seven years: 1.1 TB × 7 ≈ 7.7 TB"],
+  "note": "Large but steady. Keep recent months in the main database and move older, closed periods to cheaper storage that can still be queried."
+}
+</script>
+</x-estimate>
+
+<p>At 600 payments a second, throughput is easy for one well-sized relational database. The hard part is that each of those writes has to be exactly right.</p>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the endpoint a shop calls to charge a customer, and the one to check a payment. How does the shop retry safely after a timeout?</p>
+</x-task>
+<x-answer>
+<p>A create-payment call that carries an idempotency key chosen by the shop, a read by payment id, and a refund call that also takes a key. A retry sends the same key and gets the same payment back instead of a new charge.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API for shops">
+<pre lang="text">
+POST /v1/payments          Idempotency-Key: ord-5521-try
+  body: { "amount": 4000, "currency": "USD", "card_token": "tok_...", "order_ref": "5521" }
+  201 { "id": "pay_88", "status": "succeeded" }
+  201 { "id": "pay_88", "status": "processing" }      outcome not known yet
+  402 { "id": "pay_88", "status": "failed", "reason": "card_declined" }
+  409 Conflict      a request with this key is still running
+  422 Unprocessable the same key was used with a different body
+
+GET  /v1/payments/{id}
+  200 { "id": "pay_88", "status": "succeeded", "refunded": 0 }
+
+POST /v1/payments/{id}/refunds   Idempotency-Key: ref-5521-1
+  body: { "amount": 1500 }
+  201 { "id": "re_9", "status": "processing" }
+
+Webhooks we send to shops:  payment.succeeded, payment.failed, refund.succeeded
+</pre>
+</x-code>
+
+<p>The decision worth arguing is the <code>processing</code> answer. When the processor does not reply in time, the honest response is "we don't know yet", not "failed". If the API said failed, the shop would ask the customer to pay again, and the first charge might still go through. So the API can return <code>processing</code>, and the shop learns the outcome from a webhook or by polling.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>What records do you need for a payment, its history, and the money it moves? Which of them may be updated, and which must only ever be appended?</p>
+</x-task>
+<x-answer>
+<p>A payment row with its current status (updated only by allowed transitions), an idempotency key with a unique constraint, an append-only history of status changes, and an append-only ledger of entries that sum to zero per transaction.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Payments, keys, ledger">
+<pre lang="sql">
+payments
+  payment_id      VARCHAR(32) PRIMARY KEY
+  merchant_id     BIGINT
+  amount_cents    BIGINT
+  status          VARCHAR(16)   -- created | processing | succeeded | failed | refunded
+  processor_ref   VARCHAR(64) NULL
+  idem_key        VARCHAR(64)
+  request_hash    CHAR(64)      -- detects a reused key with a new body
+  UNIQUE (merchant_id, idem_key)
+
+payment_events                  -- append-only history
+  payment_id, seq, from_status, to_status, source, created_at
+
+ledger_entries                  -- append-only, never updated
+  entry_id        BIGINT PRIMARY KEY
+  txn_id          BIGINT        -- entries of one txn sum to zero
+  account         VARCHAR(64)   -- "processor_receivable", "merchant:42"
+  amount_cents    BIGINT        -- debit positive, credit negative
+  created_at      TIMESTAMP
+</pre>
+</x-code>
+
+<p>Money is stored as whole cents in integers, never floating point, which cannot represent most decimal fractions exactly. Access patterns are small, transactional and mixed: insert a payment and its key together, move it to a new status only from the right old status, and write ledger lines that must all commit or none. That is a <strong>relational database with ACID transactions</strong>, run as a single leader with a synchronous replica. Key-value stores are great at scale, but here the one-transaction guarantees matter more than horizontal growth, and 600 payments a second does not need that growth.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the boxes: where does the shop's request go, where does it reach the processor, how do late results come back, and what checks the books every day?</p>
+</x-task>
+<x-answer>
+<p>A payment service writes to one database and calls the processor. A webhook handler receives the processor's late results and applies them to the same records. A reconciler compares the processor's daily settlement file with our ledger.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<x-arch caption="One database holds payments and the ledger, so a status change and its ledger lines commit together. Results reach it two ways: the processor's reply and its webhooks.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "shop", "label": "Shop's server", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "pay", "label": "Payment service", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "proc", "label": "Card processor", "kind": "external", "col": 3, "row": 1 },
+    { "id": "hook", "label": "Webhook handler", "kind": "service", "col": 3, "row": 2 },
+    { "id": "db", "label": "Payments and ledger DB", "kind": "database", "col": 2, "row": 2 },
+    { "id": "files", "label": "Settlement files", "kind": "blob-store", "col": 0, "row": 2 },
+    { "id": "recon", "label": "Reconciler", "kind": "worker", "col": 1, "row": 2 }
+  ],
+  "edges": [
+    { "from": "shop", "to": "gw", "label": "POST /payments" },
+    { "from": "gw", "to": "pay" },
+    { "from": "pay", "to": "proc", "label": "charge, key" },
+    { "from": "proc", "to": "hook", "label": "webhook", "style": "async" },
+    { "from": "hook", "to": "db", "label": "apply event" },
+    { "from": "pay", "to": "db", "label": "state + ledger" },
+    { "from": "files", "to": "recon", "label": "daily file" },
+    { "from": "recon", "to": "db", "label": "compare" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Not drawn: our own webhooks to shops. Write each one to an outbox table in the same transaction as the status change, and let a sender deliver it with retries. A crash between "succeeded" and "tell the shop" then delays the notice instead of losing it.</p>
+
+<p>Step through a payment whose first reply is lost, which is the case the design exists for.</p>
+
+<x-tracer title="A charge, a timeout, a retry, a late webhook">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "shop", "label": "Shop's server", "kind": "client", "col": 0, "row": 1 },
+      { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "pay", "label": "Payment service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "proc", "label": "Card processor", "kind": "external", "col": 3, "row": 1 },
+      { "id": "hook", "label": "Webhook handler", "kind": "service", "col": 3, "row": 2 },
+      { "id": "db", "label": "Payments and ledger DB", "kind": "database", "col": 2, "row": 2 },
+      { "id": "files", "label": "Settlement files", "kind": "blob-store", "col": 0, "row": 2 },
+      { "id": "recon", "label": "Reconciler", "kind": "worker", "col": 1, "row": 2 }
+    ],
+    "edges": [
+      { "from": "shop", "to": "gw" },
+      { "from": "gw", "to": "pay" },
+      { "from": "pay", "to": "proc" },
+      { "from": "proc", "to": "hook", "style": "async" },
+      { "from": "hook", "to": "db" },
+      { "from": "pay", "to": "db" },
+      { "from": "files", "to": "recon" },
+      { "from": "recon", "to": "db" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The shop sends <code>POST /payments</code> for $40 with key <code>ord-5521-try</code>.",
+      "arch": { "active": ["shop", ["shop", "gw"], ["gw", "pay"]], "dim": ["hook", "files", "recon"] },
+      "vars": { "status": "-", "customer charged": 0 }
+    },
+    {
+      "caption": "One transaction inserts the key and payment <code>pay_88</code> as <code>created</code>. The unique constraint on (shop, key) means a duplicate request cannot create a second payment.",
+      "arch": { "active": ["pay", "db", ["pay", "db"]], "dim": ["hook", "files", "recon"], "notes": { "db": "pay_88 created" } },
+      "vars": { "status": "created", "customer charged": 0 }
+    },
+    {
+      "caption": "It moves the payment to <code>processing</code> before calling out, so a crash from here on leaves a record that says \"ask the processor\". Then it sends the charge, with <code>pay_88</code> as the processor's idempotency key.",
+      "arch": { "active": ["pay", "proc", ["pay", "db"], ["pay", "proc"]], "dim": ["hook", "files", "recon"], "notes": { "proc": "key pay_88" } },
+      "vars": { "status": "processing", "customer charged": 0 }
+    },
+    {
+      "caption": "The processor charges the card, but its reply is lost. After 5 seconds the service stops waiting. The money moved; we do not know it yet.",
+      "arch": { "active": ["proc"], "fail": [["proc", "pay"]], "dim": ["hook", "files", "recon"], "notes": { "proc": "charged" } },
+      "vars": { "status": "processing", "customer charged": "$40" }
+    },
+    {
+      "caption": "The service answers <code>201 processing</code>, not failed, and the payment stays in <code>processing</code>. The shop's HTTP client gave up after 3 seconds, though, so it never sees this answer.",
+      "arch": { "active": [["pay", "gw"], ["gw", "shop"]], "dim": ["hook", "files", "recon"] },
+      "vars": { "status": "processing", "customer charged": "$40" }
+    },
+    {
+      "caption": "The shop retries with the same key. The key exists, so the service returns the stored payment, still <code>processing</code>, instead of charging again.",
+      "arch": { "active": ["db", ["shop", "gw"], ["gw", "pay"], ["pay", "db"]], "dim": ["hook", "files", "recon", "proc"], "notes": { "db": "key seen" } },
+      "vars": { "status": "processing", "customer charged": "$40" }
+    },
+    {
+      "caption": "The processor's webhook arrives: <code>pay_88</code> succeeded. The handler checks the signature and stores the event id, so a redelivered copy is ignored.",
+      "arch": { "active": ["proc", "hook", ["proc", "hook"]], "dim": ["files", "recon", "shop"], "notes": { "hook": "event evt_7 new" } },
+      "vars": { "status": "processing", "customer charged": "$40" }
+    },
+    {
+      "caption": "One transaction moves <code>processing</code> to <code>succeeded</code> only if it is still <code>processing</code>, and writes 3 ledger lines: +4000, −3880, −120. They sum to zero.",
+      "arch": { "active": ["db", ["hook", "db"]], "mark": ["db"], "dim": ["files", "recon", "shop"], "notes": { "db": "succeeded" } },
+      "vars": { "status": "succeeded", "customer charged": "$40", "ledger sum": 0 }
+    },
+    {
+      "caption": "The next day the processor's settlement file lists <code>pay_88</code> at $40. The reconciler finds a matching payment and ledger lines, so nothing needs a human.",
+      "arch": { "active": ["files", "recon", ["files", "recon"], ["recon", "db"]], "mark": ["recon"], "dim": ["shop", "gw", "proc", "hook"] },
+      "vars": { "status": "succeeded", "customer charged": "$40", "matched": "yes" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>Idempotency keys, end to end</h3>
+
+<p>The <a href="/system-design/idempotency-and-retries.html">idempotency lesson</a> covers the basic pattern. In a payment system, three details decide whether it actually works.</p>
+
+<ul>
+<li><strong>The key is written in the same transaction as the payment.</strong> If the key lives in a cache and the payment in the database, a crash between the two writes lets a retry slip through.</li>
+<li><strong>The key is scoped and fingerprinted.</strong> Unique per shop, not globally, and stored with a hash of the request. The same key with a different amount is a client bug: return 422 rather than guess.</li>
+<li><strong>The key travels downstream.</strong> Our retries to the processor reuse <code>pay_88</code> as its idempotency key, so a retry after a lost reply returns the first charge instead of making a second. Every hop that can be retried needs its own key.</li>
+</ul>
+
+<p>This is what "exactly once" means here, and it is worth saying precisely: requests can arrive any number of times, and the charge takes effect once. No network can deliver a message exactly once; the receiver makes repeats harmless.</p>
+
+<h3>The payment state machine</h3>
+
+<p>Every payment is in exactly one state, and only certain moves are allowed. Writing the rules down turns a pile of race conditions into a table you can check.</p>
+
+<table>
+<thead><tr><th>From</th><th>To</th><th>Triggered by</th></tr></thead>
+<tbody>
+<tr><td>created</td><td>processing</td><td>we are about to call the processor</td></tr>
+<tr><td>processing</td><td>succeeded</td><td>processor reply, webhook, or a status query</td></tr>
+<tr><td>processing</td><td>failed</td><td>a definite decline, or the processor confirms it has no such charge</td></tr>
+<tr><td>succeeded</td><td>refunded</td><td>a refund for the full amount succeeds</td></tr>
+</tbody>
+</table>
+
+<p>Each move is a conditional update: <code>SET status = 'succeeded' WHERE payment_id = 'pay_88' AND status = 'processing'</code>. If the reply and the webhook race, the first applies and the second changes zero rows, which is correct. A late "processing" event can never drag a <code>succeeded</code> payment backwards, because there is no such arrow.</p>
+
+<p>Payments stuck in <code>processing</code> are expected. A sweeper finds ones older than a minute and asks the processor for the result by idempotency key. Only when the processor says it has no charge with that key may the payment move to <code>failed</code>, and even that answer can race with the original request still in flight. So either wait past the processor's own request timeout before trusting "no such charge", or resend the charge with the same key: the processor then returns the first result or makes the charge once, and the outcome becomes definite.</p>
+
+<x-callout type="mistake" title="Treating a timeout as a failure">
+<p>If a timeout marks the payment failed, the shop asks the customer to pay again, and both charges go through. A timeout means "unknown". Keep the payment in <code>processing</code> until the processor tells you the outcome.</p>
+</x-callout>
+
+<h3>A double-entry ledger</h3>
+
+<p>A single <code>balance</code> column per shop is easy to update and impossible to audit: when it is wrong, nothing tells you why. A ledger records every movement as entries that sum to zero. For the $40 payment, with a 3% platform fee of $1.20:</p>
+
+<table>
+<thead><tr><th>Account</th><th>Amount (cents)</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>processor_receivable</td><td>+4000</td><td>the processor owes us $40</td></tr>
+<tr><td>merchant:42</td><td>−3880</td><td>we owe the shop $38.80</td></tr>
+<tr><td>platform_fees</td><td>−120</td><td>we earned $1.20</td></tr>
+</tbody>
+</table>
+
+<p>+4000 − 3880 − 120 = 0. (Real processors also charge their own fee; leaving it out keeps the example small.) Three rules make the ledger trustworthy:</p>
+
+<ul>
+<li><strong>Every transaction sums to zero.</strong> Check it before commit. Money cannot appear or vanish, only move between accounts.</li>
+<li><strong>Append only.</strong> A mistake is fixed with a new, reversing transaction, never by editing a row. The history is the audit trail.</li>
+<li><strong>Balances are derived.</strong> A shop's balance is the sum of its entries. You may cache it in a balance row updated in the same transaction, but the entries are the truth, and you can rebuild the cache from them.</li>
+</ul>
+
+<h3>Webhooks, retries and reconciliation</h3>
+
+<p>The processor sends webhooks <strong>at least once</strong> and not always in order. The handler verifies the signature, then in one transaction inserts the event id into a table with a unique key and applies the event through the state machine. Only after that commits does it return 200. A repeat hits the unique key and is acknowledged without changing anything; a crash before the commit sends no 200, so the processor delivers the event again. Recording the id first and applying the change later would turn a crash in between into a lost event. Out-of-order events are harmless because illegal moves change nothing. If an event looks wrong, fetch the payment's current state from the processor's API instead of trusting the event.</p>
+
+<p>Retries go out with exponential backoff and jitter, and always with the same key. One rule interviewers probe: <strong>never retry a payment on a second processor while the first one's outcome is unknown.</strong> The keys are not shared between processors, so both could charge.</p>
+
+<p>Reconciliation is the safety net under all of it. Every day the processor publishes a settlement file listing what it actually charged and refunded. The reconciler matches each line to a payment and its ledger lines, by processor reference and amount.</p>
+
+<x-tradeoffs caption="What to do with a mismatch">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Fix automatically",
+      "good": "Fast. A missed webhook for a known payment is fixed by applying the processor's state through the normal state machine.",
+      "bad": "Auto-fixing the wrong cause can hide a real bug.",
+      "pick": "The mismatch has one known cause and one safe fix.",
+      "default": true
+    },
+    {
+      "name": "Queue for a human",
+      "good": "Someone looks at the evidence before money moves.",
+      "bad": "Slow, and costly in volume: if even 1 line in 10,000 disagreed, that is 500 a day.",
+      "pick": "Amounts differ, or the processor charged something we have no record of."
+    },
+    {
+      "name": "Trust our records",
+      "good": "No work.",
+      "bad": "Errors pile up silently until a shop's payout is wrong.",
+      "pick": "Never. Matching is the point."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, 6,000 payments a second at peak and 18,000 ledger lines a second, one database leader starts to strain. Partition by <code>merchant_id</code>: a payment and its ledger lines for one shop stay on one partition, so each transaction is still local. Platform-wide accounts like <code>platform_fees</code> and <code>processor_receivable</code> become hot rows, and every payment touches them; give each partition its own copy of those accounts and sum them for reports. The processor's rate limits also become real, which is a conversation with the provider, not a design trick.</p>
+
+<p>Correctness beats availability in every row below. When in doubt, the system stops taking payments rather than guessing; a shop losing sales for two minutes is bad, a customer charged twice or a ledger that does not balance is worse.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A payment server, mid-call</td><td>The payment is left in <code>processing</code>.</td><td>The sweeper queries the processor by key and finishes it.</td></tr>
+<tr><td>The database leader</td><td>Writes stop until the synchronous replica is promoted, usually within a minute.</td><td>Return 503 meanwhile. Because replication was synchronous, no acknowledged payment is lost.</td></tr>
+<tr><td>The processor</td><td>Charges time out or fail.</td><td>Return clear errors and stop retrying after a few tries. Do not switch processors for payments whose outcome is unknown.</td></tr>
+<tr><td>The webhook handler</td><td>Events queue up at the processor, which keeps retrying them.</td><td>Payments stay in <code>processing</code>; the sweeper's status queries resolve them anyway.</td></tr>
+<tr><td>The reconciler</td><td>Mismatches are found later.</td><td>Nothing breaks today; run it again over the missed days before payouts.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="A distributed transaction with the processor">
+<p>You cannot put an external processor and your database in one atomic transaction. Instead, record your intent first (<code>processing</code>), call out with a key, and settle the outcome later from the reply, a webhook, a status query or reconciliation.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Calls the processor and saves the result, and adds a retry; with prompting, adds an idempotency key.</td></tr>
+<tr><td>Mid</td><td>Uses idempotency keys correctly, defines payment states, handles webhooks and stores money as integers.</td></tr>
+<tr><td>Senior</td><td>Treats timeouts as unknown, passes keys downstream, models money in a double-entry ledger, reconciles daily, and explains why this system chooses correctness over availability.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="The charge times out" tone="weak">
+<x-interviewer>Your call to the processor times out. What do you do?</x-interviewer>
+<x-you>Mark the payment failed and retry it a few times.</x-you>
+<x-coach>The first charge may have succeeded, and a retry without the same key charges again. This answer double charges customers on a normal day.</x-coach>
+</x-interview>
+
+<x-interview title="The charge times out" tone="strong">
+<x-interviewer>Your call to the processor times out. What do you do?</x-interviewer>
+<x-you>A timeout means I don't know, so the payment stays in processing. I retry with the same idempotency key, so the processor returns the first result instead of charging again. If that fails too, I tell the shop it's processing and let the webhook or a status query settle it.</x-you>
+<x-interviewer>And if the webhook never arrives?</x-interviewer>
+<x-you>A sweeper queries the processor for anything stuck in processing for more than a minute, and the daily reconciliation catches whatever is left. Three independent paths reach the same state machine.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do refunds work?</h3>
+<p>A refund is its own record with its own key and states, linked to the payment. When it succeeds, it writes the reverse ledger lines; partial refunds are allowed while their total stays at or below the original amount.</p>
+
+<h3>Authorize now, capture later?</h3>
+<p>For goods that ship later, the processor can authorize (reserve the funds) and capture when the order ships. Add <code>authorized</code> and <code>captured</code> states; authorizations expire after some days, so a job captures or releases them in time.</p>
+
+<h3>How do you pay shops?</h3>
+<p>Once a day, sum each shop's ledger balance, create a payout record with its own idempotency key, and write ledger lines moving the amount from the shop's account to a payouts account. The bank transfer is another external call with the same unknown-outcome care.</p>
+
+<h3>How do you store card numbers?</h3>
+<p>You don't. The customer's browser sends the card to the processor, which returns a token. Keeping raw card numbers out of your systems shrinks the compliance burden enormously.</p>
+
+<h3>Could you use an eventually consistent database?</h3>
+<p>For the payment records and ledger, no: you need the key insert and the status change to be atomic, and a lost acknowledged write is lost money. For read-only views such as a shop's dashboard, a replica a few seconds behind is fine.</p>
+
+<x-checklist title="Self-review: payment system">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether we are the platform or the processor", "I said correctness beats availability and gave a reason", "I put card storage and fraud out of scope"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated the payment rate and how many outcomes are unknown each day", "I required an idempotency key on create and refund", "I returned processing, not failed, when the result is unknown"] },
+    { "title": "Design and depth", "items": ["I stored the key in the same transaction as the payment and passed a key to the processor", "I defined the payment states and made each move a conditional update", "I recorded money in a double-entry ledger that sums to zero and is append only", "I handled duplicate and out-of-order webhooks", "I described daily reconciliation and what happens to mismatches"] },
+    { "title": "Failure", "items": ["I said how payments stuck in processing are resolved", "I explained why the database uses synchronous replication and why we never switch processors mid-payment"] }
+  ]
+}
+</script>
+</x-checklist>

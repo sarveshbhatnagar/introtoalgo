@@ -1,0 +1,283 @@
+<!--
+{
+  "title": "A Framework for Any Design",
+  "description": "Seven steps with a time budget that turn any system design prompt into a structured answer, worked end to end on a small pastebin service.",
+  "minutes": 16,
+  "tags": ["interview", "framework", "fundamentals"]
+}
+-->
+<p>Two candidates know the same material. One hears "design a pastebin" and jumps between caching, sharding and the API. The other clarifies, estimates, then designs, and has time left for depth. The second one passes, on order alone.</p>
+
+<p>A fixed order means you never skip a step, the interviewer can follow you, and no thought goes on what to do next.</p>
+
+<h2>The seven steps</h2>
+
+<p>Every case study on this site follows these steps, with these headings. Each step produces something the next one uses: the estimates decide the data store, the access patterns decide the keys, the hard parts decide the deep dives. Minutes are for a 45-minute slot with about 40 minutes of design, as in <a href="/system-design/how-the-interview-works.html">how the interview works</a>.</p>
+
+<table>
+<thead><tr><th>Step</th><th>Minutes</th><th>What you produce</th></tr></thead>
+<tbody>
+<tr><td>1. Clarify the problem</td><td>5</td><td>Functional and non-functional requirements, and what is out of scope.</td></tr>
+<tr><td>2. Estimate the scale</td><td>4</td><td>Requests a second (average and peak), storage, bandwidth.</td></tr>
+<tr><td>3. Define the API</td><td>3</td><td>The main endpoints or messages, with error cases.</td></tr>
+<tr><td>4. Model the data</td><td>3</td><td>The records, how they are looked up, and the kind of store.</td></tr>
+<tr><td>5. High-level design</td><td>10</td><td>A diagram where the main read and write paths both work.</td></tr>
+<tr><td>6. Deep dives</td><td>10</td><td>Two or three hard parts, each with options and a choice.</td></tr>
+<tr><td>7. Bottlenecks and failures</td><td>5</td><td>What breaks at 10 times the load, and what happens when each part dies.</td></tr>
+</tbody>
+</table>
+
+<p>That adds up to 5 + 4 + 3 + 3 + 10 + 10 + 5 = 40 minutes. In a 60-minute slot, give most of the extra time to steps 6 and 7.</p>
+
+<h2>Worked example: a pastebin</h2>
+
+<p>A pastebin stores a block of text and gives it a link. Here is the whole framework, at spoken length.</p>
+
+<h3>1. Clarify the problem</h3>
+
+<x-interview title="Scoping the pastebin">
+<x-interviewer>Design a service where people paste text and share a link to it.</x-interviewer>
+<x-you>Are pastes public to anyone with the link? Can they expire? Is there a size limit? And do we need accounts or editing?</x-you>
+<x-interviewer>Anyone with the link can read. Optional expiry. Up to 1 MB. No accounts, no editing.</x-interviewer>
+<x-you>How many pastes a day, and how often is each one read?</x-you>
+<x-interviewer>About 5 million new pastes a day, averaging 10 KB. Ten reads per paste.</x-interviewer>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> create a paste (text up to 1 MB, optional expiry) and get a link; read a paste by its link.</li>
+<li><strong>Non-functional:</strong> a created paste is never lost; reads are fast (under 100 ms) and highly available; links are hard to guess.</li>
+<li><strong>Out of scope:</strong> accounts, editing, search, syntax highlighting.</li>
+</ul>
+
+<p><a href="/system-design/requirements-and-scope.html">Requirements and scope</a> covers which questions to ask.</p>
+
+<h3>2. Estimate the scale</h3>
+
+<p>Round a day to 100,000 seconds (really 86,400, so rates come out about 14% low). The <a href="/system-design/back-of-the-envelope-estimation.html">estimation</a> lesson explains the shortcuts.</p>
+
+<ul>
+<li><strong>Writes:</strong> 5 million ÷ 100,000 = 50 a second. Assume peaks of 3 times: 150.</li>
+<li><strong>Reads:</strong> 10 × 50 = 500 a second, 1,500 at peak.</li>
+<li><strong>Bandwidth out:</strong> 500 × 10 KB = 5 MB/s on average, 15 MB/s at peak. Small.</li>
+</ul>
+
+<x-estimate title="Paste storage for one year">
+<script type="application/json">
+{
+  "question": "How much paste content is stored after one year?",
+  "givens": ["5 million new pastes a day", "10 KB per paste on average", "Ignore expiry and replication"],
+  "unit": "bytes",
+  "answer": "18 TB",
+  "accept": ["6 TB", "60 TB"],
+  "steps": ["Per day: 5 × 10<sup>6</sup> × 10<sup>4</sup> B = 5 × 10<sup>10</sup> B = 50 GB", "Per year: 50 GB × 365 ≈ 18,000 GB = 18 TB"],
+  "note": "18 TB a year, growing forever, is the number that shapes this design."
+}
+</script>
+</x-estimate>
+
+<h3>3. Define the API</h3>
+
+<x-code single title="Pastebin API">
+<pre lang="text">
+POST /pastes
+  body: { "content": "...", "expires_in_days": 7? }
+  201 Created   { "id": "x7Kp2QaZ", "url": "https://paste.example/x7Kp2QaZ" }
+  413 Content Too Large   over 1 MB
+
+GET /pastes/{id}
+  200 OK   { "content": "...", "created_at": "...", "expires_at": "..." }
+  404 Not Found   no such paste, or it has expired
+</pre>
+</x-code>
+
+<h3>4. Model the data</h3>
+
+<p>The metadata is a small row per paste (about 200 bytes: id, size, timestamps, a pointer to the content), looked up only by id. The content is up to 1 MB of text that never changes. So: metadata in a key-value or relational store keyed by <code>id</code>, about 5 million × 200 B = 1 GB a day; content in <a href="/system-design/blob-storage.html">blob storage</a> under the key <code>pastes/{id}</code>.</p>
+
+<p>The id is 8 random characters from 62 letters and digits: 62<sup>8</sup> ≈ 2.2 × 10<sup>14</sup> possibilities. After five years (9 billion pastes) a new id clashes about 1 time in 24,000, so insert-if-absent and retry. That ratio cuts both ways: one random guess in 24,000 also finds <em>some</em> paste, so a scraper can harvest them. If that matters, use 10 characters (about 1 in 90 million) and rate-limit 404s.</p>
+
+<h3>5. High-level design</h3>
+
+<x-arch caption="Stateless paste servers. Small rows go in a database, large content in blob storage, hot pastes in a cache.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "app", "label": "Paste service", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "cache", "label": "Paste cache", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "meta", "label": "Metadata DB", "kind": "database", "col": 3, "row": 1 },
+    { "id": "blob", "label": "Blob storage", "kind": "blob-store", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "lb", "label": "HTTPS" },
+    { "from": "lb", "to": "app" },
+    { "from": "app", "to": "cache", "label": "get / set" },
+    { "from": "app", "to": "meta", "label": "row by id" },
+    { "from": "app", "to": "blob", "label": "content" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="Create a paste, read it twice, then lose blob storage">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+      { "id": "app", "label": "Paste service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "cache", "label": "Paste cache", "kind": "cache", "col": 3, "row": 0 },
+      { "id": "meta", "label": "Metadata DB", "kind": "database", "col": 3, "row": 1 },
+      { "id": "blob", "label": "Blob storage", "kind": "blob-store", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "lb" },
+      { "from": "lb", "to": "app" },
+      { "from": "app", "to": "cache" },
+      { "from": "app", "to": "meta" },
+      { "from": "app", "to": "blob" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A user submits 12 KB of text with <code>POST /pastes</code>. Any paste server can take it.",
+      "arch": { "active": ["client", "app", ["client", "lb"], ["lb", "app"]], "dim": ["cache"] }
+    },
+    {
+      "caption": "The server picks a random id, <code>x7Kp2QaZ</code>, and writes the content to blob storage first.",
+      "arch": { "active": ["blob", ["app", "blob"]], "dim": ["cache"], "notes": { "blob": "put x7Kp2QaZ" } },
+      "vars": { "id": "x7Kp2QaZ" }
+    },
+    {
+      "caption": "Then it inserts the metadata row. In this order a reader never finds a row pointing at missing content; a crash in between leaves an orphan blob for a cleanup job.",
+      "arch": { "active": ["meta", ["app", "meta"]], "dim": ["cache"], "notes": { "meta": "insert row" } },
+      "vars": { "id": "x7Kp2QaZ" }
+    },
+    {
+      "caption": "Both writes are durable, so the server returns <code>201</code> with the link.",
+      "arch": { "active": [["app", "lb"], ["lb", "client"]], "mark": ["client", "meta", "blob"], "dim": ["cache"] },
+      "vars": { "id": "x7Kp2QaZ", "status": 201 }
+    },
+    {
+      "caption": "Someone opens the link. The server checks the cache: a miss, since the paste is new.",
+      "arch": { "active": ["client", "cache", ["client", "lb"], ["lb", "app"], ["app", "cache"]], "notes": { "cache": "miss" } },
+      "vars": { "id": "x7Kp2QaZ", "reads": 1 }
+    },
+    {
+      "caption": "It reads the row (has it expired?) and the content, and caches both with a TTL that ends no later than the paste expires. Pastes never change, so nothing else can go stale.",
+      "arch": { "active": ["meta", "blob", "cache", ["app", "meta"], ["app", "blob"], ["app", "cache"]], "notes": { "cache": "set x7Kp2QaZ" } },
+      "vars": { "id": "x7Kp2QaZ", "reads": 1 }
+    },
+    {
+      "caption": "The next read is a cache hit and touches neither store. Most of the 500 reads a second should end here.",
+      "arch": { "active": ["client", "cache", ["client", "lb"], ["lb", "app"], ["app", "cache"]], "dim": ["meta", "blob"], "notes": { "cache": "hit" } },
+      "vars": { "id": "x7Kp2QaZ", "reads": 2 }
+    },
+    {
+      "caption": "Blob storage becomes unreachable. Cached pastes still load. Creates must fail with <code>503</code>: accepting a paste you cannot store durably breaks the \"never lost\" requirement.",
+      "arch": { "fail": ["blob"], "active": ["cache", ["app", "cache"]], "notes": { "app": "creates: 503" } },
+      "vars": { "id": "x7Kp2QaZ", "reads": 2 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h3>6. Deep dives</h3>
+
+<p>Pick the parts where the numbers are hardest. Here: where content lives, and id generation (see <a href="/system-design/unique-ids.html">unique IDs</a>).</p>
+
+<x-tradeoffs caption="Where paste content lives">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "In the database row",
+      "good": "One write, one read, one system to run.",
+      "bad": "18 TB a year of large values bloats the database and slows backups.",
+      "pick": "Small total data, or values of a few KB at most."
+    },
+    {
+      "name": "Blob storage, pointer in the row",
+      "good": "Cheap per byte, grows without limit, built for large immutable objects.",
+      "bad": "Two writes per create and two reads per miss; you must handle the gap between them.",
+      "pick": "Large, immutable content that grows forever. This case.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>What would change the choice: if the interviewer capped pastes at 4 KB and kept them for 30 days, the total would be about 5 million × 4 KB × 30 = 600 GB, and a single database would be simpler.</p>
+
+<h3>7. Bottlenecks and failures</h3>
+
+<p>At 10 times the load (15,000 reads a second at peak), add paste servers, since they are stateless, and turn the cache into a cluster. Metadata then grows about 3.65 TB a year (10 GB a day), so partition it by <code>id</code>; random ids spread evenly. Then walk the failures: a dead cache node sends reads to the stores, the metadata database fails over to a replica, and a blob storage outage stops creates.</p>
+
+<h2>In the interview</h2>
+
+<p>Say the plan once, then announce each transition:</p>
+
+<ul>
+<li>"Before I draw anything, I want to pin down features and scale."</li>
+<li>"Writes are 50 a second and storage grows 18 TB a year. That second number matters most, so I'll keep content out of the database."</li>
+<li>"The design works end to end now. The two parts I'd like to go deeper on are content storage and id generation. Which interests you more?"</li>
+</ul>
+
+<p>Follow-ups you should expect:</p>
+
+<ul>
+<li><strong>"Can we skip the estimates?"</strong> Yes, if the interviewer says so. Ask for the one number that matters ("roughly how much data?") and move on.</li>
+<li><strong>"Skip to the hard part."</strong> Go. The framework is a default order, not a script to defend.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Following the steps out loud but not using them">
+<p>Saying "now estimates" and then ignoring the numbers is ritual. Each step must change something later: here the 18 TB estimate is what moved content into blob storage.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "In the pastebin, the interviewer changes the limit: pastes are at most 4 KB and expire after 30 days. With 5 million a day, about how much content is stored at any time?",
+      "options": [
+        { "text": "About 20 GB", "why": "That is one day of content (5 million × 4 KB). Pastes live 30 days." },
+        { "text": "About 600 GB", "correct": true, "why": "5 × 10<sup>6</sup> × 4 KB × 30 = 600 GB. Small enough that keeping content in the database row becomes reasonable." },
+        { "text": "About 7 TB", "why": "That is a full year at 4 KB. Expiry caps it at 30 days." }
+      ]
+    },
+    {
+      "question": "Why does the create path write the blob before the metadata row?",
+      "options": [
+        { "text": "Blob storage is faster", "why": "The order is about what a reader can see, not speed." },
+        { "text": "So a reader never finds a row pointing at content that does not exist", "correct": true, "why": "The reverse order has a window where the row is visible and the read fails. An orphan blob is harmless and cleaned up later." },
+        { "text": "So the two writes happen in one transaction", "why": "They are in different systems, so there is no shared transaction. The order is how you make the gap safe." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<x-checklist title="Self-review: run the framework">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Scope and numbers", "items": ["I wrote functional, non-functional and out-of-scope lists", "I turned daily numbers into per-second rates, with a peak", "I named the one estimate that shapes the design"] },
+    { "title": "Interfaces", "items": ["I wrote the main endpoints with error cases", "I listed how each record is looked up before choosing a store"] },
+    { "title": "Design and depth", "items": ["My diagram works end to end for both reads and writes", "I picked two or three deep dives and let the interviewer choose", "For each deep dive I compared options and said what would change my choice"] },
+    { "title": "Failure and time", "items": ["I said what breaks at 10 times the load and what happens when each part dies", "I finished the high-level design by about minute 27"] }
+  ]
+}
+</script>
+</x-checklist>
+
+<h2>What to practice next</h2>
+
+<p>Each step has its own lesson, starting with <a href="/system-design/requirements-and-scope.html">Requirements and Scope</a>. To see the full framework at case-study depth, work through <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a>.</p>

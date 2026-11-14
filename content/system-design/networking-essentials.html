@@ -1,0 +1,223 @@
+<!--
+{
+  "title": "Networking Essentials",
+  "description": "What happens between typing a URL and seeing a page, which latency numbers matter, and when to pick HTTP, gRPC or WebSockets in an interview.",
+  "minutes": 14,
+  "tags": ["networking", "building blocks", "latency", "http"]
+}
+-->
+<p>Your server builds the product page in 30 ms. A shopper 8,000 km away still waits about 270 ms for the first byte, and that is with the address already cached. Almost 90% of that wait is three trips across the ocean and back.</p>
+
+<p>Interviewers rarely ask about packets, but where that time goes decides where servers live and whether you need a CDN.</p>
+
+<h2>The idea</h2>
+
+<p>For small requests, distance costs more than bandwidth. You pay in <strong>round trips</strong>: a message out, a reply back. Light in fibre covers about 200 km per millisecond, so a round trip over 8,000 km takes at least 2 × 8,000 ÷ 200 = 80 ms. Real routes bend, so that is a lower bound.</p>
+
+<p>A fresh HTTPS request needs three round trips before the first byte comes back: one to open the connection, one to set up encryption, one for the request. That is 3 × 80 = 240 ms, plus 30 ms on the server: the 270 ms from the hook. Most tricks in this module cut round trips or shorten them.</p>
+
+<h2>What happens when you open a URL</h2>
+
+<x-tracer title="Opening https://shop.example.com from 8,000 km away">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "browser", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+      { "id": "resolver", "label": "DNS resolver", "kind": "dns", "col": 1, "row": 0 },
+      { "id": "auth", "label": "Authoritative DNS", "kind": "dns", "col": 2, "row": 0 },
+      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+      { "id": "app", "label": "App server", "kind": "service", "col": 2, "row": 1 }
+    ],
+    "edges": [
+      { "from": "browser", "to": "resolver", "label": "where is shop?" },
+      { "from": "resolver", "to": "auth" },
+      { "from": "browser", "to": "lb", "label": "TCP, TLS, HTTP" },
+      { "from": "lb", "to": "app" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Nothing is cached locally, so the browser asks a nearby DNS resolver for the IP address of <code>shop.example.com</code>.",
+      "arch": { "active": ["browser", "resolver", ["browser", "resolver"]], "dim": ["lb", "app"] },
+      "vars": { "round trips to server": 0, "elapsed ms": 0 }
+    },
+    {
+      "caption": "The resolver asks the domain's authoritative servers, which return <code>203.0.113.10</code> with a TTL of 300 seconds. Say the lookup takes 40 ms.",
+      "arch": { "active": ["resolver", "auth", ["resolver", "auth"]], "dim": ["lb", "app"], "notes": { "auth": "TTL 300 s" } },
+      "vars": { "round trips to server": 0, "elapsed ms": 40 }
+    },
+    {
+      "caption": "Resolver and browser both cache the answer for up to 300 seconds, so the next visit skips DNS.",
+      "arch": { "active": [["resolver", "browser"]], "mark": ["browser"], "dim": ["lb", "app"], "notes": { "browser": "203.0.113.10" } },
+      "vars": { "round trips to server": 0, "elapsed ms": 40 }
+    },
+    {
+      "caption": "TCP handshake: SYN out, SYN-ACK back. One round trip, 80 ms, and no page data has moved yet.",
+      "arch": { "active": ["browser", "lb", ["browser", "lb"]], "dim": ["resolver", "auth", "app"], "notes": { "lb": "SYN-ACK" } },
+      "vars": { "round trips to server": 1, "elapsed ms": 120 }
+    },
+    {
+      "caption": "TLS 1.3 handshake: both sides agree on keys and the browser checks the certificate. Another 80 ms. The load balancer holds the certificate, so encryption ends here.",
+      "arch": { "active": ["browser", "lb", ["browser", "lb"]], "dim": ["resolver", "auth", "app"], "notes": { "lb": "TLS done" } },
+      "vars": { "round trips to server": 2, "elapsed ms": 200 }
+    },
+    {
+      "caption": "The encrypted <code>GET /</code> crosses the ocean. The load balancer forwards it to an app server about 0.5 ms away, which spends 30 ms building the page.",
+      "arch": { "active": ["lb", "app", ["browser", "lb"], ["lb", "app"]], "dim": ["resolver", "auth"], "notes": { "app": "30 ms" } },
+      "vars": { "round trips to server": 3, "elapsed ms": 270 }
+    },
+    {
+      "caption": "The first byte arrives after 40 + 80 + 80 + 80 + 30 = 310 ms. Only 30 ms of that was your code.",
+      "arch": { "active": [["app", "lb"], ["lb", "browser"]], "mark": ["browser"], "dim": ["resolver", "auth"] },
+      "vars": { "round trips to server": 3, "elapsed ms": 310 }
+    },
+    {
+      "caption": "The browser asks for <code>/cart</code> on the same connection: no DNS, no handshakes, so 80 + 30 = 110 ms. Reusing connections is the cheapest speed-up there is.",
+      "arch": { "active": ["browser", "lb", "app", ["browser", "lb"], ["lb", "app"]], "dim": ["resolver", "auth"], "notes": { "lb": "reused conn" } },
+      "vars": { "round trips to server": 4, "elapsed ms": 420 }
+    },
+    {
+      "caption": "Failure: the machine at <code>203.0.113.10</code> dies and you point DNS at a new address. Users whose resolvers cached the old answer keep hitting the dead one for up to 300 seconds; some clients cache even longer.",
+      "arch": { "fail": ["lb", ["browser", "lb"]], "active": ["browser"], "dim": ["app", "auth"], "notes": { "resolver": "stale for 300 s" } },
+      "vars": { "round trips to server": 4, "stale answer left (s)": 300 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<p>So the address in DNS should belong to something that survives one machine dying, such as a pair of load balancers sharing a floating IP.</p>
+
+<h2>Four layers, briefly</h2>
+
+<p><strong>DNS</strong> turns a name into an IP address, and every layer caches the answer for the record's TTL. GeoDNS returns a different address depending on where the resolver is, which is how users reach the nearest region.</p>
+
+<p><strong>TCP</strong> gives a reliable, ordered byte stream: lost packets are resent and bytes arrive in order. The price is the handshake and <strong>head-of-line blocking</strong>: one lost packet holds up everything behind it. <strong>UDP</strong> has no handshake and no guarantees. Use it when late data is worthless (voice, video calls, game state) and let the app handle loss.</p>
+
+<p><strong>TLS</strong> encrypts the connection and proves the server's identity. TLS 1.3 takes one round trip to set up; the older TLS 1.2 takes two. Most designs <strong>terminate TLS at the load balancer</strong>, so app servers do not each manage certificates.</p>
+
+<p><strong>HTTP</strong> is request and response: method, path, headers, body, status code. HTTP/1.1 sends one request at a time per connection. HTTP/2 runs many requests as streams over one TCP connection, though a lost packet still stalls them all. HTTP/3 runs over QUIC, which is built on UDP: streams are independent and connection plus encryption setup takes one round trip.</p>
+
+<h2>HTTP, gRPC or WebSockets</h2>
+
+<x-tradeoffs caption="Three ways for programs to talk">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "HTTP with JSON (REST)",
+      "good": "Works everywhere: browsers, phones, caches, CDNs. Easy to read and debug.",
+      "bad": "Bigger text payloads. The client must ask; the server cannot push.",
+      "pick": "Public and client-facing APIs.",
+      "default": true
+    },
+    {
+      "name": "gRPC",
+      "good": "Compact binary messages, typed schemas with generated clients, streaming, over HTTP/2.",
+      "bad": "Browsers need a proxy to call it. Harder to inspect by hand.",
+      "pick": "High-volume calls between your own services."
+    },
+    {
+      "name": "WebSocket",
+      "good": "One long-lived connection where both sides send whenever they like.",
+      "bad": "Every open connection is state on a server, which changes scaling and deploys.",
+      "pick": "Two-way realtime features: chat, multiplayer, live editing."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The default to say: "REST over HTTPS for clients, gRPC between services." Change your mind on the client side when the server must push; <a href="/system-design/realtime-communication.html">Realtime Communication</a> compares the push options.</p>
+
+<h2>Numbers worth remembering</h2>
+
+<ul>
+<li>Light in fibre: about 200 km per ms, so every 1,000 km adds at least 10 ms of round trip.</li>
+<li>Round trip inside one data center: about 0.5 ms. Across a continent (4,000 km): 40 ms or more. Across an ocean (8,000 km): 80 ms or more.</li>
+<li>New HTTPS connection: 3 round trips to the first byte with TLS 1.3, 4 with TLS 1.2. Reused connection: 1.</li>
+<li>1 Gbit/s is 125 MB/s, because a byte is 8 bits.</li>
+</ul>
+
+<x-estimate title="Time to first byte for a new visitor">
+<script type="application/json">
+{
+  "question": "A user 6,000 km from your only region opens your site, with the DNS answer already cached. How long until the first byte of the page arrives?",
+  "givens": ["Light in fibre: about 200 km per ms", "TLS 1.3: 3 round trips including the request", "The server takes 20 ms to build the page"],
+  "unit": "duration",
+  "answer": "200 ms",
+  "accept": ["100 ms", "600 ms"],
+  "steps": ["One way: 6,000 ÷ 200 = 30 ms, so a round trip is 60 ms", "TCP + TLS + request: 3 × 60 = 180 ms", "Plus the server: 180 + 20 = 200 ms"],
+  "note": "A server twice as fast saves 10 ms. A region near the user saves most of the 180."
+}
+</script>
+</x-estimate>
+
+<h2>In the interview</h2>
+
+<p>Bring networking up when distance matters: users on several continents with a latency target, mobile clients, or a feature where the server pushes. Phrases that show judgement: "Every round trip costs at least 80 ms from there, so I want fewer round trips, not faster servers." "TLS ends at the load balancer." "Clients get REST, services talk gRPC."</p>
+
+<x-interview title="A slow app far from the servers">
+<x-interviewer>Users about 8,000 km from our only region say the app is slow. What do you do?</x-interviewer>
+<x-you>First I'd check where the time goes. If the server takes 30 ms but users wait a second, it's round trips: each costs at least 80 ms from there, and a new connection plus a few sequential API calls adds up fast.</x-you>
+<x-interviewer>So what's the fix?</x-interviewer>
+<x-you>Cheapest first: static files on a CDN, connections terminated at edge locations near users so handshakes are short, and one batched call for the home screen instead of five. If that's not enough, a read replica region near them, since most of this traffic is reads.</x-you>
+<x-coach>It measures first, counts round trips and orders fixes by cost. A weak answer says "add more servers", which does nothing for distance.</x-coach>
+</x-interview>
+
+<p>Follow-ups to expect:</p>
+
+<ul>
+<li><strong>"TCP or UDP for a video call?"</strong> UDP, or a protocol built on it. A late frame is useless, so resending it only adds delay.</li>
+<li><strong>"Is traffic behind the load balancer encrypted?"</strong> Inside a private network it often is not. If compliance or a zero-trust policy asks for it, re-encrypt to the servers or use mutual TLS between services, at some cost in CPU and certificates.</li>
+<li><strong>"Why not fail over by changing DNS?"</strong> Cached answers live until the TTL runs out, sometimes longer. DNS moves traffic between regions over minutes; it does not survive a machine failure.</li>
+</ul>
+
+<h2>Common mistakes</h2>
+
+<x-callout type="mistake" title="Sequential calls over a long link">
+<p>A screen that makes 5 API calls one after another, at 80 ms per round trip, waits 400 ms before any server work. Call in parallel, or add one endpoint that returns what the screen needs.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Treating DNS as instant">
+<p>A changed record moves nobody until cached answers expire. Lower the TTL a day before a planned move, and never rely on DNS alone to route around a dead machine.</p>
+</x-callout>
+
+<x-quiz>
+<script type="application/json">
+{
+  "questions": [
+    {
+      "question": "The user from the estimate (60 ms round trip, 20 ms server, DNS cached) reaches a server that only speaks TLS 1.2. How long until the first byte?",
+      "options": [
+        { "text": "200 ms", "why": "That is the TLS 1.3 answer. TLS 1.2 needs one more round trip." },
+        { "text": "260 ms", "correct": true, "why": "TCP 1 + TLS 2 + request 1 = 4 round trips: 4 × 60 + 20 = 260 ms." },
+        { "text": "320 ms", "why": "That adds a round trip for DNS, but the answer was cached." },
+        { "text": "80 ms", "why": "That is a reused connection: one round trip plus server time." }
+      ]
+    },
+    {
+      "question": "Thirty internal services call each other hundreds of thousands of times a second, and teams want typed contracts. What fits those calls?",
+      "options": [
+        { "text": "REST with JSON", "why": "It works, but you pay for text parsing on every call and get no generated, typed clients." },
+        { "text": "gRPC", "correct": true, "why": "Binary messages and generated clients, and you control both ends, so browser support does not matter." },
+        { "text": "WebSockets", "why": "These are request and response calls. A push channel adds connection state for nothing." }
+      ]
+    },
+    {
+      "question": "You moved a service to a new IP. The DNS record's TTL is 3,600 seconds. Twenty minutes later some users still reach the old address. Why?",
+      "options": [
+        { "text": "DNS changes take a full day to spread", "why": "There is no fixed delay. What matters is how long the old answer is cached." },
+        { "text": "Their resolvers cached the old answer and may keep it for an hour", "correct": true, "why": "A TTL of 3,600 seconds allows an hour of caching. Lower it well before a planned move." },
+        { "text": "The server's TLS certificate is still valid", "why": "Certificates have nothing to do with which address a name resolves to." }
+      ]
+    }
+  ]
+}
+</script>
+</x-quiz>
+
+<h2>What to practise next</h2>
+
+<p>The box that received every request in the tracer is next: <a href="/system-design/load-balancing.html">Load Balancing</a>. To see distance shape a whole design, work through <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>.</p>
