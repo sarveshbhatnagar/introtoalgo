@@ -3,6 +3,7 @@
 // validator accepts is exactly what the build can render.
 import { esc, stripTags, slugify, parseAttrs, dedent } from './util.mjs';
 import { highlightLines, LANG_LABEL } from './highlight.mjs';
+import { validateArch, validateArchState, layoutArch, renderArchSvg, archBox } from './arch.mjs';
 
 export const CODE_LANGS = ['js', 'py', 'text', 'json', 'bash', 'sql', 'prompt'];
 export const CALLOUT_TYPES = {
@@ -11,9 +12,12 @@ export const CALLOUT_TYPES = {
   tip: 'Tip',
   'real-world': 'In the real world',
 };
-// Order matters: inner components first (an <x-tryit> answer may hold code, prompts and callouts).
-const COMPONENT_NAMES = ['x-code', 'x-tracer', 'x-quiz', 'x-complexity', 'x-figure', 'x-prompt', 'x-callout', 'x-tryit'];
-const CHILD_NAMES = ['x-task', 'x-start', 'x-answer', 'x-user', 'x-model', 'x-system'];
+// Order matters: inner components first (an <x-tryit> answer may hold code,
+// diagrams, tables, prompts and callouts).
+export const COMPONENT_NAMES = ['x-code', 'x-arch', 'x-tracer', 'x-quiz', 'x-complexity', 'x-figure', 'x-prompt', 'x-interview', 'x-tradeoffs', 'x-estimate', 'x-checklist', 'x-callout', 'x-tryit'];
+const CHILD_NAMES = ['x-task', 'x-start', 'x-answer', 'x-user', 'x-model', 'x-system', 'x-interviewer', 'x-you', 'x-coach'];
+// Components whose JSON holds prose (counted as words and checked for voice).
+const JSON_PROSE = ['x-tracer', 'x-quiz', 'x-estimate', 'x-tradeoffs', 'x-checklist'];
 
 /* ---------------------------------------------------------------------- */
 /* icons (inline SVG, 24x24 grid, stroke = currentColor)                   */
@@ -52,6 +56,12 @@ export const ICONS = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   hint: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3Z"/>',
   reset: '<path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M4 4v4h4"/>',
+  stack: '<rect x="4" y="3.5" width="16" height="6" rx="1.5"/><rect x="4" y="14.5" width="16" height="6" rx="1.5"/><path d="M12 9.5v5M7.5 6.5h.01M7.5 17.5h.01"/>',
+  interview: '<path d="M3 5h11v8H8l-5 3.5V5Z"/><path d="M14 9h7v10.5L17 17h-6v-4"/>',
+  calc: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 14.5h.01M12 14.5h.01M16 14.5h.01M8 18h.01M12 18h4"/>',
+  scale: '<path d="M12 4v16M5 20h14M4 8h16"/><path d="m4 8-2.5 6a3 3 0 0 0 5 0L4 8ZM20 8l-2.5 6a3 3 0 0 0 5 0L20 8Z"/>',
+  checklist: '<path d="m4 6.5 1.8 1.8L9 5M4 12.5l1.8 1.8L9 11M4 18.5l1.8 1.8L9 17"/><path d="M12 7h8M12 13h8M12 19h8"/>',
+  timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M9.5 3h5"/>',
 };
 
 export function icon(name, cls = 'icon') {
@@ -145,7 +155,7 @@ function doCode(attrs, inner, rep, off) {
 /* ---------------------------------------------------------------------- */
 /* x-tracer                                                                */
 /* ---------------------------------------------------------------------- */
-const STEP_KEYS = ['caption', 'line', 'array', 'arrays', 'grid', 'tree', 'graph', 'vars'];
+const STEP_KEYS = ['caption', 'line', 'array', 'arrays', 'grid', 'tree', 'graph', 'arch', 'vars'];
 const ARRAY_KEYS = ['label', 'values', 'highlight', 'mark', 'dim', 'pointers', 'style'];
 const GRID_KEYS = ['label', 'rows', 'rowLabels', 'colLabels', 'highlight', 'mark', 'dim'];
 const TREE_KEYS = ['label', 'values', 'highlight', 'mark', 'dim'];
@@ -200,7 +210,8 @@ function validateGraph(g, where, rep, off) {
 }
 
 function validateTracer(data, rep, off) {
-  if (!onlyKeys(data, ['title', 'code', 'codeLang', 'steps'], '<x-tracer> JSON', rep, off)) return false;
+  if (!onlyKeys(data, ['title', 'code', 'codeLang', 'arch', 'steps'], '<x-tracer> JSON', rep, off)) return false;
+  const archOk = data.arch === undefined || validateArch(data.arch, '<x-tracer> "arch"', rep, off);
   if (data.code !== undefined && (!Array.isArray(data.code) || !data.code.every((l) => typeof l === 'string'))) rep.error('<x-tracer> "code" must be a list of strings (one per line).', off);
   if (data.codeLang !== undefined && !CODE_LANGS.includes(data.codeLang)) rep.error(`<x-tracer> "codeLang" must be one of ${CODE_LANGS.join(', ')}.`, off);
   if (!Array.isArray(data.steps) || data.steps.length < 2 || data.steps.length > 60) { rep.error('<x-tracer> needs "steps": a list of 2 to 60 steps.', off); return false; }
@@ -221,10 +232,14 @@ function validateTracer(data, rep, off) {
     if (s.grid) validateGrid(s.grid, `${w}.grid`, rep, off);
     if (s.tree) validateTree(s.tree, `${w}.tree`, rep, off);
     if (s.graph) validateGraph(s.graph, `${w}.graph`, rep, off);
+    if (s.arch !== undefined) {
+      if (data.arch === undefined) rep.error(`${w}: "arch" needs a top-level "arch" diagram (nodes and edges) in the tracer JSON.`, off);
+      else if (archOk) validateArchState(s.arch, data.arch, `${w}.arch`, rep, off);
+    }
     if (s.vars !== undefined && (typeof s.vars !== 'object' || Array.isArray(s.vars) || s.vars === null)) rep.error(`${w}.vars must be an object like {"sum": 7}.`, off);
-    if (!s.array && !s.arrays && !s.grid && !s.tree && !s.graph && !s.vars && s.line === undefined) rep.warn(`${w}: has no state (array, grid, tree, graph, vars or line). The reader only sees the caption.`, off);
+    if (!data.arch && !s.array && !s.arrays && !s.grid && !s.tree && !s.graph && !s.vars && s.line === undefined) rep.warn(`${w}: has no state (array, grid, tree, graph, vars or line). The reader only sees the caption.`, off);
   });
-  return true;
+  return archOk;
 }
 
 function renderArray(a, prev) {
@@ -349,11 +364,14 @@ function renderVars(vars, prev) {
     .join('')}</dl>`;
 }
 
-export function renderTracer(data, title) {
+let archCounter = 0;
+export function renderTracer(data, title, archLayout = null) {
   const t = title || data.title || 'Step through it';
   let prev = {};
+  const archId = archLayout ? `ar${++archCounter}` : '';
   const steps = data.steps.map((s, i) => {
     let state = '';
+    if (archLayout) state += archBox(renderArchSvg(archLayout, s.arch || null, { uid: `${archId}-${i + 1}`, title: `${t}, step ${i + 1}` }), archLayout.viewBox[2]);
     const arrays = s.arrays || (s.array ? [s.array] : []);
     const prevArrays = prev.arrays || (prev.array ? [prev.array] : []);
     arrays.forEach((a, j) => (state += renderArray(a, prevArrays[j])));
@@ -376,7 +394,7 @@ export function renderTracer(data, title) {
 <input type="range" class="tracer__range" min="1" max="${steps.length}" value="1" aria-label="Step">
 <span class="tracer__count" aria-live="polite"><span data-tr-cur>1</span> / ${steps.length}</span>
 </div>`;
-  return `<figure class="tracer${code ? ' tracer--code' : ''}" data-tracer tabindex="-1">
+  return `<figure class="tracer${code ? ' tracer--code' : ''}${archLayout ? ' tracer--arch' : ''}" data-tracer tabindex="-1">
 <figcaption class="tracer__head">${icon('target')}<span class="tracer__title">${esc(t)}</span><span class="tracer__hint">Use the arrows or ← → keys</span></figcaption>
 <div class="tracer__body">${code}<ol class="tracer__steps">${steps.join('')}</ol></div>${controls}</figure>`;
 }
@@ -385,7 +403,14 @@ function doTracer(attrs, inner, rep, off) {
   const data = parseJsonBlock(inner, 'x-tracer', rep, off);
   if (!data) return '';
   if (!validateTracer(data, rep, off)) return '';
-  try { return renderTracer(data, attrs.title); } catch (e) { rep.error('<x-tracer> could not be rendered: ' + e.message, off); return ''; }
+  try {
+    let lay = null;
+    if (data.arch) {
+      lay = layoutArch(data.arch);
+      for (const w of lay.warnings) rep.warn(`<x-tracer> "arch": ${w}`, off);
+    }
+    return renderTracer(data, attrs.title, lay);
+  } catch (e) { rep.error('<x-tracer> could not be rendered: ' + e.message, off); return ''; }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -525,12 +550,202 @@ function doTryit(attrs, inner, rep, off) {
   const id = `tryit-${++tryCounter}`;
   const startText = start ? dedent(start) : '';
   const rows = Math.min(14, Math.max(4, startText.split('\n').length + 1));
-  return `<section class="tryit" data-tryit aria-labelledby="${id}-h">
-<div class="tryit__head">${icon('pencil')}<span id="${id}-h">${esc(attrs.title ? 'Try it: ' + attrs.title : 'Try it')}</span></div>
+  // variant="turn": a staged step of a design case study ("Your turn"), with an optional timer
+  if (attrs.variant !== undefined && attrs.variant !== 'turn') rep.error('<x-tryit> variant must be "turn" (or left out).', off);
+  const turn = attrs.variant === 'turn';
+  let minutes = 0;
+  if (attrs.minutes !== undefined) {
+    minutes = Number(attrs.minutes);
+    if (!turn) rep.error('<x-tryit> minutes="…" only works with variant="turn".', off);
+    else if (!Number.isInteger(minutes) || minutes < 1 || minutes > 15) { rep.error('<x-tryit> minutes must be a whole number from 1 to 15.', off); minutes = 0; }
+  }
+  const headText = turn ? (attrs.title ? 'Your turn: ' + attrs.title : 'Your turn') : attrs.title ? 'Try it: ' + attrs.title : 'Try it';
+  const timer = turn && minutes ? `<button type="button" class="tryit__timer" data-timer="${minutes * 60}" aria-label="Start a ${minutes}-minute timer">${icon('timer')}<span data-timer-label>${minutes} min</span></button>` : '';
+  return `<section class="tryit${turn ? ' tryit--turn' : ''}" data-tryit aria-labelledby="${id}-h">
+<div class="tryit__head">${icon(turn ? 'stack' : 'pencil')}<span id="${id}-h">${esc(headText)}</span>${timer}</div>
 <div class="tryit__task">${task || ''}</div>
-<label class="tryit__label" for="${id}-ta">${start ? 'Rewrite it here' : 'Your answer'}</label>
-<textarea class="tryit__input" id="${id}-ta" rows="${rows}" spellcheck="true" data-tryit-input placeholder="Write your version here. It stays on this device.">${esc(startText)}</textarea>
-<details class="tryit__answer"><summary>${icon('sparkle')}Show a sample answer</summary><div class="tryit__answer-body">${answer || ''}</div></details>
+<label class="tryit__label" for="${id}-ta">${start ? 'Rewrite it here' : turn ? 'Your notes' : 'Your answer'}</label>
+<textarea class="tryit__input" id="${id}-ta" rows="${rows}" spellcheck="true" data-tryit-input placeholder="${turn ? 'Jot your answer before you read on. It stays on this device.' : 'Write your version here. It stays on this device.'}">${esc(startText)}</textarea>
+<details class="tryit__answer"><summary>${icon('sparkle')}${turn ? 'Compare with a model answer' : 'Show a sample answer'}</summary><div class="tryit__answer-body">${answer || ''}</div></details>
+</section>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/* x-arch: architecture diagram laid out on a grid                         */
+/* ---------------------------------------------------------------------- */
+function doArch(attrs, inner, rep, off) {
+  const data = parseJsonBlock(inner, 'x-arch', rep, off);
+  if (!attrs.caption || !attrs.caption.trim()) rep.error('<x-arch> needs a caption="…" saying what the diagram shows.', off);
+  if (!data) return '';
+  if (!validateArch(data, '<x-arch>', rep, off)) return '';
+  const lay = layoutArch(data);
+  for (const w of lay.warnings) rep.warn(`<x-arch>: ${w}`, off);
+  const svg = renderArchSvg(lay, null, { uid: `ar${++archFigCounter}f`, title: attrs.caption || data.title });
+  const legend = data.edges.some((e) => e.style === 'async')
+    ? '<p class="ar-legend"><span class="ar-legend__item"><svg viewBox="0 0 28 8" aria-hidden="true"><line x1="0" y1="4" x2="28" y2="4" class="ar-legend__sync"/></svg>request and reply</span><span class="ar-legend__item"><svg viewBox="0 0 28 8" aria-hidden="true"><line x1="0" y1="4" x2="28" y2="4" class="ar-legend__async"/></svg>asynchronous message</span></p>'
+    : '';
+  return `<figure class="fig fig--arch"><div class="fig__media fig__media--arch">${archBox(svg, lay.viewBox[2])}</div>${legend}${attrs.caption ? `<figcaption>${esc(attrs.caption)}</figcaption>` : ''}</figure>`;
+}
+let archFigCounter = 0;
+
+/* ---------------------------------------------------------------------- */
+/* x-estimate: back-of-the-envelope exercise                               */
+/* ---------------------------------------------------------------------- */
+// unit families: [label shown in the select, factor to base unit, aliases]
+export const EST_UNITS = {
+  bytes: { def: 'GB', units: [['B', 1, ['b', 'byte', 'bytes']], ['KB', 1e3, ['kb']], ['MB', 1e6, ['mb']], ['GB', 1e9, ['gb']], ['TB', 1e12, ['tb']], ['PB', 1e15, ['pb']], ['EB', 1e18, ['eb']]] },
+  'bytes/s': { def: 'MB/s', units: [['B/s', 1, ['b/s']], ['KB/s', 1e3, ['kb/s']], ['MB/s', 1e6, ['mb/s']], ['GB/s', 1e9, ['gb/s']], ['TB/s', 1e12, ['tb/s']]] },
+  count: { def: 'million', units: [['(no unit)', 1, ['']], ['thousand', 1e3, ['k', 'thousand']], ['million', 1e6, ['m', 'million', 'mn']], ['billion', 1e9, ['b', 'bn', 'billion']], ['trillion', 1e12, ['t', 'trillion']]] },
+  'count/s': { def: 'thousand/s', units: [['/s', 1, ['/s', '']], ['thousand/s', 1e3, ['k/s', 'thousand/s', 'k', 'thousand']], ['million/s', 1e6, ['m/s', 'million/s', 'm', 'million']], ['billion/s', 1e9, ['b/s', 'billion/s', 'b', 'billion']]] },
+  duration: { def: 'seconds', units: [['ms', 1e-3, ['ms', 'millisecond', 'milliseconds']], ['seconds', 1, ['s', 'sec', 'second', 'seconds']], ['minutes', 60, ['min', 'minute', 'minutes']], ['hours', 3600, ['h', 'hr', 'hour', 'hours']], ['days', 86400, ['d', 'day', 'days']], ['years', 31536000, ['y', 'yr', 'year', 'years']]] },
+};
+export function parseQuantity(text, unit) {
+  const fam = EST_UNITS[unit];
+  const m = String(text).trim().match(/^([0-9][0-9,]*(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\s*(.*)$/i);
+  if (!fam || !m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  let u = m[2].trim().toLowerCase().replace(/\s+per\s+second$/, '/s').replace(/\s+/g, '');
+  for (const [, f, aliases] of fam.units) if (aliases.includes(u)) return n * f;
+  return null;
+}
+function doEstimate(attrs, inner, rep, off) {
+  const data = parseJsonBlock(inner, 'x-estimate', rep, off);
+  if (!data) return '';
+  const W = '<x-estimate>';
+  if (!onlyKeys(data, ['question', 'givens', 'unit', 'answer', 'accept', 'choices', 'steps', 'note'], `${W} JSON`, rep, off)) return '';
+  let ok = true;
+  const E = (m) => { rep.error(`${W}: ${m}`, off); ok = false; };
+  if (typeof data.question !== 'string' || !data.question.trim()) E('"question" is required, like "How much storage do the links need over 5 years?"');
+  if (!Array.isArray(data.givens) || !data.givens.length || data.givens.length > 8 || !data.givens.every((g) => typeof g === 'string' && g.trim())) E('"givens" must be a list of 1 to 8 facts the learner starts from.');
+  if (!EST_UNITS[data.unit]) { E(`"unit" must be one of: ${Object.keys(EST_UNITS).join(', ')}.`); return ''; }
+  const names = EST_UNITS[data.unit].units.map((u) => u[0] === '(no unit)' ? 'no unit' : u[0]).join(', ');
+  const ans = typeof data.answer === 'string' ? parseQuantity(data.answer, data.unit) : null;
+  if (ans === null) E(`"answer" must be a number with a ${data.unit} unit, like ${JSON.stringify(data.unit === 'bytes' ? '3 TB' : data.unit === 'count' ? '6 billion' : data.unit === 'count/s' ? '40 thousand/s' : data.unit === 'bytes/s' ? '120 MB/s' : '20 minutes')}. Units: ${names}.`);
+  let lo = null, hi = null;
+  if (!Array.isArray(data.accept) || data.accept.length !== 2) E('"accept" must be ["low", "high"]: the range of answers you count as right, in the same units as "answer".');
+  else {
+    lo = parseQuantity(data.accept[0], data.unit); hi = parseQuantity(data.accept[1], data.unit);
+    if (lo === null || hi === null) E(`"accept" values must be numbers with ${data.unit} units, like the answer. Units: ${names}.`);
+    else if (!(lo < hi)) E('"accept": the first value must be lower than the second.');
+    else if (ans !== null && (ans < lo || ans > hi)) E('"answer" must lie inside the "accept" range.');
+    else if (hi / lo > 100.0001) rep.warn(`${W}: "accept" spans more than 100x. That accepts almost anything; aim for about 3x to 30x around the answer.`, off);
+    else if (hi / lo < 2.9999) rep.warn(`${W}: "accept" spans less than 3x. Estimates are rough; accept at least about 3x around the answer.`, off);
+  }
+  if (!Array.isArray(data.steps) || !data.steps.length || data.steps.length > 8 || !data.steps.every((g) => typeof g === 'string' && g.trim())) E('"steps" must be a list of 1 to 8 lines of worked arithmetic, like "100 million links × 12 × 5 = 6 billion links".');
+  let choices = null;
+  if (data.choices !== undefined) {
+    if (!Array.isArray(data.choices) || data.choices.length < 3 || data.choices.length > 5) E('"choices" (optional) must be a list of 3 to 5 answers to pick from, like ["300 GB", "3 TB", "30 TB", "300 TB"].');
+    else {
+      choices = data.choices.map((c) => ({ text: c, v: parseQuantity(c, data.unit) }));
+      if (choices.some((c) => c.v === null)) E(`every choice must be a number with a ${data.unit} unit.`);
+      else if (lo !== null && hi !== null && choices.filter((c) => c.v >= lo && c.v <= hi).length !== 1) E('exactly one choice must lie inside the "accept" range.');
+    }
+  }
+  if (data.note !== undefined && (typeof data.note !== 'string' || !data.note.trim())) E('"note" (optional) must be a sentence.');
+  if (!ok) return '';
+  const id = `est-${++estCounter}`;
+  const fam = EST_UNITS[data.unit];
+  const cfg = { lo, hi, ans, answer: data.answer };
+  const form = choices
+    ? `<div class="est__choices" role="group" aria-label="Pick an estimate">${choices.map((c) => `<button type="button" class="est__choice" data-est-choice="${c.v}">${esc(c.text)}</button>`).join('')}</div>`
+    : `<form class="est__form" data-est-form novalidate><label class="sr-only" for="${id}-n">Your estimate</label><input class="est__num" id="${id}-n" type="text" inputmode="decimal" autocomplete="off" placeholder="Your number" data-est-num><label class="sr-only" for="${id}-u">Unit</label><select class="est__unit" id="${id}-u" data-est-unit>${fam.units.map((u) => `<option value="${u[1]}"${u[0] === fam.def ? ' selected' : ''}>${esc(u[0])}</option>`).join('')}</select><button type="submit" class="btn btn--accent btn--sm">Check</button></form>`;
+  return `<section class="est" data-estimate="${esc(JSON.stringify(cfg))}" aria-labelledby="${id}-h">
+<div class="est__head">${icon('calc')}<span id="${id}-h">${esc(attrs.title ? 'Estimate: ' + attrs.title : 'Estimate it')}</span></div>
+<p class="est__q">${data.question}</p>
+<div class="est__givens"><span class="est__k">You know</span><ul>${data.givens.map((g) => `<li>${g}</li>`).join('')}</ul></div>
+${form}
+<p class="est__result" data-est-result aria-live="polite"></p>
+<details class="est__work"><summary>${icon('sparkle')}Show the working</summary><div class="est__work-body"><ol>${data.steps.map((s) => `<li>${s}</li>`).join('')}</ol><p class="est__answer"><span class="est__k">Estimate</span> <strong>${esc(data.answer)}</strong> <span class="muted">(anything from ${esc(data.accept[0])} to ${esc(data.accept[1])} is a good answer)</span></p>${data.note ? `<p class="est__note">${data.note}</p>` : ''}</div></details>
+</section>`;
+}
+let estCounter = 0;
+
+/* ---------------------------------------------------------------------- */
+/* x-tradeoffs: options compared on good at / bad at / pick it when        */
+/* ---------------------------------------------------------------------- */
+function doTradeoffs(attrs, inner, rep, off) {
+  const data = parseJsonBlock(inner, 'x-tradeoffs', rep, off);
+  if (!data) return '';
+  if (!onlyKeys(data, ['options'], '<x-tradeoffs> JSON', rep, off)) return '';
+  if (!Array.isArray(data.options) || data.options.length < 2 || data.options.length > 6) { rep.error('<x-tradeoffs> needs "options": a list of 2 to 6 options.', off); return ''; }
+  let ok = true;
+  data.options.forEach((o, i) => {
+    const w = `<x-tradeoffs> option ${i + 1}`;
+    if (!onlyKeys(o, ['name', 'good', 'bad', 'pick', 'default'], w, rep, off)) { ok = false; return; }
+    for (const k of ['name', 'good', 'bad', 'pick']) if (typeof o[k] !== 'string' || !o[k].trim()) { rep.error(`${w}: "${k}" is required${k === 'pick' ? ' (when you would choose it)' : ''}.`, off); ok = false; }
+    if (o.default !== undefined && typeof o.default !== 'boolean') { rep.error(`${w}: "default" must be true or false.`, off); ok = false; }
+  });
+  if (data.options.filter((o) => o.default).length > 1) { rep.error('<x-tradeoffs>: at most one option can be "default": true.', off); ok = false; }
+  if (!ok) return '';
+  const head = attrs.caption ? `<caption>${esc(attrs.caption)}</caption>` : '';
+  const rows = data.options
+    .map((o) => `<tr${o.default ? ' class="is-default"' : ''}><th scope="row">${o.name}${o.default ? ' <span class="to__badge">Usual default</span>' : ''}</th><td data-label="Good at">${o.good}</td><td data-label="Bad at">${o.bad}</td><td data-label="Pick it when">${o.pick}</td></tr>`)
+    .join('');
+  return `<div class="to"><div class="to__scroll"><table class="to__table">${head}<thead><tr><th scope="col">Option</th><th scope="col"><span class="to__dot to__dot--good" aria-hidden="true"></span>Good at</th><th scope="col"><span class="to__dot to__dot--bad" aria-hidden="true"></span>Bad at</th><th scope="col"><span class="to__dot to__dot--pick" aria-hidden="true"></span>Pick it when</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/* x-interview: Interviewer / You exchange                                  */
+/* ---------------------------------------------------------------------- */
+const IV_ROLE = { 'x-interviewer': 'Interviewer', 'x-you': 'You', 'x-coach': 'Coach’s note' };
+function doInterview(attrs, inner, rep, off) {
+  const turns = [];
+  const re = /<(x-interviewer|x-you|x-coach)>([\s\S]*?)<\/\1>/g;
+  let m, rest = inner;
+  while ((m = re.exec(inner))) {
+    turns.push({ role: m[1], html: m[2].trim() });
+    rest = rest.replace(m[0], '');
+  }
+  if (rest.trim()) rep.error('<x-interview> may only contain <x-interviewer>, <x-you> and <x-coach> blocks.', off);
+  if (!turns.some((t) => t.role === 'x-interviewer') || !turns.some((t) => t.role === 'x-you')) rep.error('<x-interview> needs at least one <x-interviewer> and one <x-you> turn.', off);
+  if (turns.some((t) => !t.html)) rep.error('<x-interview>: a turn is empty.', off);
+  if (attrs.tone && !['strong', 'weak'].includes(attrs.tone)) rep.error('<x-interview> tone must be "strong" or "weak" (or left out).', off);
+  const tone = attrs.tone || '';
+  const toneLabel = tone === 'strong' ? `<span class="iv__tone iv__tone--strong">${icon('check')}Strong answer</span>` : tone === 'weak' ? `<span class="iv__tone iv__tone--weak">${icon('x')}Weak answer</span>` : '';
+  const wrap = (h) => (/^\s*</.test(h) ? h : `<p>${h}</p>`);
+  const body = turns
+    .map((t) => (t.role === 'x-coach'
+      ? `<aside class="iv__coach"><span class="iv__coach-k">${icon('hint')}${IV_ROLE[t.role]}</span>${wrap(t.html)}</aside>`
+      : `<div class="iv__turn iv__turn--${t.role === 'x-you' ? 'you' : 'them'}"><div class="iv__role">${IV_ROLE[t.role]}</div><div class="iv__text">${wrap(t.html)}</div></div>`))
+    .join('');
+  return `<figure class="iv${tone ? ` iv--${tone}` : ''}"><figcaption class="iv__head"><span class="iv__label">${icon('interview')}${esc(attrs.title || 'In the interview')}</span>${toneLabel}</figcaption><div class="iv__body">${body}</div></figure>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/* x-checklist: self-review rubric, saved per lesson on this device        */
+/* ---------------------------------------------------------------------- */
+let checkCounter = 0;
+function doChecklist(attrs, inner, rep, off) {
+  const data = parseJsonBlock(inner, 'x-checklist', rep, off);
+  if (!data) return '';
+  if (!onlyKeys(data, ['items', 'groups'], '<x-checklist> JSON', rep, off)) return '';
+  let groups;
+  if (data.items !== undefined && data.groups !== undefined) { rep.error('<x-checklist>: use "items" or "groups", not both.', off); return ''; }
+  if (data.items !== undefined) groups = [{ title: '', items: data.items }];
+  else if (Array.isArray(data.groups) && data.groups.length) groups = data.groups;
+  else { rep.error('<x-checklist> needs "items": a list of things the learner checks, or "groups": [{"title": "…", "items": […]}].', off); return ''; }
+  let ok = true, total = 0;
+  groups.forEach((g, i) => {
+    if (!onlyKeys(g, ['title', 'items'], `<x-checklist> group ${i + 1}`, rep, off)) { ok = false; return; }
+    if (data.groups && (typeof g.title !== 'string' || !g.title.trim())) { rep.error(`<x-checklist> group ${i + 1}: "title" is required.`, off); ok = false; }
+    if (!Array.isArray(g.items) || !g.items.length || !g.items.every((t) => typeof t === 'string' && t.trim())) { rep.error(`<x-checklist> ${data.groups ? `group ${i + 1} ` : ''}"items" must be a non-empty list of strings.`, off); ok = false; return; }
+    total += g.items.length;
+  });
+  if (ok && (total < 3 || total > 24)) { rep.error(`<x-checklist>: ${total} items. Use 3 to 24.`, off); ok = false; }
+  if (!ok) return '';
+  const id = `chk-${++checkCounter}`;
+  let n = 0;
+  const lists = groups
+    .map((g) => `${g.title ? `<h3 class="chk__group">${esc(g.title)}</h3>` : ''}<ul class="chk__list">${g.items
+      .map((t) => { const k = n++; return `<li><label class="chk__item"><input type="checkbox" data-chk-item="${k}"><span class="chk__box" aria-hidden="true">${icon('check')}</span><span class="chk__text">${t}</span></label></li>`; })
+      .join('')}</ul>`)
+    .join('');
+  return `<section class="chk" data-checklist aria-labelledby="${id}-h">
+<div class="chk__head">${icon('checklist')}<span id="${id}-h">${esc(attrs.title || 'Self-review')}</span><span class="chk__count" data-chk-count aria-live="polite">0 of ${total}</span></div>
+<p class="chk__intro">${esc(attrs.intro || 'After your attempt, tick what you really did. Be strict: "I thought about it" is not "I said it out loud".')}</p>
+<div class="bar chk__bar" aria-hidden="true"><span class="bar__fill" style="width:0%"></span></div>
+${lists}
+<div class="chk__foot"><span class="chk__verdict" data-chk-verdict></span><button type="button" class="btn-text" data-chk-reset>Clear</button></div>
 </section>`;
 }
 
@@ -545,7 +760,7 @@ function doCallout(attrs, inner, rep, off) {
   return `<aside class="callout callout--${type}"><div class="callout__head">${icon(type)}<span>${esc(attrs.title || CALLOUT_TYPES[type])}</span></div><div class="callout__body">${body}</div></aside>`;
 }
 
-const RENDERERS = { 'x-code': doCode, 'x-tracer': doTracer, 'x-quiz': doQuiz, 'x-complexity': doComplexity, 'x-figure': doFigure, 'x-prompt': doPrompt, 'x-tryit': doTryit, 'x-callout': doCallout };
+const RENDERERS = { 'x-code': doCode, 'x-arch': doArch, 'x-tracer': doTracer, 'x-quiz': doQuiz, 'x-complexity': doComplexity, 'x-figure': doFigure, 'x-prompt': doPrompt, 'x-interview': doInterview, 'x-tradeoffs': doTradeoffs, 'x-estimate': doEstimate, 'x-checklist': doChecklist, 'x-tryit': doTryit, 'x-callout': doCallout };
 
 /* ---------------------------------------------------------------------- */
 /* tag balance check                                                       */
@@ -637,7 +852,8 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
   const rep = makeReporter(body, lineOffset, errors, warnings);
   checkBalance(body, rep);
   // components are blocks: one inside an open <p> produces broken HTML
-  for (const m of maskRaw(body).matchAll(/<p\b[^>]*>((?:(?!<\/p>)[\s\S])*?)<(x-(?:code|tracer|quiz|complexity|figure|prompt|tryit|callout))\b/g)) {
+  const compAlt = COMPONENT_NAMES.map((n) => n.slice(2)).join('|');
+  for (const m of maskRaw(body).matchAll(new RegExp(`<p\\b[^>]*>((?:(?!<\\/p>)[\\s\\S])*?)<(x-(?:${compAlt}))\\b`, 'g'))) {
     rep.error(`<${m[2]}> is inside a <p>. Components are blocks: close the paragraph first.`, m.index + m[0].length - m[2].length - 1);
   }
 
@@ -654,7 +870,7 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
       const off = body.indexOf(m) >= 0 ? body.indexOf(m) : offset;
       used[name] = (used[name] || 0) + 1;
       const attrs = parseAttrs(attrStr);
-      if (name === 'x-tracer' || name === 'x-quiz') {
+      if (JSON_PROSE.includes(name)) {
         const j = inner.match(/<script[^>]*>([\s\S]*?)<\/script>/);
         if (j) try { const bits = []; collectStrings(JSON.parse(j[1]), bits); proseBits.push(...bits); jsonWords += stripTags(bits.join(' ')).split(/\s+/).filter(Boolean).length; } catch {}
       }
@@ -729,7 +945,7 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
     body
       .replace(/<x-code\b[\s\S]*?<\/x-code>/g, ' ')
       .replace(/<x-prompt\b[\s\S]*?<\/x-prompt>/g, ' ')
-      .replace(/<x-(tracer|quiz|complexity)\b[\s\S]*?<\/x-\1>/g, ' ')
+      .replace(/<x-(tracer|quiz|complexity|estimate|tradeoffs|checklist|arch)\b[\s\S]*?<\/x-\1>/g, ' ')
       .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
       .replace(/<x-start>[\s\S]*?<\/x-start>/g, ' ')
       .replace(/<code>[\s\S]*?<\/code>/g, ' x ')
@@ -740,11 +956,22 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
   // Word count: everything a reader reads as prose, without code, JSON or SVG.
   const words = stripTags(body.replace(/<x-code\b[\s\S]*?<\/x-code>/g, ' ').replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<svg[\s\S]*?<\/svg>/g, ' ')).split(/\s+/).filter(Boolean).length + jsonWords;
 
-  return { html, toc, errors, warnings, used, words };
+  // outline: the h2 sections and which components sit in each (for structure checks)
+  const masked = maskRaw(body);
+  const lineAt = (o) => body.slice(0, o).split('\n').length + lineOffset - 1;
+  const h2s = [...masked.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/g)].map((m) => ({ text: stripTags(m[1]), off: m.index, line: lineAt(m.index) }));
+  const comps = [...masked.matchAll(/<(x-[a-z]+)\b([^>]*)>/g)]
+    .filter((m) => COMPONENT_NAMES.includes(m[1]))
+    .map((m) => {
+      const c = { name: m[1], attrs: parseAttrs(m[2]), off: m.index, line: lineAt(m.index), section: h2s.filter((h) => h.off < m.index).length };
+      if (c.name === 'x-tracer') c.arch = /"arch"\s*:/.test(body.slice(m.index, body.indexOf('</x-tracer>', m.index)));
+      return c;
+    });
+  return { html, toc, errors, warnings, used, words, outline: { h2s, comps } };
 }
 
 function collectStrings(v, out) {
   if (typeof v === 'string') out.push(v);
   else if (Array.isArray(v)) v.forEach((x) => collectStrings(x, out));
-  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (!['values', 'rows', 'code', 'nodes', 'edges', 'pointers', 'vars', 'labels', 'colLabels', 'rowLabels'].includes(k)) collectStrings(x, out);
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (!['values', 'rows', 'code', 'codeLang', 'nodes', 'edges', 'pointers', 'vars', 'labels', 'colLabels', 'rowLabels', 'arch', 'unit', 'answer', 'accept', 'choices'].includes(k)) collectStrings(x, out);
 }

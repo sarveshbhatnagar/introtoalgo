@@ -6,6 +6,7 @@ This is the only document you need to write lessons and practice problems for in
 
 - `content/algorithms/big-o-notation.html` and `content/algorithms/two-pointers.html` (algorithms lessons)
 - `content/ai/prompting-basics.html` (AI lesson)
+- `content/system-design/caching.html` (system design concept lesson) and `content/system-design/design-a-url-shortener.html` (system design case study)
 - `content/practice/matching-receipts.json` (hash map, `unordered`), `squared-deviations.json` (two pointers), `reverse-the-playlist.json` (`ListNode`), `generation-averages.json` (`TreeNode`, `approx`)
 
 Contents:
@@ -19,19 +20,20 @@ Contents:
 7. [Problem quality bar](#7-problem-quality-bar)
 8. [Running the validator](#8-running-the-validator)
 9. [Reference: tracks, modules, lesson slugs, topic ids](#9-reference-ids-and-slugs)
+10. [System design track](#10-system-design-track): components, the concept and case-study quality bars
 
 ---
 
 ## 1. Rules for every writer
 
-- **Only create the files you were assigned.** A lesson is `content/algorithms/<slug>.html` or `content/ai/<slug>.html`. A problem is `content/practice/<slug>.json`. Do not edit any other file: not `curriculum.json`, not the samples, not anything outside `content/`. Do not run `tools/build.mjs`; the orchestrator does that once at the end.
+- **Only create the files you were assigned.** A lesson is `content/algorithms/<slug>.html`, `content/system-design/<slug>.html` or `content/ai/<slug>.html`. A problem is `content/practice/<slug>.json`. Do not edit any other file: not `curriculum.json`, not the samples, not anything outside `content/`. Do not run `tools/build.mjs`; the orchestrator does that once at the end.
 - **The file name is the slug.** Lesson slugs are fixed by `content/curriculum.json` (listed in section 9). Problem slugs are yours to choose, or given to you: lowercase words joined by hyphens, named after your story, never after the famous problem (`matching-receipts`, not `two-sum`).
 - **Run the validator on your files before you finish** and fix every error. Read every warning and fix it unless you have a real reason not to:
   ```
   node tools/check.mjs content/practice/your-problem.json content/algorithms/your-lesson.html
   ```
 - **Everything must be original.** Never copy statements, stories, examples or explanations from LeetCode or any other site or book. The classic name goes in `aka` only.
-- **Links between pages are root-absolute**: `/algorithms/hash-tables.html`, `/ai/tokens.html`, `/practice/matching-receipts.html`. You may link to any lesson in the curriculum even if nobody has written it yet: until it exists, the build shows the link text without a link. Link to a problem only if you know its slug.
+- **Links between pages are root-absolute**: `/algorithms/hash-tables.html`, `/system-design/caching.html`, `/ai/tokens.html`, `/practice/matching-receipts.html`. You may link to any lesson in the curriculum even if nobody has written it yet: until it exists, the build shows the link text without a link. Link to a problem only if you know its slug.
 
 ## 2. Voice rules
 
@@ -79,6 +81,7 @@ Front matter is strict JSON (double quotes, no trailing commas) inside an HTML c
 | `description` | yes | Plain text, at most 155 characters (aim for 80 to 155). Used as the page lead and by search engines. Say what the reader will be able to do. |
 | `minutes` | yes | Whole number, 3 to 40. Reading time plus time to use the tracer and quiz. Roughly words ÷ 150, plus 3. |
 | `tags` | no | List of short lowercase strings. |
+| `kind` | system design only | `"design"` for a case study (every lesson in the Classic Designs and Harder Designs modules, and only those). Leave it out for every other lesson. See [section 10](#10-system-design-track). |
 | `legacy` | no | Old 2017 posts this lesson replaces, from: `mergesort`, `mst`, `speedinguplinkedlist`, `networktheory`, `communitydetection`, `semanticnetworks`, `markovchains`. They are listed at the end of the lesson. Some are already mapped; adding one twice is harmless. |
 
 Body rules:
@@ -397,6 +400,8 @@ The article discusses a company's migration…
 
 ## 5. Lesson quality bar
 
+This is the bar for the algorithms and AI tracks. System design lessons follow [section 10](#10-system-design-track) instead.
+
 Structure, in this order (headings are yours to word):
 
 1. **Hook.** One or two paragraphs with a concrete problem or everyday picture. No heading before it. No definitions, no history.
@@ -631,6 +636,18 @@ To see a page as learners will, the orchestrator runs `node tools/build.mjs` and
 | `dynamic-programming` | 9. Dynamic Programming | `dp-introduction`, `dp-1d`, `dp-on-grids`, `knapsack`, `dp-on-strings`, `longest-increasing-subsequence` |
 | `advanced` | 10. Advanced Topics | `string-matching`, `segment-and-fenwick-trees`, `designing-data-structures` |
 
+### System design track (`content/system-design/<slug>.html`, URL `/system-design/<slug>.html`)
+
+| Module id | Module | Lesson slugs, in order |
+|---|---|---|
+| `interview` | 1. The Interview | `how-the-interview-works`, `a-framework-for-any-design`, `requirements-and-scope`, `back-of-the-envelope-estimation`, `api-design`, `data-modeling` |
+| `serving-traffic` | 2. Building Blocks: Serving Traffic | `networking-essentials`, `load-balancing`, `caching`, `cdns`, `realtime-communication`, `rate-limiting` |
+| `storing-data` | 3. Building Blocks: Storing Data | `choosing-a-database`, `indexing`, `replication`, `sharding-and-partitioning`, `consistent-hashing`, `blob-storage`, `search-systems` |
+| `distributed-ideas` | 4. Distributed Systems Ideas | `cap-and-consistency`, `transactions-and-isolation`, `message-queues-and-streams`, `idempotency-and-retries`, `consensus-and-leader-election`, `unique-ids`, `reliability-and-failure`, `observability` |
+| `classic-designs` | 5. Classic Designs (case studies, `"kind": "design"`) | `design-a-url-shortener`, `design-a-rate-limiter`, `design-a-key-value-store`, `design-a-news-feed`, `design-a-chat-app`, `design-a-notification-system`, `design-typeahead-search` |
+| `harder-designs` | 6. Harder Designs (case studies, `"kind": "design"`) | `design-a-web-crawler`, `design-video-streaming`, `design-ride-sharing`, `design-file-sync`, `design-ticket-booking`, `design-a-payment-system`, `design-a-job-scheduler`, `design-a-rag-system` |
+| `interview-craft` | 7. Interview Craft | `talking-through-trade-offs`, `system-design-mistakes`, `what-changes-by-level`, `numbers-to-know`, `mock-interview-practice` |
+
 ### AI track (`content/ai/<slug>.html`, URL `/ai/<slug>.html`)
 
 | Module id | Module | Lesson slugs, in order |
@@ -657,7 +674,281 @@ To see a page as learners will, the orchestrator runs `node tools/build.mjs` and
 | `dynamic-programming` | Dynamic Programming | dp-introduction, dp-1d, dp-on-grids, knapsack, dp-on-strings, longest-increasing-subsequence |
 | `heaps-tries-bits` | Heaps, Tries & Bits | heaps-and-priority-queues, tries, bit-manipulation, string-matching, segment-and-fenwick-trees, designing-data-structures |
 | `ml-from-scratch` | ML From Scratch | how-models-learn, regression-and-classification, overfitting-and-evaluation, decision-trees-and-ensembles, neural-networks, embeddings, tokens, attention-and-transformers, sampling-and-temperature |
+| `system-design-blocks` | System Design Building Blocks | rate-limiting, consistent-hashing, caching, unique-ids, load-balancing |
 
 A lesson's "Practice this" list shows problems whose `related` includes that lesson first, then other problems from topics that practise it. So put the lessons a problem really exercises in `related`, most relevant first.
 
 `ml-from-scratch` problems implement one ML building block with plain lists and loops (no NumPy): for example a mean squared error, one gradient-descent step, softmax, cosine similarity, a k-nearest-neighbour vote, a confusion matrix, greedy decoding from a probability table. Use `"compare": "approx"` for floating-point results, and state rounding rules in the task if any.
+
+## 10. System design track
+
+Read this whole section before writing a system design lesson. Sections 1 to 3 (rules, voice, format) and the components in section 4 still apply; this section adds the track's own components and replaces the quality bar in section 5.
+
+The track teaches people preparing for system design interviews. Every lesson answers two questions: how does this really work, and how do I use it, out loud, in an interview?
+
+### 10.1 Two kinds of lesson
+
+| Kind | Which lessons | Front matter | Length (validator) |
+|---|---|---|---|
+| Concept | modules 1 to 4 and 7: building blocks and ideas | no `kind` | 900 to 1,600 words |
+| Case study | modules 5 and 6: every `design-a-…` slug | `"kind": "design"` | 1,800 to 3,200 words |
+
+- Code is optional in this track. If you show code, the normal `<x-code>` rules apply (JavaScript and Python tabs, or `single` for HTTP, SQL, JSON or pseudocode, which is the usual case here).
+- `minutes` is still words ÷ 150 + 3, plus time for exercises. Case studies are usually 25 to 35.
+- Diagrams use `<x-arch>`, not hand-drawn `<x-figure>` SVG. Keep `<x-figure>` for pictures that are not boxes and arrows (a hash ring, a timeline).
+
+### 10.2 Architecture diagram: `<x-arch>`
+
+You place each box on a grid; the build draws the boxes, routes the arrows around other boxes and places the labels.
+
+```html
+<x-arch caption="Reads go through a cache; writes go straight to the database.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "cache", "label": "Cache", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "lb", "label": "HTTPS" },
+    { "from": "lb", "to": "app" },
+    { "from": "app", "to": "cache", "label": "get / set" },
+    { "from": "app", "to": "db", "label": "read on miss" }
+  ]
+}
+</script>
+</x-arch>
+```
+
+- `caption` is required: one sentence saying what the reader should notice.
+- **Nodes.** `id`: short, letters/digits/`-`/`_`, unique. `label`: what the box says, at most two lines of 16 characters (about 30 characters). `kind`: one of the kinds below; it sets the icon and colour. `col` and `row`: whole numbers from 0 to 7, `col` 0 on the left, `row` 0 at the top; one node per cell. Optional: `"stack": true` draws the box as several copies (a fleet of identical servers); `"group": "Region A"` draws a dashed, labelled box around every node with that same group name (the group's nodes must form a block of cells that contains no other node).
+- **Kinds:** `client` (browser, phone app, user), `dns`, `cdn`, `load-balancer`, `gateway` (API gateway), `service` (any app server), `worker` (background job), `cache`, `database`, `queue` (queue or stream), `blob-store` (object storage), `search` (search index), `external` (a third-party API; dashed border). Grey is the outside world, blue is networking, slate is compute, purple is data, amber is messaging.
+- **Edges.** `from` and `to` are node ids; the arrow points at `to`. Optional: `label` (at most 22 characters, like `"GET /{code}"`), `"style": "async"` for a dashed line (a message that nobody waits for; a legend appears automatically), `"arrow": "both"` or `"none"`, `id` (only needed when two edges join the same two nodes in the same direction).
+- **Layout rules that give clean pictures:**
+  - Flow left to right: users in column 0, then the entry point, then services, then data stores on the right. Put a read path above and a write path below.
+  - Use 3 to 4 columns. Each column is about 200px wide, so 4 columns fit the lesson column on a laptop; 5 or more make phone readers scroll sideways (the diagram scrolls inside its box, never the page, but it is still worse).
+  - Leave a node's row empty between two things you want to connect around it, or the arrow has to bend around.
+  - The build routes each arrow straight when two nodes share a row or column, and otherwise with right angles through the gaps between cells. It spreads several arrows on one side of a box and keeps parallel lines apart. If an arrow still passes through a box, the validator warns and names it: move a node, or set `"route"` on that edge to `"hv"` (sideways, then up or down), `"vh"` (up or down, then sideways), `"hvh"` (sideways, a jog in the column gap, sideways) or `"vhv"`.
+  - If the validator says a label has no free spot, shorten it or spread the nodes.
+- Show one idea per diagram. Twelve boxes is a lot; seven is usually right.
+
+### 10.3 Stepping a request through the design: tracer `"arch"`
+
+The key teaching device of the track: the reader clicks through a request (or a write, or a failure) moving through the system. Put the diagram once at the top of the tracer JSON as `"arch"` (same format as `<x-arch>`), then give each step an `"arch"` state saying what lights up.
+
+```html
+<x-tracer title="A read: cache hit, then a miss">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+      { "id": "app", "label": "App server", "kind": "service", "col": 1, "row": 1 },
+      { "id": "cache", "label": "Cache", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "app" },
+      { "from": "app", "to": "cache" },
+      { "from": "app", "to": "db" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "The browser asks for product 42.",
+      "arch": { "active": ["client", ["client", "app"]] }
+    },
+    {
+      "caption": "The app asks the cache first. Miss.",
+      "arch": { "active": ["cache", ["app", "cache"]], "notes": { "cache": "miss" } }
+    },
+    {
+      "caption": "It reads the database, about 5 ms.",
+      "arch": { "active": ["db", ["app", "db"]] },
+      "vars": { "db reads": 1 }
+    },
+    {
+      "caption": "The page goes back to the browser.",
+      "arch": { "active": [["app", "client"]], "mark": ["client"] }
+    },
+    {
+      "caption": "The cache node dies: every read now lands on the database.",
+      "arch": { "fail": ["cache"], "active": ["db", ["app", "db"]], "notes": { "db": "4,000 reads/s" } }
+    }
+  ]
+}
+</script>
+</x-tracer>
+```
+
+A step's `"arch"` may contain:
+
+| Key | What it does |
+|---|---|
+| `active` | Accent colour: the boxes and arrows doing work in this step. Active arrows animate in their direction. |
+| `mark` | Green: done, stored, answered. |
+| `fail` | Red, dashed: a box that is down or an arrow that fails. A failed box gets a "down" tag unless you give a note. |
+| `dim` | Faded: not involved right now. Arrows touching a dimmed box fade too. |
+| `hide` | Not drawn in this step (for "now we add a cache" stories). Arrows touching a hidden box are hidden too. |
+| `notes` | Small tags above boxes, `{"cache": "miss"}`, at most 16 characters each. |
+
+- Each list holds node ids and arrows written as `["from", "to"]`. To show a reply travelling back, write the arrow backwards, `["app", "client"]`: the same arrow lights up and animates in reverse. An arrow with an `id` can also be named by its id.
+- Steps do not inherit: list everything that should be lit in each step. A step with no `"arch"` shows the plain diagram.
+- `vars` and `code` work as in any tracer; `vars` is good for counters ("db reads": 2) and latency totals.
+- Use 6 to 12 steps per tracer. One tracer per story: "the read path", "the write path", "what happens when X dies". Every caption says why, with a number where you can ("about 5 ms", "4,000 a second land on a database sized for 400").
+
+### 10.4 Estimation exercise: `<x-estimate>`
+
+A back-of-the-envelope question the learner answers with a number and a unit. They see "within range", "too low" or "too high" (with how far off), and can open your worked arithmetic. Nothing is saved.
+
+```html
+<x-estimate title="Storage for five years">
+<script type="application/json">
+{
+  "question": "How much storage do the link records need after five years?",
+  "givens": ["100 million new links a month", "About 500 bytes per record", "Nothing is deleted"],
+  "unit": "bytes",
+  "answer": "3 TB",
+  "accept": ["1 TB", "10 TB"],
+  "steps": ["100 million × 12 × 5 = 6 billion links", "6 × 10<sup>9</sup> × 500 B = 3 × 10<sup>12</sup> B = 3 TB"],
+  "note": "Optional: one sentence on what the number means for the design."
+}
+</script>
+</x-estimate>
+```
+
+- `unit` is the family the learner picks from: `bytes` (B, KB, MB, GB, TB, PB, EB), `bytes/s` (B/s … TB/s), `count` (no unit, thousand, million, billion, trillion), `count/s` (`/s`, `thousand/s`, `million/s`, `billion/s`), `duration` (ms, seconds, minutes, hours, days, years). Units are powers of 1,000 (1 KB = 1,000 B), which is what interviews use.
+- `answer` and both `accept` values are written as a number and a unit from that family: `"3 TB"`, `"6 billion"`, `"40 thousand/s"`, `"120 MB/s"`, `"20 minutes"`. Plain numbers like `"200/s"` or `"6,000"` work too.
+- `accept` is the range you count as right. Estimates are rough: make it about 3x to 30x wide around the answer (the validator warns outside that).
+- Optional `"choices"`: 3 to 5 answers, one order of magnitude apart, shown as buttons instead of the number box. Exactly one must fall inside `accept`. Use choices for quick "which order of magnitude?" checks; use the number box when the learner should do the arithmetic.
+- `steps`: the worked arithmetic, one line per step, every number traceable to a given. `question`, `givens`, `steps` and `note` may contain inline HTML (`<sup>`, `<code>`).
+
+### 10.5 Trade-off table: `<x-tradeoffs>`
+
+Two to six options compared on the same three questions. On phones it becomes one card per option.
+
+```html
+<x-tradeoffs caption="Read and write strategies">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Cache-aside", "good": "Simple; the app still works if the cache dies.", "bad": "Every write path must invalidate.", "pick": "Read-heavy data. The usual interview answer.", "default": true },
+    { "name": "Write-through", "good": "Reads after a write are fresh.", "bad": "Slower writes.", "pick": "Data is read right after it is written." }
+  ]
+}
+</script>
+</x-tradeoffs>
+```
+
+- `name`, `good` ("Good at"), `bad` ("Bad at") and `pick` ("Pick it when") are required; inline HTML is allowed. Keep each cell to one or two short sentences.
+- `"default": true` (at most one option) marks the usual choice with a "Usual default" badge. Leave it out when there is no usual answer.
+- `caption` is optional.
+
+### 10.6 Interview script: `<x-interview>`
+
+A short exchange between the interviewer and the candidate, to show how to ask clarifying questions, state assumptions and narrate a trade-off. It looks different from `<x-prompt>` on purpose; never use `<x-prompt>` for interviews.
+
+```html
+<x-interview title="The first five minutes">
+<x-interviewer>Design a URL shortener.</x-interviewer>
+<x-you>Before I draw anything: can users pick a custom alias, and do links expire?</x-you>
+<x-interviewer>Aliases yes, expiry optional.</x-interviewer>
+<x-you>And roughly how many links a month, and how often is each one opened?</x-you>
+<x-coach>Ask about features first, then scale. The numbers decide the design.</x-coach>
+</x-interview>
+```
+
+- Children: `<x-interviewer>`, `<x-you>` and optional `<x-coach>` notes (a "Coach's note" aside that explains what the answer shows), in any order. At least one interviewer and one you turn.
+- Turn text is normal HTML (`<code>`, `<strong>`, lists); plain text is wrapped in a paragraph for you. It counts as prose, so the voice rules apply.
+- Optional `tone="strong"` or `tone="weak"` colours the "You" turns green or red and labels the block "Strong answer" / "Weak answer". Use a weak and a strong script in a pair to contrast two answers to the same question.
+- Keep it to 3 to 7 turns. Write the way people talk in interviews: short, specific, with numbers.
+
+### 10.7 "Your turn" step: `<x-tryit variant="turn">`
+
+A staged step in a case study: the learner tries the next part of the design before reading it. It is the try-it box from 4.7 with a different label, a model-answer reveal, and an optional countdown timer.
+
+```html
+<x-tryit variant="turn" minutes="2" title="Model the data">
+<x-task>
+<p>Sketch the tables or records before reading on: what does one record hold, and how is it looked up?</p>
+</x-task>
+<x-answer>
+<p>One record per code; every read is a lookup by code and nothing joins, so this is a key-value access pattern.</p>
+</x-answer>
+</x-tryit>
+```
+
+- `minutes` (optional, 1 to 15) adds a timer button. Use the time an interviewer would give you for that step: 2 for an API, 2 to 3 for a data model, 3 to 5 for a high-level sketch.
+- The answer is short: the key decision and why. The full treatment follows in the next section, so do not repeat it.
+
+### 10.8 Self-review checklist: `<x-checklist>`
+
+A rubric the learner ticks after attempting the design. Ticks are saved in the browser, per lesson.
+
+```html
+<x-checklist title="Self-review: URL shortener">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked about features before scale", "I got the read/write ratio"] },
+    { "title": "Failure", "items": ["I said what breaks first at 10x"] }
+  ]
+}
+</script>
+</x-checklist>
+```
+
+- Use `"items": [...]` for a flat list or `"groups"` as above. 3 to 24 items in total; 10 to 14 is right for a case study.
+- Write each item as something the learner did out loud, in the first person: "I estimated storage from arithmetic", not "Storage". Items are specific to the question; do not copy the URL shortener's list.
+
+### 10.9 Quality bar: concept lesson
+
+For building blocks and ideas (modules 1 to 4 and 7). In this order; headings are yours to word, except "In the interview".
+
+1. **Hook: a concrete failure or scaling pain**, with numbers. "During a sale the product page does 4,000 reads a second and the database starts timing out." No heading before it.
+2. **The idea in plain words**, before any mechanism. What it is, why it helps, what it costs.
+3. **How it works**, with an `<x-arch>` diagram or an `<x-tracer>` with `"arch"` (usually both: a static diagram of where it sits, then a tracer of a request moving through it, including one step where something fails).
+4. **The options and their trade-offs** in an `<x-tradeoffs>` table, then the details that matter (for caching: eviction, stampedes).
+5. **Real numbers worth remembering**: a short list of rounded figures and an `<x-estimate>` that uses them.
+6. **`<h2>In the interview</h2>`**: when to bring this up (which requirement or number triggers it); the exact phrases that show judgement ("Reads outnumber writes 100 to 1, so…"); an `<x-interview>`; and the follow-up questions interviewers ask, each with a short answer.
+7. **Common mistakes**: at least one `<x-callout type="mistake">`.
+8. **Quiz**: one `<x-quiz>`, 2 to 4 questions, at least one that needs a calculation or a choice between options.
+9. **What to practise next**: one or two sentences linking to the next lessons and to a case study that uses this block. Then stop.
+
+The validator warns if a concept lesson has no diagram or tracer, no `<x-tradeoffs>`, no mistake callout, no quiz, or no "In the interview" section.
+
+### 10.10 Quality bar: case study (`"kind": "design"`)
+
+Every case study follows the framework taught in `a-framework-for-any-design`, with **exactly these `<h2>` headings, in this order** (the validator enforces them; use `<h3>` inside a section):
+
+1. Intro (no heading): one or two paragraphs on what the product does and why interviewers ask this question. Link to `/system-design/a-framework-for-any-design.html`.
+2. `<h2>Clarify the problem</h2>`: an `<x-interview>` where you ask about features, scale and priorities; then a short list of **functional** requirements, **non-functional** requirements (latency, availability, durability, consistency, with numbers) and what is **out of scope**.
+3. `<h2>Estimate the scale</h2>`: requests per second (average and peak), storage, bandwidth, memory for a cache, as needed, with the arithmetic shown. At least one `<x-estimate>`.
+4. `<h2>Define the API</h2>`: the endpoints or messages, usually as `<x-code single>` with `lang="text"`, including error cases, plus the one API decision worth arguing (status codes, pagination, push vs pull).
+5. `<h2>Model the data</h2>`: the records with fields and sizes (often `<x-code single>` with `lang="sql"`), the access patterns, and which category of database fits and why.
+6. `<h2>High-level design</h2>`: an `<x-arch>` of the whole system, then an `<x-tracer>` with `"arch"` that walks the main **write path** and **read path** (one tracer for both, or one each).
+7. `<h2>Deep dives</h2>`: the 2 to 4 hard parts interviewers push on, each as an `<h3>`. Each one states the problem, compares options (at least one `<x-tradeoffs>` in this section), and makes a justified choice.
+8. `<h2>Bottlenecks and failures</h2>`: what breaks first at 10x and how you scale it; then what happens when each component dies (a table of component / what happens / what you do works well).
+9. `<h2>What a strong answer sounds like</h2>`: what separates a junior, a mid-level and a senior answer to this question (a small table), and an `<x-interview>` showing one strong exchange.
+10. `<h2>Follow-up questions</h2>`: about 5 questions interviewers ask after the main design, each as an `<h3>` with a two- or three-sentence answer.
+11. An `<x-checklist>` self-review at the end. An optional last `<h2>What to practise next</h2>` may follow it.
+
+Also required, and checked: an `<x-tryit variant="turn">` at the end of "Estimate the scale", "Define the API" and "Model the data", so the learner tries the API, the data model and the high-level design before reading each.
+
+No quiz in case studies; the turn boxes and the checklist do that job.
+
+### 10.11 Facts, numbers and names in this track
+
+- All voice rules in section 2 apply.
+- **Teach the category, not the vendor.** Name well-known technologies only as examples of a category: "a wide-column store such as Cassandra", "an in-memory cache such as Redis". The lesson must make sense with the names removed. No product comparisons, version numbers or pricing.
+- **Numbers come from arithmetic on the page.** Use rounded, widely known orders of magnitude (memory read about 100 ns, a round trip in one data center about 0.5 ms, a disk seek about 10 ms) and derive everything else from the question's givens, showing the steps. Never state statistics about real companies ("X serves 2 billion users", "Y's cache hit rate is 99%"); invent a plausible scenario instead and say it is the scenario.
+- Use the same numbers throughout a lesson: if the estimate says 4,000 reads a second, the tracer, the failure table and the quiz say 4,000 too. Recheck every number after editing.
+- Round like an interviewer: 86,400 seconds a day is "about 100,000" for quick maths, but say so when you round.
+- Be honest about trade-offs: every choice in a case study names what it costs.
+
+### 10.12 Problems for the `system-design-blocks` topic
+
+Practice problems for this topic implement one building block in plain code: a token-bucket or sliding-window rate limiter, a consistent-hash ring, an LRU cache with TTL, an ID generator, a weighted round-robin or least-connections balancer. They use the normal schema (section 6), usually as **design-a-class** problems (6.4) with `"pattern": "design"`, and `related` names the lesson slugs above (`rate-limiting`, `consistent-hashing`, `caching`, `unique-ids`, `load-balancing`). Time is an argument (`t` in seconds or milliseconds), never the real clock, so tests are deterministic.

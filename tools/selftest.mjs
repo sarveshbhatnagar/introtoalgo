@@ -165,6 +165,85 @@ console.log(`${lineOk ? 'ok  ' : 'FAIL'} runtime errors report the user's line n
   console.log(`${okBad ? 'ok  ' : 'FAIL'} returning an array for a ListNode is a clear error`);
 }
 
+// Lesson components: every component snippet in AUTHORING.md must validate,
+// and the system design validators must catch common mistakes.
+{
+  const { readFileSync } = await import('node:fs');
+  const { processLessonBody } = await import('./lib/components.mjs');
+  const { CONTENT } = await import('./lib/util.mjs');
+  const { layoutArch } = await import('./lib/arch.mjs');
+  const guide = readFileSync(join(CONTENT, 'AUTHORING.md'), 'utf8');
+  const snippets = [...guide.matchAll(/```html\n(<x-[\s\S]*?)```/g)].map((m) => m[1]);
+  let bad = 0;
+  for (const sn of snippets) {
+    const r = processLessonBody(sn, { resolveLink: () => ({ ok: true }) });
+    if (r.errors.length) { bad++; console.log('     ' + sn.split('\n')[0] + ' -> ' + r.errors.map((e) => e.msg).join('; ')); }
+  }
+  const okSnip = snippets.length >= 15 && !bad;
+  if (!okSnip) failed++;
+  console.log(`${okSnip ? 'ok  ' : 'FAIL'} all ${snippets.length} component snippets in AUTHORING.md validate`);
+
+  const errs = (body) => processLessonBody(body, { resolveLink: () => ({ ok: true }) }).errors.map((e) => e.msg).join(' | ');
+  const arch = (o) => `<x-arch caption="c"><script type="application/json">${JSON.stringify(o)}</script></x-arch>`;
+  const N = (id, col, row, kind = 'service') => ({ id, label: id, kind, col, row });
+  const neg = (name, body, re) => {
+    const e = errs(body);
+    const ok = re.test(e);
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` (got: ${e || 'no errors'})`}`);
+  };
+  neg('x-arch rejects an unknown kind', arch({ nodes: [N('a', 0, 0, 'server'), N('b', 1, 0)], edges: [] }), /"kind" must be one of/);
+  neg('x-arch rejects two nodes in one cell', arch({ nodes: [N('a', 0, 0), N('b', 0, 0)], edges: [] }), /already taken/);
+  neg('x-arch rejects an edge to a missing node', arch({ nodes: [N('a', 0, 0), N('b', 1, 0)], edges: [{ from: 'a', to: 'c' }] }), /"to" must be a node id/);
+  neg('x-arch rejects a label that does not fit', arch({ nodes: [{ ...N('a', 0, 0), label: 'An extremely long label that cannot possibly fit in a box' }, N('b', 1, 0)], edges: [] }), /does not fit/);
+  neg('x-arch rejects a group that swallows another node', arch({ nodes: [{ ...N('a', 0, 0), group: 'G' }, N('b', 1, 0), { ...N('c', 2, 0), group: 'G' }], edges: [] }), /not in the group/);
+  neg('x-arch needs a caption', '<x-arch><script type="application/json">' + JSON.stringify({ nodes: [N('a', 0, 0), N('b', 1, 0)], edges: [] }) + '</script></x-arch>', /needs a caption/);
+  neg('tracer arch state rejects an unknown edge', `<x-tracer><script type="application/json">${JSON.stringify({ arch: { nodes: [N('a', 0, 0), N('b', 1, 0)], edges: [{ from: 'a', to: 'b' }] }, steps: [{ caption: 'x', arch: { active: [['a', 'z']] } }, { caption: 'y' }] })}</script></x-tracer>`, /is not a node id, an edge id, or an edge/);
+  const est = (o) => `<x-estimate><script type="application/json">${JSON.stringify({ question: 'q', givens: ['g'], unit: 'bytes', answer: '3 TB', accept: ['1 TB', '10 TB'], steps: ['s'], ...o })}</script></x-estimate>`;
+  neg('x-estimate rejects an answer outside its range', est({ answer: '30 TB' }), /inside the "accept" range/);
+  neg('x-estimate rejects a unit from another family', est({ answer: '3 million' }), /"answer" must be a number with a bytes unit/);
+  neg('x-estimate needs exactly one right choice', est({ choices: ['3 GB', '3 TB', '5 TB'] }), /exactly one choice/);
+  neg('x-tradeoffs needs "pick"', `<x-tradeoffs><script type="application/json">${JSON.stringify({ options: [{ name: 'a', good: 'g', bad: 'b' }, { name: 'b', good: 'g', bad: 'b', pick: 'p' }] })}</script></x-tradeoffs>`, /"pick" is required/);
+  neg('x-interview needs both roles', '<x-interview><x-you>Hi.</x-you></x-interview>', /needs at least one <x-interviewer>/);
+  neg('x-checklist needs 3 items', `<x-checklist><script type="application/json">${JSON.stringify({ items: ['a', 'b'] })}</script></x-checklist>`, /Use 3 to 24/);
+  neg('x-tryit rejects minutes without variant', '<x-tryit minutes="2"><x-task><p>t</p></x-task><x-answer><p>a</p></x-answer></x-tryit>', /only works with variant="turn"/);
+
+  // case study structure: fixed headings and components are enforced
+  {
+    const { mkdirSync } = await import('node:fs');
+    const { checkLessonFile, makeLinkResolver } = await import('./lib/lessons.mjs');
+    const sdDir = join(dir, 'system-design');
+    mkdirSync(sdDir, { recursive: true });
+    const sample = readFileSync(join(CONTENT, 'system-design', 'design-a-url-shortener.html'), 'utf8');
+    const lessonErrs = (slug, src) => {
+      writeFileSync(join(sdDir, slug + '.html'), src);
+      return checkLessonFile(join(sdDir, slug + '.html'), cur, makeLinkResolver(cur)).errors.map((e) => e.msg).join(' | ');
+    };
+    const caseOk = (name, slug, src, re) => {
+      const e = lessonErrs(slug, src);
+      const ok = re ? re.test(e) : e === '';
+      if (!ok) failed++;
+      console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` (got: ${e || 'no errors'})`}`);
+    };
+    caseOk('the sample case study passes as another design slug', 'design-a-chat-app', sample, null);
+    caseOk('a case study missing "Deep dives" is rejected', 'design-a-chat-app', sample.replace('<h2>Deep dives</h2>', '<h2>Hard parts</h2>'), /missing the section <h2>Deep dives<\/h2>/);
+    caseOk('case study sections out of order are rejected', 'design-a-chat-app', sample.replace('<h2>Define the API</h2>', '<h2>TMP</h2>').replace('<h2>Model the data</h2>', '<h2>Define the API</h2>').replace('<h2>TMP</h2>', '<h2>Model the data</h2>'), /out of order/);
+    caseOk('a case study without "Your turn" boxes is rejected', 'design-a-chat-app', sample.replace(/variant="turn" minutes="\d+" /g, ''), /variant="turn"/);
+    caseOk('"kind": "design" on a concept slug is rejected', 'load-balancing', sample, /is a concept lesson/);
+    caseOk('a case study slug without "kind": "design" is rejected', 'design-a-chat-app', sample.replace('"kind": "design",', ''), /Add "kind": "design"/);
+  }
+
+  // layout: a three-row fan-out routes around nodes and keeps labels apart
+  const lay = layoutArch({ nodes: [N('lb', 0, 1, 'load-balancer'), N('a', 1, 0), N('b', 1, 1), N('c', 1, 2), N('db', 2, 1, 'database')], edges: [{ from: 'lb', to: 'a', label: 'one' }, { from: 'lb', to: 'b', label: 'two' }, { from: 'lb', to: 'c', label: 'three' }, { from: 'a', to: 'db' }, { from: 'b', to: 'db' }, { from: 'c', to: 'db' }] });
+  const okLay = lay.warnings.length === 0;
+  if (!okLay) failed++;
+  console.log(`${okLay ? 'ok  ' : 'FAIL'} arch layout routes a fan-out and fan-in without crossings or label clashes${okLay ? '' : ': ' + lay.warnings.join('; ')}`);
+  const blocked = layoutArch({ nodes: [N('a', 0, 0), N('b', 1, 0), N('c', 2, 0)], edges: [{ from: 'a', to: 'c', route: 'straight' }] });
+  const okBlk = blocked.warnings.some((w) => /passes through node "b"/.test(w));
+  if (!okBlk) failed++;
+  console.log(`${okBlk ? 'ok  ' : 'FAIL'} arch layout warns when a forced route passes through a node`);
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(failed ? `\n${failed} self-test(s) failed` : '\nall self-tests passed');
 process.exit(failed ? 1 : 0);
