@@ -1,0 +1,414 @@
+<!--
+{
+  "title": "Design a Digital Wallet",
+  "description": "Hold balances and move money between users safely: a double-entry ledger, idempotent transfers, no overdrafts, and transfers across database shards.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "ledger", "transactions", "sagas", "consistency"]
+}
+-->
+<p>Alice owes Bob $20 for dinner. She opens a wallet app, types Bob's name and taps Send. Her balance drops by $20, Bob's rises by $20, and both see the transfer in their history. The kind of product this question means is a payments-app wallet such as Venmo. Behind that one tap: two balances that must change together, a double tap that must not send $40, and two phones spending the same $30 at the same moment.</p>
+
+<p>It looks like <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>, and it reuses its idempotency keys and ledger rules. The difference is that here both sides of every transfer are accounts <em>you</em> hold, possibly on different database shards, so you have to move money between two of your own databases without ever creating or losing a cent. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a digital wallet.</x-interviewer>
+<x-you>Users top up from a card, send money to other users, and see their balance and history. Do they withdraw to a bank, and is there more than one currency?</x-you>
+<x-interviewer>One currency. Withdrawals can wait. Top-ups go through an existing payment system.</x-interviewer>
+<x-you>How many users and transfers?</x-you>
+<x-interviewer>100 million wallets, about 50 million transfers and 5 million top-ups a day.</x-interviewer>
+<x-you>Then the rules I won't bend: a balance never goes below zero, a retried transfer moves money once, and every cent is traceable to ledger entries that balance. I'd rather reject a transfer than risk any of those. Bob may see money a second after Alice sends it, but Alice must never see money vanish. Fraud checks and limits I'll leave out.</x-you>
+<x-coach>The candidate separates what must be exact (no overdraft, once only, balanced books) from what may lag (when Bob sees it). That split justifies the design that follows.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> top up a wallet from a card; send money to another user; view the balance and a paged history.</li>
+<li><strong>Non-functional:</strong> no negative balances, even under concurrent requests; a transfer retried any number of times moves money once; no acknowledged transfer is lost; every balance is explained by an append-only ledger kept for 7 years; a send answers within about 500 ms; the recipient is credited within seconds.</li>
+<li><strong>Out of scope:</strong> withdrawals, currencies, fraud, spending limits, card processing (the payment system's job).</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Transfers:</strong> 50 million ÷ 86,400 ≈ 580 a second on average. Payday and holidays run hotter; plan for 5x, about 3,000 a second.</li>
+<li><strong>Top-ups:</strong> 5 million ÷ 86,400 ≈ 60 a second, small next to transfers.</li>
+<li><strong>Balance reads:</strong> if users open the app 300 million times a day, 300 million ÷ 86,400 ≈ 3,500 single-row reads a second.</li>
+<li><strong>Database writes:</strong> assume one relational primary safely takes about 5,000 short write transactions a second. Today's peak of 3,000 transfers fits on one. At 10x, 30,000 a second, it does not.</li>
+</ul>
+
+<x-estimate title="Peak transfer rate">
+<script type="application/json">
+{
+  "question": "About how many transfers a second must the wallet handle at a 5x peak?",
+  "givens": ["50 million transfers a day", "A day is 86,400 seconds", "Peaks run 5 times the average"],
+  "unit": "count/s",
+  "answer": "3 thousand/s",
+  "accept": ["1 thousand/s", "10 thousand/s"],
+  "choices": ["300/s", "3 thousand/s", "30 thousand/s", "300 thousand/s"],
+  "steps": ["50 × 10<sup>6</sup> ÷ 86,400 ≈ 580 a second", "580 × 5 ≈ 2,900, call it 3,000 a second"],
+  "note": "Within what one primary can take today, which is why the first answer is a single database."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Ledger storage per year">
+<script type="application/json">
+{
+  "question": "Each transfer writes 4 ledger entries of about 200 bytes (two on the sender's side, two on the receiver's). How much ledger data accumulates per year?",
+  "givens": ["50 million transfers a day", "4 entries per transfer", "About 200 bytes per entry", "Entries are never deleted"],
+  "unit": "bytes",
+  "answer": "15 TB",
+  "accept": ["5 TB", "50 TB"],
+  "steps": ["50 × 10<sup>6</sup> × 4 × 200 B = 40 GB a day", "40 GB × 365 ≈ 14.6 TB a year", "Seven years: about 100 TB"],
+  "note": "Recent months stay in the main database; closed periods move to cheaper, still-queryable storage."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the endpoints for top-up, send, balance and history. Who creates the identifier that makes a retried send harmless, and when?</p>
+</x-task>
+<x-answer>
+<p>The app creates a transfer id when the user taps Send, before any network call, and every retry carries the same id. The server stores it as the transfer's primary key, so a duplicate cannot become a second transfer.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+POST /v1/topups            Idempotency-Key: tp-6f1c
+  body: { "amount_cents": 5000, "payment_method": "pm_..." }
+  201 { "topup_id": "tp-6f1c", "status": "processing" }
+
+POST /v1/transfers
+  body: { "transfer_id": "t-81", "to_user": "bob", "amount_cents": 2000, "note": "dinner" }
+  201 { "transfer_id": "t-81", "status": "sent" }
+  200 { "transfer_id": "t-81", "status": "sent" }       same id seen before
+  409 { "error": "insufficient_funds", "balance_cents": 1000 }
+  422 same transfer_id with a different body
+  404 no such recipient
+
+GET /v1/wallet
+  200 { "balance_cents": 1000, "as_of_entry": 99812 }
+
+GET /v1/wallet/history?before=99812&limit=50
+  200 { "entries": [ { "transfer_id": "t-81", "amount_cents": -2000,
+                       "balance_after": 1000, "at": "..." }, ... ], "next": "99761" }
+</pre>
+</x-code>
+
+<p>The decision worth arguing is when "sent" is true. The API answers once the money has left Alice's balance, not once it reaches Bob's. From that moment the transfer cannot be lost: it either completes or is reversed back to Alice, automatically. Waiting for Bob's side would put a second database on the latency path for no gain in safety. Money is always whole cents in integers, never floating point.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>Sketch the records. Is the balance a column you update, or something you compute? Where do the ledger entries of one transfer live if Alice and Bob are on different shards?</p>
+</x-task>
+<x-answer>
+<p>The ledger entries are the truth and the balance column is a cache of their sum, updated in the same transaction. Entries live with their account, so one transfer has entries on two shards, and each shard's half must balance on its own.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Per shard; every table is partitioned by wallet">
+<pre lang="sql">
+wallets
+  wallet_id      VARCHAR(32) PRIMARY KEY
+  balance_cents  BIGINT        -- cache of SUM(ledger_entries), same transaction
+  status         VARCHAR(8)    -- active | frozen
+
+ledger_entries                 -- append only
+  entry_id       BIGINT PRIMARY KEY
+  account_id     VARCHAR(32)   -- "alice", or "transit:shard-A"
+  transfer_id    VARCHAR(36)
+  amount_cents   BIGINT        -- change to that account: -2000, +2000
+  balance_after  BIGINT        -- cheap history and audits; NULL for transit
+  INDEX (account_id, entry_id DESC)
+
+transfers                      -- on the sender's shard
+  transfer_id    VARCHAR(36) PRIMARY KEY
+  from_wallet, to_wallet, amount_cents, request_hash
+  status         VARCHAR(10)   -- sent | completed | reversed
+
+applied_credits                -- on the receiver's shard
+  transfer_id    VARCHAR(36) PRIMARY KEY
+  outcome        VARCHAR(8)    -- credited | refused
+
+outbox                         -- on the sender's shard
+  transfer_id, payload, created_at
+</pre>
+</x-code>
+
+<p>Every operation is a short transaction over a few rows that must all commit or none: a conditional debit, two ledger entries, a transfer row. That calls for a <strong>relational database with ACID transactions</strong>, with synchronous replication so an acknowledged transfer survives losing the primary. When it outgrows one primary, shard it by <code>wallet_id</code>: a wallet's balance, entries and history then always sit together, so balance reads and history pages stay single-shard.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the boxes for a send between two wallets on different shards. What commits first, what carries the transfer to the second shard, and what happens if that second step can never succeed?</p>
+</x-task>
+<x-answer>
+<p>A wallet service debits Alice on her shard and, in the same transaction, writes an outbox message. A transfer worker delivers it and credits Bob on his shard, once. If the credit is permanently refused, the worker reverses the debit. Each step is a local, balanced transaction.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>This is the design for the 10x scale, sharded. At today's scale the same service talks to one database, and both legs below become one transaction. A top-up is simpler: the payment system charges the card, and when it confirms, the wallet service credits Alice from a card-funding account, keyed by the top-up id so a repeated confirmation credits once.</p>
+
+<x-arch caption="A send is two local transactions: the debit on the sender's shard, then the credit on the receiver's shard, joined by an outbox and a worker.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "app", "label": "Mobile app", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "wallet", "label": "Wallet service", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "psp", "label": "Payment system", "kind": "external", "col": 2, "row": 2 },
+    { "id": "sa", "label": "Shard A (Alice)", "kind": "database", "col": 3, "row": 0 },
+    { "id": "worker", "label": "Transfer worker", "kind": "worker", "col": 3, "row": 1 },
+    { "id": "sb", "label": "Shard B (Bob)", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "app", "to": "gw", "label": "send, read" },
+    { "from": "gw", "to": "wallet" },
+    { "from": "wallet", "to": "sa", "label": "debit leg" },
+    { "from": "wallet", "to": "psp", "label": "charge card" },
+    { "from": "sa", "to": "worker", "label": "outbox", "style": "async" },
+    { "from": "worker", "to": "sb", "label": "credit leg" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="A send, an overdraft race, a crash and a reversal">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "Mobile app", "kind": "client", "col": 0, "row": 1 },
+      { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "wallet", "label": "Wallet service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "psp", "label": "Payment system", "kind": "external", "col": 2, "row": 2 },
+      { "id": "sa", "label": "Shard A (Alice)", "kind": "database", "col": 3, "row": 0 },
+      { "id": "worker", "label": "Transfer worker", "kind": "worker", "col": 3, "row": 1 },
+      { "id": "sb", "label": "Shard B (Bob)", "kind": "database", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "app", "to": "gw" },
+      { "from": "gw", "to": "wallet" },
+      { "from": "wallet", "to": "sa" },
+      { "from": "wallet", "to": "psp" },
+      { "from": "sa", "to": "worker", "style": "async" },
+      { "from": "worker", "to": "sb" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Alice has $30 and taps Send $20 to Bob. The app creates transfer id t-81 first, so any retry carries the same id.",
+      "arch": { "active": ["app", ["app", "gw"], ["gw", "wallet"]], "dim": ["psp", "worker", "sb"] },
+      "vars": { "alice": 3000, "bob": 500, "in transit": 0 }
+    },
+    {
+      "caption": "One transaction on shard A: insert t-81, debit Alice only if her balance is at least 2000 (1 row changed), write Alice −2000 and transit:A +2000, and an outbox row. The debit balances on its own.",
+      "arch": { "active": ["wallet", "sa", ["wallet", "sa"]], "dim": ["psp", "worker", "sb"], "notes": { "sa": "t-81 sent" } },
+      "vars": { "alice": 1000, "bob": 500, "in transit": 2000 }
+    },
+    {
+      "caption": "Alice sees \"sent\". Her money is now in a transit account on her shard: never in two places, never nowhere.",
+      "arch": { "active": [["wallet", "gw"], ["gw", "app"]], "mark": ["app", "sa"], "dim": ["psp", "worker", "sb"] },
+      "vars": { "alice": 1000, "bob": 500, "in transit": 2000 }
+    },
+    {
+      "caption": "The same instant, Alice's tablet sends $20 to Carol (t-82). Its debit waited for the row lock, then rechecked the balance: 1000 is less than 2000, 0 rows changed, so 409 insufficient funds.",
+      "arch": { "active": ["sa", ["wallet", "sa"], ["wallet", "gw"], ["gw", "app"]], "dim": ["psp", "worker", "sb"], "notes": { "app": "409 for t-82" } },
+      "vars": { "alice": 1000, "bob": 500, "in transit": 2000 }
+    },
+    {
+      "caption": "The transfer worker reads t-81 from shard A's outbox and sends the credit leg to shard B.",
+      "arch": { "active": ["worker", ["sa", "worker"], ["worker", "sb"]], "dim": ["app", "gw", "psp"] },
+      "vars": { "alice": 1000, "bob": 500, "in transit": 2000 }
+    },
+    {
+      "caption": "One transaction on shard B: insert t-81 into applied_credits, write transit:B −2000 and Bob +2000. Transit nets to zero across the two shards.",
+      "arch": { "active": ["sb", ["worker", "sb"]], "mark": ["sb"], "dim": ["app", "gw", "psp"], "notes": { "sb": "t-81 applied" } },
+      "vars": { "alice": 1000, "bob": 2500, "in transit": 0 }
+    },
+    {
+      "caption": "The worker crashes before marking t-81 completed, so after restart it delivers the credit again. The applied_credits key already exists: nothing changes, and Bob is credited once.",
+      "arch": { "fail": ["worker"], "active": ["sb", ["worker", "sb"]], "dim": ["app", "gw", "psp"], "notes": { "sb": "duplicate, no-op" } },
+      "vars": { "alice": 1000, "bob": 2500, "in transit": 0 }
+    },
+    {
+      "caption": "It marks t-81 completed on shard A. Retried delivery plus a unique key gives an effect that happens exactly once.",
+      "arch": { "active": ["worker", ["worker", "sa"]], "mark": ["sa", "sb"], "dim": ["app", "gw", "psp"], "notes": { "sa": "t-81 completed" } },
+      "vars": { "alice": 1000, "bob": 2500, "in transit": 0 }
+    },
+    {
+      "caption": "Later Alice sends $5 to Dan, whose wallet on shard B was just frozen. The debit leg commits as before: Alice −500, transit:A +500.",
+      "arch": { "active": ["wallet", "sa", ["wallet", "sa"]], "dim": ["psp", "worker", "sb"], "notes": { "sa": "t-90 sent" } },
+      "vars": { "alice": 500, "bob": 2500, "in transit": 500 }
+    },
+    {
+      "caption": "Shard B refuses the credit and records the refusal under t-90, so a late redelivery can never credit Dan. The worker runs the compensation on shard A: transit:A −500, Alice +500, status reversed.",
+      "arch": { "fail": [["worker", "sb"]], "active": ["sa", ["worker", "sa"]], "dim": ["app", "gw", "psp"], "notes": { "sb": "Dan frozen", "sa": "t-90 reversed" } },
+      "vars": { "alice": 1000, "bob": 2500, "in transit": 0 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>Moving money across shards</h3>
+
+<p>With 16 shards and wallets spread evenly, Bob is on Alice's shard only 1 time in 16, so about 94% of transfers cross shards. Sharding by wallet does not avoid the problem; it makes it the normal case. Four ways to handle it:</p>
+
+<x-tradeoffs caption="One transfer, two accounts">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "One database transaction",
+      "good": "Atomic and simple: both balances and all entries commit together. No in-between state.",
+      "bad": "Every wallet must live in one primary, which caps write throughput.",
+      "pick": "Until peak load nears what one primary takes. Today's 3,000 a second.",
+      "default": true
+    },
+    {
+      "name": "Two-phase commit",
+      "good": "Atomic across shards: both commit or neither does.",
+      "bad": "Locks are held across network round trips. If a lone coordinator dies after prepare, both rows stay locked until it returns.",
+      "pick": "Rarely by hand. A distributed SQL database runs it over replicated groups, which removes the blocking but keeps the latency."
+    },
+    {
+      "name": "Saga with compensation",
+      "good": "Each step is a fast local transaction. A shard outage delays transfers instead of locking rows.",
+      "bad": "An in-between state exists, and you must write and test the reversal.",
+      "pick": "Sharded, at 10x. Our design."
+    },
+    {
+      "name": "Event-sourced ledger",
+      "good": "An ordered log of transfer events is the truth; balances are rebuilt by replaying it, and audit comes free.",
+      "bad": "Overdraft checks need ordered processing per account, plus snapshots, replays and consumers that apply each event once.",
+      "pick": "Very high throughput, or a team that already runs a log as its system of record."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>My pick: one database while it fits, and a saga once it does not. Two details make the saga safe. First, the order: <strong>debit first, credit second</strong>. The debit is the only step that can fail for a business reason (not enough money), so it runs first. Once it commits, the credit is nearly certain, and the rare refusal (a frozen or closed wallet) has a simple reversal: give the money back. The opposite order could credit Bob and then fail to debit Alice, creating money from nothing.</p>
+
+<p>Second, <strong>each leg balances on its own</strong> through a transit account per shard. Alice's leg moves $20 from Alice to transit:A; Bob's moves $20 from transit:B to Bob. While a transfer is in flight, transit:A is +2000 and transit:B is −2000, so the books across all shards still sum to zero. The sum of the transit accounts always equals money in flight, which gives reconciliation a precise check.</p>
+
+<p>Two traps. Every transfer on a shard touches its transit account, so a cached balance row for it would be the hottest lock in the system: transit accounts get entries only, and the reconciler sums them. And a refusal is final. Shard B stores it in <code>applied_credits</code>, and the reversal runs only if the transfer is still <code>sent</code>; otherwise a redelivery after Dan is unfrozen would pay him after Alice got her money back.</p>
+
+<h3>Preventing overdraft under concurrency</h3>
+
+<p>Alice has $30 and two devices each send $20 within a millisecond. If the service reads the balance, checks it in code, then writes, both reads see 3000 and both transfers go through: −$10. The check and the write must be one atomic step.</p>
+
+<x-code single title="The debit leg on Alice's shard">
+<pre lang="sql">
+BEGIN;
+INSERT INTO transfers (transfer_id, from_wallet, to_wallet, amount_cents, status)
+     VALUES ('t-81', 'alice', 'bob', 2000, 'sent');      -- duplicate id: stop here
+UPDATE wallets SET balance_cents = balance_cents - 2000
+ WHERE wallet_id = 'alice' AND balance_cents >= 2000;    -- 0 rows: ROLLBACK, 409
+INSERT INTO ledger_entries ... ('alice', -2000), ('transit:shard-A', +2000);
+INSERT INTO outbox (transfer_id, payload) VALUES ('t-81', '...');
+COMMIT;
+</pre>
+</x-code>
+
+<p>The conditional <code>UPDATE</code> takes a row lock on Alice's wallet. The second debit waits for it. In PostgreSQL at read committed, it then rechecks its <code>WHERE</code> against the new balance of 1000 and changes nothing. At repeatable read or serializable it fails with a serialization error instead; retry it, and the retry sees 1000. Either way, no overdraft. <a href="/system-design/transactions-and-isolation.html">Transactions and isolation</a> covers the levels; name the one you rely on.</p>
+
+<p>The lock lasts only for this short transaction, and only the sender's row is locked. Credits need no balance check, which matters for hot accounts (see the follow-up questions).</p>
+
+<x-callout type="mistake" title="Checking the balance in a cache">
+<p>Reading the balance from a cache or replica to decide whether a debit is allowed reopens the race: two requests both see $30. A replica may also be seconds behind. The rule is enforced only by the conditional write on the primary; caches are for display.</p>
+</x-callout>
+
+<h3>Ledger, audit and reconciliation</h3>
+
+<p>The ledger rules are the ones from the payment system lesson: entries sum to zero, are never edited, and mistakes are fixed with reversing entries. What a wallet adds is that the ledger <em>is</em> the balance. The <code>balance_cents</code> column is a cache written in the same transaction as the entries, and <code>balance_after</code> on each entry lets anyone check any point in history without summing years of rows.</p>
+
+<p>Run these checks continuously, and page someone when one fails:</p>
+
+<ul>
+<li><strong>Per wallet:</strong> the cached balance equals the latest <code>balance_after</code>, and the sum of entries. Sample wallets all day; check every wallet nightly.</li>
+<li><strong>Per transfer:</strong> any transfer still <code>sent</code> after a minute is stuck. A sweeper re-drives it from the outbox.</li>
+<li><strong>Across shards:</strong> all accounts together sum to zero, and the transit accounts sum to the amount of transfers still in flight.</li>
+<li><strong>Against the outside world:</strong> total of all wallets equals the money in the company's pooled bank account, and top-ups match the payment system's settlement records.</li>
+</ul>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, 30,000 transfers a second at peak, each cross-shard transfer is two local transactions: 60,000 a second. The worker marks transfers completed in batches, which adds little. At about 5,000 per primary, that is 12 primaries; use 16 for headroom and growth. Balance reads, 35,000 a second at 10x, are one-row lookups on the owner's shard. History pages can come from replicas a second behind, with the app showing its own just-sent transfer as pending.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A wallet service server</td><td>Requests in flight fail; committed debits are safe with their outbox rows.</td><td>The app retries with the same transfer id and gets the same answer.</td></tr>
+<tr><td>A shard primary</td><td>Debits from and credits to its wallets pause until the synchronous replica is promoted.</td><td>Return 503 for its senders; credits wait in other shards' outboxes and land after failover.</td></tr>
+<tr><td>The transfer worker</td><td>Senders are debited; recipients wait. Transit accounts grow.</td><td>Run several workers over partitioned outboxes; alert on transfers stuck past a minute.</td></tr>
+<tr><td>The payment system</td><td>Top-ups stop.</td><td>Transfers between wallets are unaffected; they never touch it.</td></tr>
+<tr><td>The reconciler</td><td>Errors are found later.</td><td>Nothing breaks today; rerun over the missed period.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Keeps a balance column, updates both rows in a transaction, and with prompting handles a double tap.</td></tr>
+<tr><td>Mid</td><td>Adds idempotent transfer ids, a conditional debit against overdraft, and a ledger with derived balances.</td></tr>
+<tr><td>Senior</td><td>Starts with one database and says when it stops being enough, sees that sharding makes most transfers cross-shard, chooses a debit-first saga with balanced legs, and defines the reconciliation checks that prove the books.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Crossing shards" tone="weak">
+<x-interviewer>Alice and Bob are on different shards. How does the transfer work?</x-interviewer>
+<x-you>I'd use a distributed transaction so both updates are atomic.</x-you>
+<x-coach>It names a tool without its cost: locks held across shards, and blocking if the coordinator fails. It also skips why most transfers cross shards at all.</x-coach>
+</x-interview>
+
+<x-interview title="Crossing shards" tone="strong">
+<x-interviewer>Alice and Bob are on different shards. How does the transfer work?</x-interviewer>
+<x-you>With 16 shards, about 94% of transfers cross shards, so this is the normal path. I'd run a saga: debit Alice first, in one local transaction that also books the money to a transit account and writes an outbox row; a worker then credits Bob once, keyed by transfer id. If Bob's wallet refuses, the worker reverses Alice's debit.</x-you>
+<x-interviewer>So Alice is debited before Bob is credited?</x-interviewer>
+<x-you>For a second, yes, and the transit account shows exactly where the money is. That's the price of not holding locks across shards. Before sharding I'd keep one database and do it in one transaction.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>A merchant wallet receives 1,000 credits a second. What breaks?</h3>
+<p>Its balance row: every credit waits on its lock. Credits never need a balance check, so append the entries without updating the cached balance, and fold them into it every second. Or split the account into 10 sub-accounts and sum them on read.</p>
+
+<h3>How would you add withdrawals to a bank?</h3>
+<p>Debit the wallet into a "payouts pending" account first, then call the bank with an idempotency key. An unknown outcome stays pending until the bank's records settle it, the same care as in the payment system.</p>
+
+<h3>How would you support several currencies?</h3>
+<p>One wallet per currency. A conversion is a transfer through the company's account for each currency, at a recorded rate, so every currency's ledger still sums to zero.</p>
+
+<h3>How do you prove the ledger was never edited?</h3>
+<p>Give the service insert-only permission on the ledger table, store a hash of the previous entry in each entry so any edit breaks the chain, and publish daily totals somewhere the database cannot change.</p>
+
+<h3>Why not compute the balance from entries on every read?</h3>
+<p>An active wallet has thousands of entries, and 3,500 reads a second would sum them all. The cached column is exact because it changes in the same transaction as the entries, and the nightly check proves it.</p>
+
+<x-checklist title="Self-review: digital wallet">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I said which rules are exact (no overdraft, once only, balanced books) and what may lag", "I asked about currencies, withdrawals and who processes cards"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated peak transfers and checked whether one database fits", "I had the app create the transfer id before the first request", "I said when the API reports a transfer as sent, and why"] },
+    { "title": "Design and depth", "items": ["I made the ledger the source of truth and the balance a cache updated in the same transaction", "I prevented overdraft with a conditional update, not a read then a write", "I showed that sharding by wallet makes most transfers cross-shard", "I compared one transaction, two-phase commit, a saga and an event-sourced ledger, and said which I'd pick at which scale", "I ordered the saga debit first and kept each leg balanced with transit accounts"] },
+    { "title": "Failure", "items": ["I made the credit leg safe to deliver twice", "I listed reconciliation checks, including transit totals and the pooled bank account"] }
+  ]
+}
+</script>
+</x-checklist>

@@ -1,0 +1,468 @@
+<!--
+{
+  "title": "Design Hotel Booking",
+  "description": "Search stays by place and dates, serve fast listing pages, and book several nights at once without selling a room twice: holds, payment, overbooking.",
+  "minutes": 30,
+  "kind": "design",
+  "tags": ["case study", "inventory", "date ranges", "search", "transactions"]
+}
+-->
+<p>A guest types "Lisbon, 12 to 15 June, 2 guests", scrolls through a few hundred places, opens ten of them, and books one. Behind that is a stays marketplace: hotels list rooms, people rent out homes, and the site has to say which of them are free on those exact nights.</p>
+
+<p>It looks like <a href="/system-design/design-ticket-booking.html">ticket booking</a> with rooms instead of seats, and the rule is the same: never sell one thing twice. What differs is the shape of the inventory and the traffic. A stay covers several nights, so one booking claims several rows at once. There is no on-sale spike; instead, people search hundreds of times per booking, filtering by availability that keeps changing. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read on.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a hotel booking site, something where people book hotels and holiday homes.</x-interviewer>
+<x-you>Is it both hotels with many rooms of one type and homes that are a single unit? And does the guest book instantly, or does the host approve each request?</x-you>
+<x-interviewer>Both kinds. Instant booking only for now.</x-interviewer>
+<x-you>How many properties, and how many bookings a day? And how much do people browse before they book?</x-you>
+<x-interviewer>About a million properties and 500,000 bookings a day. People search and look at listings a lot: call it 100 searches and 200 listing views per booking.</x-interviewer>
+<x-you>So reads outnumber bookings 300 to 1, and the booking rate is small. My priorities: never confirm two guests for the last room on a night, never charge without a booking, and keep search fast even if it is a few seconds behind. Search results are a hint; the booking step is the truth.</x-you>
+<x-coach>The candidate notices the write rate is tiny and says where staleness is allowed (search) and where it is not (booking). That split drives the design.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> search by place, dates and guest count; view a listing with photos, prices and a calendar; book one or more rooms of a type for a date range; pay; cancel.</li>
+<li><strong>Non-functional:</strong> no night sold beyond its limit (strong consistency on inventory); search under 300 ms, allowed to lag bookings by seconds; listing pages under 200 ms; holds last 15 minutes; a confirmed booking is never lost.</li>
+<li><strong>Out of scope:</strong> reviews, host payouts, guest-host messaging, price setting, loyalty programmes.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>A day has 86,400 seconds. Assume the busiest hour of the year runs at 5 times the average.</p>
+
+<ul>
+<li><strong>Bookings:</strong> 500,000 ÷ 86,400 ≈ 6 a second, about 30 at peak. One database primary handles that.</li>
+<li><strong>Searches:</strong> 500,000 × 100 = 50 million a day, which is 50,000,000 ÷ 86,400 ≈ 600 a second, about 3,000 at peak.</li>
+<li><strong>Listing views:</strong> 500,000 × 200 = 100 million a day, about 1,200 a second, 6,000 at peak.</li>
+<li><strong>Bookings stored:</strong> 500,000 × 365 ≈ 180 million a year, about 180 GB at 1 KB each.</li>
+<li><strong>Photos:</strong> 1 million properties × 20 photos × 500 KB = 10 TB, served from a <a href="/system-design/cdns.html">CDN</a> and stored in <a href="/system-design/blob-storage.html">object storage</a>.</li>
+</ul>
+
+<x-estimate title="Inventory rows for a year ahead">
+<script type="application/json">
+{
+  "question": "Inventory is stored as one row per room type per night, for 365 nights ahead. How much space do those rows take?",
+  "givens": ["1 million properties", "2 room types per property on average (a home is one type with one unit)", "365 nights ahead", "About 50 bytes per row"],
+  "unit": "bytes",
+  "answer": "37 GB",
+  "accept": ["10 GB", "150 GB"],
+  "steps": ["1,000,000 × 2 = 2 million room types", "2,000,000 × 365 = 730 million rows", "730 × 10<sup>6</sup> × 50 B ≈ 36.5 × 10<sup>9</sup> B, about 37 GB"],
+  "note": "Small enough for one machine. Size is not a reason to partition here."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Peak search rate">
+<script type="application/json">
+{
+  "question": "500,000 bookings a day, 100 searches per booking, and a peak of 5 times the average. How many searches per second at peak?",
+  "givens": ["500,000 bookings a day", "100 searches per booking", "Peak is 5 times the average", "A day is 86,400 seconds"],
+  "unit": "count/s",
+  "answer": "3 thousand/s",
+  "accept": ["1 thousand/s", "10 thousand/s"],
+  "choices": ["30/s", "300/s", "3 thousand/s", "30 thousand/s"],
+  "steps": ["500,000 × 100 = 50 million searches a day", "50,000,000 ÷ 86,400 ≈ 580, call it 600 a second", "600 × 5 = 3,000 a second at peak"],
+  "note": "Against 30 bookings a second, the read side needs the machines and the write side needs the care."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the endpoints for search, a listing page and booking. How do you write the dates of a stay, and what does booking return when a night has just sold out?</p>
+</x-task>
+<x-answer>
+<p>Search and listings are GETs; booking POSTs a held reservation and a pay call confirms it. A stay is check-in and an exclusive check-out date, local to the property. A sold-out night returns 409.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+GET  /search?near=38.72,-9.14&check_in=2027-06-12&check_out=2027-06-15&guests=2&cursor=...
+  200 { "results": [ { "property_id": 501, "room_type_id": 42,
+                       "total_cents": 39000, "photo": "..." }, ... ],
+        "next_cursor": "..." }
+
+GET  /properties/{id}                        static content, cacheable for minutes
+GET  /properties/{id}/availability?from=2027-06-01&to=2027-08-01
+  200 { "room_types": [ { "id": 42, "nights": [ { "date": "2027-06-12",
+          "free": 3, "price_cents": 13000 }, ... ] } ] }
+
+POST /reservations          Idempotency-Key: 7f3c...
+  body: { "property_id": 501, "room_type_id": 42,
+          "check_in": "2027-06-12", "check_out": "2027-06-15",
+          "rooms": 1, "guests": 2 }
+  201 { "reservation_id": 88001, "status": "held",
+        "held_until": "...", "total_cents": 39000 }
+  409 Conflict      not enough rooms on 2027-06-14; body lists similar options
+  400 Bad Request   check_out not after check_in, or more than 365 days ahead
+
+POST /reservations/{id}/pay
+  200 { "status": "confirmed" }
+  402 Payment Required   declined; the hold stays until it expires
+  410 Gone               the hold expired
+
+POST /reservations/{id}/cancel
+</pre>
+</x-code>
+
+<p>The API decision worth arguing is how to write a stay. Use two plain dates in the property's own calendar, no time, no time zone. The stay is the nights from check-in up to but not including check-out: 12 to 15 June is the nights of the 12th, 13th and 14th. UTC timestamps invite off-by-one bugs, because midnight in Lisbon is not midnight on the server.</p>
+
+<p>The listing page is two calls on purpose: the static part caches well for minutes, while availability and price change with every booking.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>Sketch the records for room types, inventory and reservations. How does one booking of three nights check and claim all three nights at once?</p>
+</x-task>
+<x-answer>
+<p>A row per room type per night with a total and a reserved count. One transaction adds to every night of the stay where it fits the limit, and commits only if every night changed.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Room types, nightly inventory, reservations">
+<pre lang="sql">
+room_types
+  property_id    BIGINT
+  room_type_id   BIGINT
+  name           VARCHAR(100)   -- "Double room, sea view"
+  max_guests     SMALLINT
+  total_units    SMALLINT       -- 1 for a home
+  PRIMARY KEY (property_id, room_type_id)
+
+inventory                        -- one row per room type per night
+  property_id    BIGINT
+  room_type_id   BIGINT
+  night          DATE           -- local date at the property
+  total_units    SMALLINT
+  overbook_limit SMALLINT       -- extra units the hotel allows; 0 for homes
+  reserved       SMALLINT       -- held + confirmed
+  price_cents    INT
+  PRIMARY KEY (property_id, room_type_id, night)
+
+reservations
+  reservation_id BIGINT
+  property_id    BIGINT
+  room_type_id   BIGINT
+  user_id        BIGINT
+  check_in       DATE
+  check_out      DATE           -- exclusive
+  rooms          SMALLINT
+  status         VARCHAR(10)    -- held | paying | confirmed | expired | cancelled
+  held_until     TIMESTAMP
+  total_cents    INT
+  idem_key       VARCHAR(64) UNIQUE
+  PRIMARY KEY (property_id, reservation_id)
+</pre>
+</x-code>
+
+<p>A hotel sells a room <em>type</em>, not room 214; the front desk picks the room at check-in. So inventory is a count per type per night, and a home is the same thing with <code>total_units = 1</code>.</p>
+
+<p>A booking changes several rows of one property all-or-nothing, which points to a <strong>relational database with transactions</strong>. Every key leads with <code>property_id</code>, so if you partition by property later, a booking never crosses partitions. A guest's list of trips is a separate table by <code>user_id</code>, written after the booking commits.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the boxes for searching, viewing a listing and booking. Where does search get availability from, and how does it learn about new bookings?</p>
+</x-task>
+<x-answer>
+<p>A search index holds listings plus their sold-out nights, fed by the inventory change stream. Listing pages come mostly from a CDN. A booking service, the only writer of inventory, also calls the payment processor.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>Searches and page views, 9,000 a second at peak, read copies that may be seconds old. Bookings, 30 a second, are the only writers of inventory.</p>
+
+<x-arch caption="Search and listing pages read copies that lag by seconds. Only the booking service writes the inventory primary, and every booking is checked there.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "guest", "label": "Guest's browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "cdn", "label": "CDN", "kind": "cdn", "col": 1, "row": 0 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "search", "label": "Search and listings", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "book", "label": "Booking service", "kind": "service", "col": 2, "row": 2, "stack": true },
+    { "id": "index", "label": "Search index", "kind": "search", "col": 3, "row": 0 },
+    { "id": "replica", "label": "Inventory replica", "kind": "database", "col": 3, "row": 1 },
+    { "id": "db", "label": "Inventory primary", "kind": "database", "col": 3, "row": 2 },
+    { "id": "pay", "label": "Payment processor", "kind": "external", "col": 3, "row": 3 }
+  ],
+  "edges": [
+    { "from": "guest", "to": "cdn", "label": "pages, photos" },
+    { "from": "guest", "to": "gw" },
+    { "from": "cdn", "to": "search", "label": "on a miss" },
+    { "from": "gw", "to": "search", "label": "search, calendar" },
+    { "from": "gw", "to": "book", "label": "book, pay" },
+    { "from": "search", "to": "index", "label": "query" },
+    { "from": "search", "to": "replica", "label": "recheck" },
+    { "from": "book", "to": "db", "label": "reserve nights" },
+    { "from": "book", "to": "pay", "label": "authorize" },
+    { "from": "db", "to": "replica", "label": "replication", "style": "async" },
+    { "from": "replica", "to": "index", "label": "change stream", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="Search, book three nights, lose a race, expire a hold">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "guest", "label": "Guest's browser", "kind": "client", "col": 0, "row": 1 },
+      { "id": "cdn", "label": "CDN", "kind": "cdn", "col": 1, "row": 0 },
+      { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "search", "label": "Search and listings", "kind": "service", "col": 2, "row": 0 },
+      { "id": "book", "label": "Booking service", "kind": "service", "col": 2, "row": 2 },
+      { "id": "index", "label": "Search index", "kind": "search", "col": 3, "row": 0 },
+      { "id": "replica", "label": "Inventory replica", "kind": "database", "col": 3, "row": 1 },
+      { "id": "db", "label": "Inventory primary", "kind": "database", "col": 3, "row": 2 },
+      { "id": "pay", "label": "Payment processor", "kind": "external", "col": 3, "row": 3 }
+    ],
+    "edges": [
+      { "from": "guest", "to": "cdn" },
+      { "from": "guest", "to": "gw" },
+      { "from": "cdn", "to": "search" },
+      { "from": "gw", "to": "search" },
+      { "from": "gw", "to": "book" },
+      { "from": "search", "to": "index" },
+      { "from": "search", "to": "replica" },
+      { "from": "book", "to": "db" },
+      { "from": "book", "to": "pay" },
+      { "from": "db", "to": "replica", "style": "async" },
+      { "from": "replica", "to": "index", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Ana searches near Lisbon for 12 to 15 June. The index filters by distance, guests and \"no sold-out night from the 12th to the 14th\"; the 25 results shown are rechecked on the replica.",
+      "arch": { "active": ["guest", "search", "index", "replica", ["guest", "gw"], ["gw", "search"], ["search", "index"], ["search", "replica"]], "dim": ["book", "db", "pay", "cdn"], "notes": { "index": "412 matches" } },
+      "vars": { "nights": "12, 13, 14" }
+    },
+    {
+      "caption": "She opens a hotel. Page and photos come from the CDN; only the calendar call reaches our servers, and it reads about 60 rows from the replica.",
+      "arch": { "active": ["cdn", "search", "replica", ["guest", "cdn"], ["guest", "gw"], ["gw", "search"], ["search", "replica"]], "mark": ["guest"], "dim": ["book", "db", "pay", "index"] },
+      "vars": { "room type 42 free": "1, 2, 1" }
+    },
+    {
+      "caption": "She books one room of type 42. One transaction adds 1 to <code>reserved</code> on each night where it stays within the limit. 3 rows change, so it commits with a 15-minute hold.",
+      "arch": { "active": ["book", "db", ["gw", "book"], ["book", "db"]], "dim": ["search", "index", "pay", "cdn"], "notes": { "db": "3 of 3 rows" } },
+      "vars": { "room type 42 free": "0, 1, 0", "reservation 88001": "held" }
+    },
+    {
+      "caption": "A second later Ben, whose search ran before Ana booked, tries type 42 for 14 to 16 June. Night 14 is now full: 1 of 2 rows changes, so it rolls back and he gets 409.",
+      "arch": { "active": ["book", ["book", "db"], ["book", "gw"], ["gw", "guest"]], "fail": ["db"], "dim": ["search", "index", "pay", "cdn"], "notes": { "db": "1 of 2: rollback" } },
+      "vars": { "room type 42 free": "0, 1, 0", "Ben": "409 on night 14" }
+    },
+    {
+      "caption": "Ana pays. The reservation moves to <code>paying</code> with its hold extended, and the card is authorized with 88001 as the idempotency key.",
+      "arch": { "active": ["book", "pay", ["book", "pay"], ["book", "db"]], "dim": ["search", "index", "cdn"], "notes": { "pay": "key 88001" } },
+      "vars": { "reservation 88001": "paying" }
+    },
+    {
+      "caption": "The authorization succeeds and the reservation becomes <code>confirmed</code>. Inventory does not change: the hold already counted the nights.",
+      "arch": { "active": [["pay", "book"], ["book", "db"], ["book", "gw"], ["gw", "guest"]], "mark": ["guest", "db"], "dim": ["search", "index", "cdn"] },
+      "vars": { "reservation 88001": "confirmed" }
+    },
+    {
+      "caption": "Ana's hold took nights 12 and 14 to zero free, so the change stream marks them sold out in the index, about 2 seconds later. Until then the booking check is what catches it.",
+      "arch": { "active": ["db", "replica", "index", ["db", "replica"], ["replica", "index"]], "dim": ["guest", "gw", "book", "pay", "cdn", "search"], "notes": { "index": "lag about 2 s" } },
+      "vars": { "sold out": "12, 14" }
+    },
+    {
+      "caption": "Carl holds type 7 for two nights, then closes his laptop. A count cannot tell which units are expired holds, so the rooms stay reserved.",
+      "arch": { "active": ["db"], "fail": ["guest"], "dim": ["search", "index", "pay", "cdn", "gw"], "notes": { "guest": "gone", "db": "hold expired" } },
+      "vars": { "reservation 88002": "held, expired" }
+    },
+    {
+      "caption": "A sweeper in the booking service runs every minute. One transaction flips 88002 from <code>held</code> to <code>expired</code> and subtracts 1 from both nights.",
+      "arch": { "active": ["book", "db", ["book", "db"]], "mark": ["db"], "dim": ["search", "index", "pay", "cdn", "gw", "guest"] },
+      "vars": { "reservation 88002": "expired", "type 7 free": "+1, +1" }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>Reserving several nights at once</h3>
+
+<p>A three-night stay is three rows that must all have room. Check and claim them in one atomic step, or a guest gets a booking with a hole in it.</p>
+
+<x-tradeoffs caption="Ways to claim a range of nights">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Nightly counts, conditional update",
+      "good": "One statement claims every night that has room; count the changed rows. Works for many units and for one.",
+      "bad": "Nightly rows to pre-create. Expired holds need a sweeper, because a count does not say which units are stale.",
+      "pick": "Room types with counts, the general case. The usual answer.",
+      "default": true
+    },
+    {
+      "name": "Date ranges with an overlap check",
+      "good": "Store each booking as a range; an exclusion constraint rejects any range that overlaps another. No nightly rows.",
+      "bad": "Only says yes or no, so it fits single units. It cannot express \"fewer than 30 overlaps\" for 30 rooms.",
+      "pick": "A product of one-unit homes only."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<x-code single title="Claim one room of type 42 for 12 to 15 June">
+<pre lang="sql">
+BEGIN;
+UPDATE inventory
+   SET reserved = reserved + 1
+ WHERE property_id = 501 AND room_type_id = 42
+   AND night >= '2027-06-12' AND night < '2027-06-15'
+   AND reserved + 1 <= total_units + overbook_limit;
+-- rows changed must be 3 (the nights 12, 13, 14). Fewer: ROLLBACK, return 409.
+INSERT INTO reservations (..., status, held_until)
+     VALUES (..., 'held', now() + interval '15 minutes');
+COMMIT;
+</pre>
+</x-code>
+
+<p>Why it is safe: an updated row stays locked until commit, so a second transaction that wants it waits. In databases such as PostgreSQL at read committed, the waiting update then re-checks its <code>WHERE</code> clause against the new value, sees the night is full and skips it, so the row count is short and you roll back. At stricter isolation levels it fails with a serialization error instead, which also becomes a 409 (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>). Overlapping stays can lock shared nights in opposite orders and deadlock; the database aborts one, and you retry it once or lock nights in date order first.</p>
+
+<x-callout type="mistake" title="Counting the check-out night">
+<p>A stay from the 12th to the 15th uses three nights, not four. Writing <code>night &lt;= check_out</code> blocks a night the guest never sleeps, so the next guest arriving on the 15th sees the room as taken. Use a half-open range everywhere: in the claim, the release, the search filter and the price total.</p>
+</x-callout>
+
+<h3>Searching by availability</h3>
+
+<p>"Places free on 12 to 15 June" is the hard query, because availability changes with every booking.</p>
+
+<x-tradeoffs caption="Where search gets availability">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Query the inventory database",
+      "good": "Always exact.",
+      "bad": "3,000 searches a second, each scanning thousands of listing-nights, on the database that takes bookings.",
+      "pick": "A small site with a few thousand listings."
+    },
+    {
+      "name": "Index without availability, check after",
+      "good": "The index stays simple and never needs updating on a booking.",
+      "bad": "In a busy week most top results are full, so you fetch and drop page after page.",
+      "pick": "Availability is rarely the limiting filter."
+    },
+    {
+      "name": "Sold-out nights in the index, recheck the page",
+      "good": "The index drops what it knows is full; the page shown is rechecked on a replica.",
+      "bad": "Seconds of lag, and a change stream to run.",
+      "pick": "Availability decides results and a few seconds of lag is fine. The usual answer.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Each room type's document in the <a href="/system-design/search-systems.html">search index</a> carries its list of sold-out nights. A room type fits a stay if none of the stay's nights is in the list: one "must not match" filter. The change stream updates that field only when a night's free count reaches zero or leaves it, applied per room type in log order so a late "free" never overwrites a newer "sold out". The place is a geo filter in the same query (see <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>).</p>
+
+<p>The list only knows "at least one free", so a family wanting three rooms may see a hotel with one left. The search service therefore rechecks the 25 results it is about to show in one batched replica read: 25 room types × 3 nights = 75 rows, one query per search, 3,000 a second at peak. Results that fail are dropped.</p>
+
+<p>Listing pages are the other read. The static part sits on a CDN for five minutes and is purged when the host edits it; the calendar is about 60 rows from a replica. None of the 6,000 views a second reach the primary.</p>
+
+<x-callout type="mistake" title="Treating the search result as a promise">
+<p>Search results and calendars are copies, and copies lag. Copies decide what to show; only the booking transaction decides what to sell.</p>
+</x-callout>
+
+<h3>Holds, payment and expiry</h3>
+
+<p>Reserve the nights, then charge; charging first leaves a paid guest with no room whenever the claim fails. The flow is the one from <a href="/system-design/design-ticket-booking.html">ticket booking</a>: a hold, a <code>paying</code> state the sweeper never touches, and an idempotent charge (<a href="/system-design/design-a-payment-system.html">Design a Payment System</a> handles unknown results). Two things differ.</p>
+
+<ul>
+<li><strong>Expiry needs a writer.</strong> A seat row carries its own <code>held_until</code>, so an expired hold reads as free. A count of 3 cannot say one of the three is stale, so the sweeper releases it: <code>UPDATE reservations SET status = 'expired' WHERE id = 88002 AND status = 'held' AND held_until &lt; now()</code>, and only if that changed one row, subtract from the nights in the same transaction. The status check makes it safe to run twice.</li>
+<li><strong>Authorize now, capture later.</strong> Many stays are free to cancel until a deadline, so the booking <em>authorizes</em> the card, holding the funds, and <em>captures</em> later. Card network rules make an authorization lapse after days, so for a stay months ahead, save the card as a token and authorize nearer the date.</li>
+</ul>
+
+<h3>Overbooking on purpose and by accident</h3>
+
+<p>Some guests never arrive. In our scenario, a 100-room hotel with about 5 no-shows per 100 bookings may choose to sell 104. The <code>overbook_limit</code> column lets each hotel set this per room type, and the platform enforces it exactly. It is 0 for homes. The hotel decides, because the hotel pays when it has to send a guest elsewhere.</p>
+
+<p>Accidental overbooking is the bigger risk. A hotel often sells the same rooms on several sites, which learn of each other's bookings through a sync service, with lag. Two sites can each sell the last room in the same minute, and no transaction in your database can stop it. Push your bookings out within seconds to shrink the window, and plan for the rest: a relocation process that finds a comparable room and pays the difference.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, 30,000 searches a second, the index needs work first: shard it by region, since every query names a place, and add replicas. The rechecks become 30,000 reads a second, so add inventory replicas or an availability cache fed by the same change stream. Bookings at 300 a second still fit one primary; partition by <code>property_id</code> when you want headroom or isolation.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A search index node</td><td>Its shard answers from a replica.</td><td>Run two or more replicas per shard.</td></tr>
+<tr><td>The change stream consumer</td><td>The index goes stale, so more rechecks fail and more bookings get 409.</td><td>No double sales. Alert on lag; it resumes from its saved position.</td></tr>
+<tr><td>The inventory primary</td><td>Bookings stop until a replica takes over. Search keeps working.</td><td>Replicate synchronously, so an acknowledged booking survives the failover.</td></tr>
+<tr><td>The payment processor</td><td>Guests cannot pay; holds near expiry.</td><td>Extend unexpired holds; retry with the same idempotency key.</td></tr>
+<tr><td>The booking service, mid-payment</td><td>The card is authorized but the reservation is stuck in <code>paying</code>, which the sweeper skips.</td><td>A reconciler asks the processor about <code>paying</code> reservations older than a few minutes, by idempotency key, then confirms or releases.</td></tr>
+<tr><td>The sweeper</td><td>Expired holds keep rooms hidden: lost sales, not double sales.</td><td>Restart it; alert on the age of the oldest expired hold.</td></tr>
+<tr><td>The CDN</td><td>6,000 listing views a second fall through to the listing service.</td><td>Keep a cache in front of the listing store sized for it.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Puts search and booking on one database and checks "is the room free?" before inserting, adding a transaction when prompted.</td></tr>
+<tr><td>Mid</td><td>Models inventory per night, claims the whole stay in one transaction, adds holds, an idempotent payment and a CDN for listings.</td></tr>
+<tr><td>Senior</td><td>Sees that reads are the scale problem, separates a stale search copy from the exact booking check, releases counted holds safely, and treats overbooking across sites as a business process.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Availability in search" tone="weak">
+<x-interviewer>How does search know which hotels are free on those dates?</x-interviewer>
+<x-you>It joins the listings table with the bookings table and filters out anything with an overlapping booking.</x-you>
+<x-coach>Fine for 100 listings. At 3,000 searches a second it loads the database that takes bookings, and it ignores rooms with several units.</x-coach>
+</x-interview>
+
+<x-interview title="Availability in search" tone="strong">
+<x-interviewer>How does search know which hotels are free on those dates?</x-interviewer>
+<x-you>The index keeps each room type's sold-out nights, updated from the change stream within seconds, and excludes anything sold out on a night of the stay. I recheck the 25 results I show on a replica, since the index lags. The booking does its own check in a transaction, so a stale result costs a retry, never a double booking.</x-you>
+<x-interviewer>Why not keep the free count per night in the index?</x-interviewer>
+<x-you>Every booking would rewrite a document, and most of those changes alter no search result. Sold-out flips are far rarer.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>Prices change per night. How do you show the total?</h3>
+<p>Each inventory row has its own price, so the total is the sum over the stay's nights. Copy it onto the reservation when the hold is taken, so a price change mid-checkout does not change what the guest agreed to.</p>
+
+<h3>A guest cancels. What changes?</h3>
+<p>One transaction moves the reservation to <code>cancelled</code> and subtracts from each night, guarded by the status like the sweeper. The refund follows the property's policy through the payment system.</p>
+
+<h3>How would you add request-to-book, where the host approves?</h3>
+<p>The same hold, with a longer expiry, say 24 hours, and a card authorization rather than a charge. The host's accept confirms the reservation; a decline or a timeout releases the nights and the authorization.</p>
+
+<h3>A festival fills one city's hotels. Does the design hold?</h3>
+<p>Contention is per room type and night, so guests spread over hundreds of hotels rarely collide. The pressure is on search: many identical queries, which a short-lived cache of result pages absorbs.</p>
+
+<h3>A hotel takes 5 rooms out for repairs. What happens?</h3>
+<p>Lower <code>total_units</code> on those nights in one transaction. If <code>reserved</code> is now above the limit, cancel nobody automatically: the nights show as sold out, and the extra bookings go to the same relocation process as accidental overbooking.</p>
+
+<x-checklist title="Self-review: hotel booking">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether listings have one unit or many, and whether booking is instant", "I got the booking rate and how much people browse per booking", "I said where stale data is fine (search) and where it is not (booking)"] },
+    { "title": "Numbers and interfaces", "items": ["I turned bookings into a write rate and searches into a read rate, with peaks", "I wrote a stay as check-in and an exclusive check-out in the property's local dates", "I split the listing page into a cacheable part and an availability part"] },
+    { "title": "Design and depth", "items": ["I modelled inventory per room type per night with a count", "I claimed every night of the stay in one transaction and checked the row count", "I kept availability in the search index as a hint and rechecked the shown page", "I explained who releases an expired hold when inventory is a count", "I reserved the nights before charging and used an idempotency key"] },
+    { "title": "Failure", "items": ["I said what happens when the change stream lags or the inventory primary fails over", "I treated overbooking across sites as a policy with a relocation process"] }
+  ]
+}
+</script>
+</x-checklist>
