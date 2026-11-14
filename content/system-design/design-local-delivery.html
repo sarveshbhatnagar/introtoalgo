@@ -1,0 +1,421 @@
+<!--
+{
+  "title": "Design Local Delivery",
+  "description": "Design one-hour delivery from small local warehouses: mapping customers to centres by travel time, fast availability reads, and orders that never oversell.",
+  "minutes": 27,
+  "kind": "design",
+  "tags": ["case study", "inventory", "transactions", "geospatial", "read models"]
+}
+-->
+<p>It is 9 pm and you are out of milk. You open an app, see only what can reach you within the hour, add milk and snacks, and pay. A driver brings them from a small warehouse a few kilometres away, one of hundreds the company runs across the country. A service such as Gopuff, delivering from its own local warehouses, is the kind of product this question means.</p>
+
+<p>Interviewers like it because it mixes three skills. "Near me" means travel time, not distance. The catalogue page must read stock fast across several warehouses. And the order must take the last carton of milk exactly once, across a whole basket of items. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading on.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a service that delivers groceries within an hour from local warehouses.</x-interviewer>
+<x-you>So a customer sees what is available near them and places an order, and we own the warehouses and their stock. Does an order always ship from one warehouse?</x-you>
+<x-interviewer>Prefer one. Splitting costs a second driver.</x-interviewer>
+<x-you>How many warehouses, items and customers?</x-you>
+<x-interviewer>500 fulfilment centres, each with about 5,000 of our 20,000 products. 5 million daily users, 1 million orders a day.</x-interviewer>
+<x-you>Then my priorities are: never confirm an order we cannot fill, show only what can really arrive within the hour, and keep browsing fast. A catalogue page can be a second or two behind the stock; the order itself must be exact. I'll leave out driver dispatch, picking inside the warehouse, and restocking.</x-you>
+<x-coach>The candidate names the truth (the order transaction) and the copy (the catalogue view) before drawing anything. That is the shape of the whole design.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> given a delivery address, show products that can be delivered within the hour, with availability; place an order for a basket of items; reject or adjust an order if an item just sold out.</li>
+<li><strong>Non-functional:</strong> catalogue pages in under 200 ms; availability at most a few seconds stale; never oversell (a confirmed order always has its stock reserved); a failure in one region does not stop orders in the others.</li>
+<li><strong>Out of scope:</strong> driver dispatch and tracking (see <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a>), picking and packing, restocking, pricing.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Catalogue pages:</strong> say 20 page loads per daily user: 5 million × 20 = 100 million a day ÷ 86,400 ≈ 1,200 a second. Evenings are about 4 times busier: about 4,600 a second at peak.</li>
+<li><strong>Orders:</strong> 1 million a day ÷ 86,400 ≈ 12 a second, about 46 at peak. Spread over 500 centres, the average centre takes one order every 10 seconds even at peak.</li>
+<li><strong>Inventory:</strong> 500 centres × 5,000 products = 2.5 million rows. At about 100 bytes each that is 250 MB: it fits in the memory of any server.</li>
+</ul>
+
+<x-estimate title="Stock lookups at peak">
+<script type="application/json">
+{
+  "question": "Each catalogue page shows 50 products, and each customer can be served by 2 centres. How many (centre, product) stock lookups a second happen at peak?",
+  "givens": ["4,600 catalogue pages a second at peak", "50 products per page", "2 reachable centres per customer"],
+  "unit": "count/s",
+  "answer": "460 thousand/s",
+  "accept": ["150 thousand/s", "1.5 million/s"],
+  "steps": ["50 × 2 = 100 lookups per page", "4,600 × 100 = 460,000 lookups a second"],
+  "note": "Orders are 46 a second; stock reads are about 10,000 times that. The read path and the order path need different stores."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Size of all stock data">
+<script type="application/json">
+{
+  "question": "How much memory holds the stock level of every product in every centre?",
+  "givens": ["500 centres", "About 5,000 products stocked per centre", "About 100 bytes per stock row"],
+  "unit": "bytes",
+  "answer": "250 MB",
+  "accept": ["80 MB", "800 MB"],
+  "steps": ["500 × 5,000 = 2.5 million rows", "2.5 × 10<sup>6</sup> × 100 B = 250 MB"],
+  "note": "Small enough to copy into every server that answers catalogue pages."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the catalogue and order endpoints. Who chooses the centre, the app or the server? What does the order return when one item has just sold out?</p>
+</x-task>
+<x-answer>
+<p>The app sends the address; the server chooses the centre, both when browsing and when ordering. A sold-out item returns 409 with what is missing and the alternatives, so the customer can fix the basket in one tap.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+GET /catalog?lat=40.73&lng=-73.99&category=dairy&cursor=...
+  200 { "eta_min": 27,
+        "items": [ { "id": "p_17", "name": "Oat milk 1 L", "price": 349,
+                     "available": true }, ... ] }
+  200 { "items": [], "reason": "outside delivery area" }
+
+POST /orders                     Idempotency-Key: 6f1c...
+  body: { "lat": 40.73, "lng": -73.99,
+          "items": [ { "id": "p_17", "qty": 1 }, ... ], "payment": "pm_..." }
+  201 { "order_id": "o_5521", "centre": "C1", "eta_min": 27 }
+  409 Conflict { "unavailable": [ { "id": "p_17", "elsewhere": { "eta_min": 39 } } ] }
+  402 Payment Required   card declined; nothing is reserved
+
+GET /orders/{id}
+</pre>
+</x-code>
+
+<p>The decision worth arguing is that the server picks the centre. If the app sent a centre id, an old app would order from a centre that has since closed, or one that is now 45 minutes away in traffic. Sending the address lets the server apply today's travel times and today's centre status. The order carries an <a href="/system-design/idempotency-and-retries.html">idempotency key</a>, so a retry after a timeout cannot create a second order.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>Sketch the records for centres, stock and orders. How would you partition stock so that an order for 15 items is one local transaction?</p>
+</x-task>
+<x-answer>
+<p>Stock rows keyed by (centre, product) with on-hand and reserved counts, in a relational database partitioned by region. An order ships from one centre, a centre belongs to one region, so every order's rows sit on one partition.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Records">
+<pre lang="sql">
+centres
+  centre_id PK, region_id, lat, lng, status    -- open | paused | closed
+
+cell_centres                         -- precomputed, key-value
+  cell        CHAR(6)                -- geohash of a ~0.75 km² area
+  time_bucket SMALLINT               -- morning | midday | evening rush | night
+  centres     JSON                   -- [["C1", 12], ["C2", 24]]: minutes away
+  PRIMARY KEY (cell, time_bucket)
+
+inventory                            -- partitioned by region_id
+  region_id, centre_id, product_id
+  on_hand     INT                    -- physically on the shelves
+  reserved    INT                    -- promised to confirmed orders
+  PRIMARY KEY (centre_id, product_id)
+  CHECK (reserved <= on_hand)
+
+orders                               -- same regional partition as inventory
+  order_id PK, idempotency_key UNIQUE, region_id, customer_id, centre_id,
+  status,     -- reserved | paid | picking | out | delivered | cancelled
+  items JSON, total_cents, created_at
+</pre>
+</x-code>
+
+<p>Available stock is <code>on_hand - reserved</code>. Keeping two counts means an order reserves at checkout and the shelf count only drops when a picker scans the item, so the warehouse's numbers always match what is physically there.</p>
+
+<p>An order changes several rows that must all succeed together, so inventory goes in a <strong>relational database with transactions</strong>. Partition it by region, a metro area with a few dozen centres, because an order touches one centre and so one region: no transaction ever crosses partitions. Orders live on the same partition, so the order row commits with its reservations. Partitioning by product would spread every basket over many partitions and need a distributed transaction for each order. Product names, photos and prices change rarely and go through a cache and a <a href="/system-design/cdns.html">CDN</a>.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the read path for a catalogue page and the write path for an order. Where does each get stock from?</p>
+</x-task>
+<x-answer>
+<p>An availability service answers catalogue pages from an in-memory copy of stock, fed by the inventory database's change stream. An order service runs the reservation transaction on the region's inventory partition. Both use the precomputed cell-to-centres table.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>The read side serves 460,000 lookups a second from a copy; the write side takes 46 orders a second against the truth. Neither slows the other.</p>
+
+<x-arch caption="Catalogue pages read a copy of stock kept in memory; orders reserve stock in one transaction on the region's inventory partition. A change stream keeps the copy within a second or two.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "app", "label": "Customer app", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "avail", "label": "Availability service", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "order", "label": "Order service", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "pay", "label": "Payment processor", "kind": "external", "col": 2, "row": 2 },
+    { "id": "cells", "label": "Cell to centres", "kind": "database", "col": 3, "row": 0 },
+    { "id": "inv", "label": "Inventory DB by region", "kind": "database", "col": 3, "row": 1 },
+    { "id": "stream", "label": "Stock changes", "kind": "queue", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "app", "to": "gw", "label": "HTTPS" },
+    { "from": "gw", "to": "avail", "label": "GET /catalog" },
+    { "from": "gw", "to": "order", "label": "POST /orders" },
+    { "from": "avail", "to": "cells", "label": "my cell" },
+    { "from": "order", "to": "cells" },
+    { "from": "order", "to": "inv", "label": "reserve" },
+    { "from": "order", "to": "pay", "label": "authorize" },
+    { "from": "inv", "to": "stream", "style": "async" },
+    { "from": "stream", "to": "avail", "label": "stock deltas", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through Ana browsing and ordering the last carton of oat milk at her nearest centre, while Ben tries to buy the same carton.</p>
+
+<x-tracer title="Browse, order, a race for the last item, a lagging copy">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "app", "label": "Customer app", "kind": "client", "col": 0, "row": 1 },
+      { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "avail", "label": "Availability service", "kind": "service", "col": 2, "row": 0 },
+      { "id": "order", "label": "Order service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "pay", "label": "Payment processor", "kind": "external", "col": 2, "row": 2 },
+      { "id": "cells", "label": "Cell to centres", "kind": "database", "col": 3, "row": 0 },
+      { "id": "inv", "label": "Inventory DB by region", "kind": "database", "col": 3, "row": 1 },
+      { "id": "stream", "label": "Stock changes", "kind": "queue", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "app", "to": "gw" },
+      { "from": "gw", "to": "avail" },
+      { "from": "gw", "to": "order" },
+      { "from": "avail", "to": "cells" },
+      { "from": "order", "to": "cells" },
+      { "from": "order", "to": "inv" },
+      { "from": "order", "to": "pay" },
+      { "from": "inv", "to": "stream", "style": "async" },
+      { "from": "stream", "to": "avail", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Ana opens the dairy aisle. The availability service turns her address into a 6-character geohash cell and looks it up: C1 is 12 minutes away, C2 is 24.",
+      "arch": { "active": ["app", "avail", "cells", ["app", "gw"], ["gw", "avail"], ["avail", "cells"]], "dim": ["order", "pay", "inv", "stream"], "notes": { "cells": "C1 12, C2 24" } },
+      "vars": { "centres": "C1, C2" }
+    },
+    {
+      "caption": "It checks 50 products at both centres in its own memory: 100 lookups, well under a millisecond. Oat milk: 1 left at C1, 9 at C2. The page says available, in 12 + 15 = 27 minutes.",
+      "arch": { "active": ["avail", ["avail", "gw"], ["gw", "app"]], "mark": ["app"], "dim": ["order", "pay", "inv", "stream"], "notes": { "avail": "100 lookups" } },
+      "vars": { "oat milk at C1": 1, "oat milk at C2": 9 }
+    },
+    {
+      "caption": "She checks out 15 items. The order service looks up her cell again and picks C1, the closest centre that has all 15 in its copy, then opens one transaction on the region's partition.",
+      "arch": { "active": ["order", "cells", "inv", ["app", "gw"], ["gw", "order"], ["order", "cells"], ["order", "inv"]], "dim": ["avail", "pay", "stream"], "notes": { "order": "C1, 15 items" } },
+      "vars": { "oat milk at C1": 1 }
+    },
+    {
+      "caption": "It reserves each item only if <code>on_hand - reserved</code> covers the quantity. All 15 rows change, so it commits. The last oat milk at C1 is now Ana's.",
+      "arch": { "active": ["inv", ["order", "inv"]], "mark": ["inv"], "dim": ["avail", "cells", "pay", "stream"], "notes": { "inv": "15 of 15" } },
+      "vars": { "oat milk at C1": 0, "rows reserved": "15 of 15" }
+    },
+    {
+      "caption": "Ben ordered oat milk from C1 at the same moment. His update waited for Ana's row lock, then re-checked: 0 available. Only 3 of his 4 rows change, so he rolls back.",
+      "arch": { "active": ["order", ["order", "inv"]], "fail": ["inv"], "dim": ["avail", "cells", "pay", "stream"], "notes": { "inv": "3 of 4: rollback" } },
+      "vars": { "oat milk at C1": 0, "Ben's rows": "3 of 4" }
+    },
+    {
+      "caption": "Ben gets 409: oat milk is unavailable at C1 but C2 has it, 24 + 15 = 39 minutes. He can switch the whole order to C2 or drop the item. Nothing of his was reserved.",
+      "arch": { "active": [["order", "gw"], ["gw", "app"]], "dim": ["avail", "cells", "pay", "stream"] },
+      "vars": { "Ben": "409, C2 offered" }
+    },
+    {
+      "caption": "Ana's card is authorized. The order moves to paid and goes to C1's pickers. Had the card been declined, one more transaction would release her 15 reservations.",
+      "arch": { "active": ["pay", ["order", "pay"], ["order", "inv"]], "mark": ["app"], "dim": ["avail", "cells", "stream"], "notes": { "pay": "authorized" } },
+      "vars": { "order o_5521": "paid" }
+    },
+    {
+      "caption": "The commit lands in the change stream, and every availability server applies the deltas to its copy within a second or two. C1 now shows oat milk as sold out.",
+      "arch": { "active": ["stream", "avail", ["inv", "stream"], ["stream", "avail"]], "dim": ["order", "pay", "cells", "gw", "app"], "notes": { "avail": "C1 oat milk 0" } },
+      "vars": { "copy of C1 oat milk": 0 }
+    },
+    {
+      "caption": "If the stream falls 30 seconds behind, pages show items that just sold out. Orders stay correct, because the transaction checks the truth; customers just see more 409s, so alert on stream lag.",
+      "arch": { "fail": ["stream"], "active": ["order", "inv", ["order", "inv"]], "dim": ["cells", "pay"], "notes": { "stream": "30 s behind" } },
+      "vars": { "oversold": 0 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on three things: which centres can reach a customer, reading stock fast across them, and reserving a basket without overselling.</p>
+
+<h3>Mapping a customer to centres by travel time</h3>
+
+<p>A centre 3 km away across a river with one bridge may be 30 minutes out; one 6 km away along a highway may be 10. The promise is about time, so "near" must be travel time. Say picking and handover take about 15 minutes; a 30-minute driving limit then leaves a margin inside the hour.</p>
+
+<x-tradeoffs caption="Ways to find the centres that can reach a customer">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Straight-line radius",
+      "good": "One distance check per centre; no routing at all.",
+      "bad": "Wrong at rivers, highways and hills: promises deliveries that take 40 minutes and hides ones that take 10.",
+      "pick": "A first version in a city with a regular street grid."
+    },
+    {
+      "name": "Ask a routing engine per request",
+      "good": "Uses live traffic for this exact address.",
+      "bad": "4,600 pages a second × 3 nearby centres ≈ 14,000 route calculations a second, each adding tens of milliseconds.",
+      "pick": "Only at checkout, to refine the time shown, not for browsing."
+    },
+    {
+      "name": "Precomputed cell table",
+      "good": "Offline, compute driving time from every centre to every map cell around it; browsing is one key lookup.",
+      "bad": "Times are per cell and per time-of-day bucket, not live. Must be rebuilt when centres open or roads change.",
+      "pick": "Almost always. My pick.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>The arithmetic shows the table is small. A precision-6 geohash cell is about 1.2 km × 0.6 km ≈ 0.75 km² near the equator (smaller further from it; see <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>). Say each centre serves about 50 km², roughly a 4 km radius in city traffic (a scenario assumption). Then 500 centres cover at most 25,000 km², about 25,000 ÷ 0.75 ≈ 33,000 cells. At 100 bytes per cell that is 3.3 MB. With 3 centres per cell and 4 time buckets (morning, midday, evening rush, night), a nightly rebuild is 33,000 × 3 × 4 ≈ 400,000 route calculations, a modest batch job.</p>
+
+<p>Live conditions go on top as flags read at request time, not as rebuilds: a centre marked <code>paused</code> because its pickers are overwhelmed, or closed for the night, is skipped. That gives the team a lever during a rush without recomputing anything.</p>
+
+<h3>A fast availability read across centres</h3>
+
+<p>A catalogue page needs, for 50 products, "can I get this within the hour?". That is the best of the customer's 2 or 3 centres for each product. The truth is in the inventory database, but 460,000 lookups a second should not land on the database that takes orders.</p>
+
+<x-tradeoffs caption="Where catalogue pages read stock from">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Query the inventory database",
+      "good": "Always exact.",
+      "bad": "460,000 lookups a second on the partitions that run order transactions; read replicas help, but it is still most of the load.",
+      "pick": "A small operation with a few centres."
+    },
+    {
+      "name": "Shared cache fed by the change stream",
+      "good": "A hash per centre in an in-memory store; one batched read per centre per page.",
+      "bad": "A network hop per centre, and a cache cluster to run and keep in sync.",
+      "pick": "The stock data is too big to copy onto every server."
+    },
+    {
+      "name": "In-process copy fed by the change stream",
+      "good": "250 MB fits in each availability server, so a page's 100 lookups cost microseconds and survive a cache outage.",
+      "bad": "Each server must load a snapshot on start and apply every delta; servers can differ by a moment.",
+      "pick": "The whole data set is small, as here. My pick.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Each availability server loads a snapshot of all stock at start-up, noting the stream position it corresponds to, then applies deltas from that position on. That is the same idea as a database replica, built from the <a href="/system-design/message-queues-and-streams.html">change stream</a>. Two more rules make the copy useful. For products whose shelf counts often drift with breakage and mis-scans, show them as available only above a small safety buffer, so you rarely promise a unit that is not there. And never show a count ("only 2 left") unless you accept it will sometimes be wrong for a second.</p>
+
+<h3>Ordering without overselling</h3>
+
+<p>A basket of 15 items must reserve all 15 or none. If 14 succeed and 1 fails, the customer is charged for a bag with a hole in it, or the 14 are locked away from other customers by a half-finished order.</p>
+
+<x-code single title="Reserve a basket at one centre, all or nothing">
+<pre lang="sql">
+BEGIN;
+UPDATE inventory AS i
+   SET reserved = i.reserved + b.qty
+  FROM (VALUES ('p_17', 1), ('p_42', 2), ...) AS b(product_id, qty)  -- 15 rows
+ WHERE i.centre_id = 'C1' AND i.product_id = b.product_id
+   AND i.on_hand - i.reserved >= b.qty;
+-- rows changed = 15: INSERT the order, COMMIT.
+-- fewer than 15:    ROLLBACK, and report which products fell short (409).
+COMMIT;
+</pre>
+</x-code>
+
+<p>Why it is safe: each row the update changes stays locked until commit. A second order for the same product waits, then, at read committed in databases such as PostgreSQL, re-checks its <code>WHERE</code> clause against the new values, finds too little stock, and skips the row; the count comes up short and it rolls back. At stricter isolation it fails with a serialization error, which you treat the same way (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>). Two baskets sharing products can lock them in different orders and deadlock; the database aborts one, and the order service retries it once. The <code>CHECK (reserved &lt;= on_hand)</code> constraint is a last line of defence against a bug elsewhere.</p>
+
+<x-callout type="mistake" title="Deciding from the catalogue copy">
+<p>The availability copy said oat milk was in stock for both Ana and Ben. If the order service trusted it and simply decremented, C1 would promise one carton twice. The copy decides what to show; only the conditional update decides what to sell.</p>
+</x-callout>
+
+<p>The rest of the flow follows <a href="/system-design/design-ticket-booking.html">ticket booking</a>: reserve first, then authorize the card, then confirm. A reservation whose payment never completes expires after a few minutes: a sweeper moves the order from <code>reserved</code> to <code>cancelled</code> only if it is still <code>reserved</code>, and releases its stock in the same transaction. Before cancelling, it asks the payment processor by idempotency key, in case the card was authorized just before a crash. When a picker finds a shelf empty despite the count, the order offers a substitute or a refund for that item and the count is corrected; no transaction can fix a miscounted shelf.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, 46,000 page loads and 460 orders a second at peak, the availability servers scale by adding copies, since each holds everything. The order side is 460 ÷ 500 ≈ 1 order a second per centre, still easy for a region's partition. The first strain is a hot product: a promotion on one item sends many orders to the same few rows at one centre, and they queue on its row lock. Cap the quantity per order, and if needed split the item's stock into several rows that orders pick at random, as in the general-admission answer of ticket booking.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>An availability server</td><td>Its pages fail until the load balancer notices.</td><td>The others hold full copies; a new server loads a snapshot and catches up from the stream.</td></tr>
+<tr><td>The change stream</td><td>Copies freeze; pages show stock as it was.</td><td>Orders stay correct; customers see more 409s. Alert on lag and hide low-stock items while it lasts.</td></tr>
+<tr><td>A region's inventory primary</td><td>Orders in that region fail until a replica takes over.</td><td>Synchronous replica so no reservation is lost. Other regions are unaffected, which is a benefit of partitioning by region.</td></tr>
+<tr><td>The payment processor</td><td>Orders reserve stock but cannot be authorized.</td><td>Release reservations after a short timeout so stock is not stranded; tell customers to retry.</td></tr>
+<tr><td>The cell-to-centres store</td><td>New customers cannot be mapped.</td><td>It is 3.3 MB: keep a copy in every availability and order server.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Finds centres by straight-line distance, reads stock from the main database on every page, and decrements quantities one item at a time.</td></tr>
+<tr><td>Mid</td><td>Uses travel time, caches availability, and reserves the basket in one transaction with a conditional update.</td></tr>
+<tr><td>Senior</td><td>Precomputes travel time per map cell, sees that all stock fits in memory and copies it into the read servers from a change stream, partitions inventory by region so every order is a local transaction, and separates the copy that shows from the truth that sells.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Why partition by region" tone="strong">
+<x-interviewer>How would you shard the inventory database?</x-interviewer>
+<x-you>By region. An order ships from one centre and a centre is in one region, so every basket's rows are on one partition and the reservation is an ordinary local transaction. Sharding by product would put a 15-item basket on up to 15 shards and need a distributed commit for every order.</x-you>
+<x-interviewer>What's the cost?</x-interviewer>
+<x-you>Regions are uneven, so a big metro needs a bigger partition, and a nationwide query, like total stock of one product, has to fan out. I'd serve those from an analytics copy, not the order database.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>No single centre has the whole basket. What then?</h3>
+<p>Offer the choices in the 409: move the whole order to the farther centre with a later time, drop the missing items, or split into two deliveries for an extra fee. Splitting means two reservations on two centres in the same region, each its own transaction, with the second released if the first fails.</p>
+
+<h3>How do you show a delivery time on the page?</h3>
+<p>From the cell table's minutes for the chosen centre, plus the current picking backlog at that centre, which the order service publishes every few seconds.</p>
+
+<h3>A customer is right at the edge of a centre's area. Do they see it?</h3>
+<p>Only if their cell's travel time is under the limit. Cells are about 0.75 km², so the edge is fuzzy by a few hundred metres; add a small margin to the limit rather than computing routes per address.</p>
+
+<h3>How do you handle restocking deliveries?</h3>
+<p>A delivery to a centre is a transaction that adds to <code>on_hand</code>; the change stream carries it to the copies, and products reappear on pages within seconds.</p>
+
+<h3>Could you reserve stock when an item goes into the cart?</h3>
+<p>It would stop disappointments at checkout, but abandoned carts would hide stock for minutes from customers ready to pay. Reserve at checkout, and warn in the cart when the copy shows an item has run out.</p>
+
+<x-checklist title="Self-review: local delivery">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether an order ships from one centre", "I separated what may be stale (the catalogue) from what must be exact (the order)", "I got the number of centres, products and orders"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated stock lookups per second and the total size of stock data", "I let the server choose the centre from the address", "I returned the missing items and alternatives in the 409"] },
+    { "title": "Design and depth", "items": ["I used travel time, precomputed per map cell, instead of distance", "I served availability from a copy fed by a change stream", "I reserved the whole basket in one conditional update and checked the row count", "I partitioned inventory by region so each order is a local transaction", "I kept on-hand and reserved as separate counts"] },
+    { "title": "Failure", "items": ["I said what happens when the change stream lags", "I said what breaks first at 10x, including a hot product"] }
+  ]
+}
+</script>
+</x-checklist>

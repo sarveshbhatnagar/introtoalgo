@@ -1,0 +1,451 @@
+<!--
+{
+  "title": "Design Fitness Tracking",
+  "description": "Design an app that records runs and rides with GPS, works offline, syncs safely, shares live location and shows a feed of friends' activities.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "offline-first", "idempotency", "location", "feeds"]
+}
+-->
+<p>You start a run, put the phone in your pocket, and lose signal on a forest trail for 40 minutes. When you stop, the app shows a map of your route, your pace per kilometre and your climb. Back home on Wi-Fi it uploads, your friends see it in their feed, and you learn you were fourth fastest this week up the hill by the lake.</p>
+
+<p>Interviewers ask it because the hard part is not the server. Data is born on a phone, often with no network, so a late, repeated or half-finished upload must be safe. Around that sit trace storage, live location and a social feed. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read on.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a fitness tracking app, for runs and bike rides.</x-interviewer>
+<x-you>I'll assume the core is: record an activity with GPS, see its stats, and share it with friends who see it in a feed. Must recording work with no signal? And is there live tracking, where a friend watches me move?</x-you>
+<x-interviewer>Yes to both. Recording must work fully offline. Live sharing is opt-in, mostly for safety.</x-interviewer>
+<x-you>Scale? How many activities a day, how long are they, and how many followers does a typical user have?</x-you>
+<x-interviewer>About 10 million activities a day, 45 minutes on average. Most users have tens of followers; a few pro athletes have millions.</x-interviewer>
+<x-you>Then my top priority is never losing a recorded activity and never storing it twice, even with bad networks and retries. Feed freshness of a minute or so is fine. Live positions should be at most about 15 seconds old. I'd leave out heart-rate sensors, training plans and payments. Should I cover segment leaderboards?</x-you>
+<x-interviewer>In outline.</x-interviewer>
+<x-coach>The candidate finds the real risk, data born offline on a phone, and turns it into a requirement: no loss, no duplicates.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> record an activity with GPS, offline; upload it when online; show stats (distance, time, pace, climb) and a map; follow people and see their activities in a feed; share a live position with chosen people; segment leaderboards in outline.</li>
+<li><strong>Non-functional:</strong> a finished activity is never lost and never duplicated; recording never depends on the network; a new activity reaches followers' feeds within about a minute of upload; live positions at most about 15 seconds old; activity pages load in under 300 ms.</li>
+<li><strong>Out of scope:</strong> sensors beyond GPS, training plans, payments, messaging.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Points per activity:</strong> one GPS point a second for 45 minutes is 45 × 60 = 2,700 points. At about 20 bytes each (time, latitude, longitude, altitude, accuracy) that is 54 KB raw.</li>
+<li><strong>Uploads:</strong> 10 million ÷ 86,400 ≈ 116 a second on average. Activities bunch on weekend mornings; assume a 5x peak: about 580 a second.</li>
+<li><strong>Feed writes:</strong> if an average activity goes to 50 followers' feeds, that is 10 million × 50 = 500 million feed entries a day, about 5,800 a second.</li>
+<li><strong>Live sharing:</strong> assume 50,000 people share live at peak, each sending an update every 15 seconds: 50,000 ÷ 15 ≈ 3,300 writes a second. Small.</li>
+</ul>
+
+<x-estimate title="Trace storage for a year">
+<script type="application/json">
+{
+  "question": "How much storage do the GPS traces need per year if you keep every point?",
+  "givens": ["10 million activities a day", "2,700 points per activity, 20 bytes per point raw", "Delta encoding plus compression shrinks traces to about a fifth"],
+  "unit": "bytes",
+  "answer": "40 TB",
+  "accept": ["10 TB", "150 TB"],
+  "steps": ["Raw: 2,700 × 20 B = 54 KB per activity", "Compressed: 54 KB ÷ 5 ≈ 11 KB", "Per day: 10 million × 10.8 KB ≈ 108 GB", "Per year: 108 GB × 365 ≈ 39 TB, about 40 TB"],
+  "note": "Tens of terabytes a year of files read whole is a job for object storage, not database rows."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="If every point were a row">
+<script type="application/json">
+{
+  "question": "If you stored each GPS point as its own database row, how many rows would you insert per day?",
+  "givens": ["10 million activities a day", "2,700 points per activity"],
+  "unit": "count",
+  "answer": "27 billion",
+  "accept": ["10 billion", "80 billion"],
+  "choices": ["27 million", "2.7 billion", "27 billion", "270 billion"],
+  "steps": ["10,000,000 × 2,700 = 27,000,000,000 rows a day", "27 × 10<sup>9</sup> ÷ 86,400 ≈ 312,500 inserts a second on average"],
+  "note": "Every one of those rows is only ever read together with its 2,699 neighbours, which is the argument for one file per activity."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the upload call so that a phone can retry it any number of times without creating two activities. Then add the feed and live-sharing calls.</p>
+</x-task>
+<x-answer>
+<p>The phone gives the activity its own id when recording starts, and uploads with <code>PUT /activities/{id}</code>. Putting the same id twice is a no-op, so retries are safe. The feed is a paginated GET; live sharing is a small POST of recent points and a GET for viewers.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+PUT  /activities/{activity_id}           id = UUID made on the phone at start
+  headers: Content-SHA256: 9c1e...
+  body: compressed trace file + { "type": "run", "title": "...", "visibility": "followers" }
+  201 Created     { "activity_id": "a7f3...", "status": "processing" }
+  200 OK          same id, same file: already stored, returns the same activity
+  409 Conflict    same id, different file (a bug on the phone; never overwrite)
+
+GET  /activities/{activity_id}           stats, simplified route line, segment efforts
+GET  /feed?cursor=...&limit=20           friends' activities, newest upload first
+
+POST /live                               start sharing   -> { "live_id": "lv_81", "viewer_link": "..." }
+POST /live/{live_id}/points              batch of the last 15 s of points
+GET  /live/{live_id}                     latest position + short trail, for viewers
+  200 { "pos": [...], "updated_at": "...", "ended": false }
+</pre>
+</x-code>
+
+<p>The decision worth arguing is <strong>who creates the id</strong>. If the server assigned it on upload, a timeout leaves the phone not knowing whether the activity exists, and a retry makes a second one. With an id made on the phone when recording starts, the upload is a <code>PUT</code> to a known name, and any number of retries lands on the same record. This is the <a href="/system-design/idempotency-and-retries.html">idempotency key</a> idea, with the key born before the network is even involved.</p>
+
+<p>The file is small enough that resumable uploads are not needed: even a 10-hour ride is 36,000 points × about 4 compressed bytes ≈ 144 KB. Retrying the whole file is simpler than tracking chunks.</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>Where do the GPS points live, and what goes in the database? Think about what each screen reads.</p>
+</x-task>
+<x-answer>
+<p>One compressed file per activity in object storage, read whole. One summary row per activity in a database, holding the stats and a simplified route line for feed cards. Feeds hold activity ids per user. Live positions are short-lived keys in an in-memory store.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Records">
+<pre lang="sql">
+activities                              -- partitioned by user_id
+  activity_id   UUID PRIMARY KEY        -- made on the phone
+  user_id       BIGINT
+  file_sha256   CHAR(64)                -- detects "same id, different file"
+  trace_key     TEXT                    -- "traces/u42/a7f3-9c1e.gz": id + hash
+  status        VARCHAR(12)             -- processing | ready | failed
+  started_at    TIMESTAMP               -- from GPS time, not the phone clock
+  uploaded_at   TIMESTAMP
+  distance_m, moving_s, climb_m INT
+  route_line    TEXT                    -- about 100 points, for cards and thumbnails
+  visibility    VARCHAR(10)             -- only_me | followers | everyone
+
+follows         (follower_id, followee_id)       -- both directions indexed
+feed_items      (user_id, uploaded_at, activity_id)   -- ids only, newest first
+segment_efforts (segment_id, user_id, elapsed_s, activity_id)   -- every effort
+segment_bests   (segment_id, user_id, elapsed_s)   -- index (segment_id, elapsed_s)
+
+live:{live_id}  -> last 20 points, expires 10 min after the last update
+</pre>
+</x-code>
+
+<p>Access patterns decide the stores. A trace is written once and read whole when someone opens the activity, so it is a file in <a href="/system-design/blob-storage.html">object storage</a>. The summary row is what feeds, profiles and stats pages read; at about 2 KB each that is 10 million × 2 KB = 20 GB a day, about 7 TB a year, so the activities table is <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>user_id</code>, because "my activities" is the most common query. A relational database or a wide-column store both work here; the unique key on <code>activity_id</code> is what matters.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the path from "the phone gets signal" to "a friend sees the run in their feed". Which steps happen before the phone gets its answer, and which after?</p>
+</x-task>
+<x-answer>
+<p>Before the answer: store the file, insert the row if absent, publish an "uploaded" event. After: workers compute stats, match segments and fan the activity out to followers' feeds. Keeping the slow work after the answer makes uploads quick and retries cheap.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>The upload does the minimum that makes the activity safe, then answers. Everything else happens in workers that can be retried.</p>
+
+<x-arch caption="The activity service stores the file and the row, then hands off. Workers compute stats, segment efforts and feed entries afterwards.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "phone", "label": "Phone app", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "act", "label": "Activity service", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "blob", "label": "Trace files", "kind": "blob-store", "col": 3, "row": 0 },
+    { "id": "db", "label": "Activity DB", "kind": "database", "col": 3, "row": 1 },
+    { "id": "queue", "label": "Uploaded events", "kind": "queue", "col": 2, "row": 2 },
+    { "id": "work", "label": "Processing workers", "kind": "worker", "col": 3, "row": 2 },
+    { "id": "feed", "label": "Feed store", "kind": "cache", "col": 3, "row": 3 }
+  ],
+  "edges": [
+    { "from": "phone", "to": "gw", "label": "PUT, GET /feed" },
+    { "from": "gw", "to": "act" },
+    { "from": "act", "to": "blob", "label": "raw file" },
+    { "from": "act", "to": "db", "label": "insert if absent" },
+    { "from": "act", "to": "queue", "label": "uploaded", "style": "async" },
+    { "from": "queue", "to": "work", "style": "async" },
+    { "from": "work", "to": "db", "label": "stats, efforts" },
+    { "from": "work", "to": "feed", "label": "fan-out" },
+    { "from": "act", "to": "feed", "label": "read feed", "route": "hvh" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Step through a run recorded offline, an upload whose reply is lost, and a friend reading the feed.</p>
+
+<x-tracer title="Record offline, upload twice, appear once">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "phone", "label": "Phone app", "kind": "client", "col": 0, "row": 1 },
+      { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+      { "id": "act", "label": "Activity service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "blob", "label": "Trace files", "kind": "blob-store", "col": 3, "row": 0 },
+      { "id": "db", "label": "Activity DB", "kind": "database", "col": 3, "row": 1 },
+      { "id": "queue", "label": "Uploaded events", "kind": "queue", "col": 2, "row": 2 },
+      { "id": "work", "label": "Processing workers", "kind": "worker", "col": 3, "row": 2 },
+      { "id": "feed", "label": "Feed store", "kind": "cache", "col": 3, "row": 3 }
+    ],
+    "edges": [
+      { "from": "phone", "to": "gw" },
+      { "from": "gw", "to": "act" },
+      { "from": "act", "to": "blob" },
+      { "from": "act", "to": "db" },
+      { "from": "act", "to": "queue", "style": "async" },
+      { "from": "queue", "to": "work", "style": "async" },
+      { "from": "work", "to": "db" },
+      { "from": "work", "to": "feed" },
+      { "from": "act", "to": "feed", "route": "hvh" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "Leo presses Start on a trail with no signal. The phone makes id <code>a7f3</code> and writes points to a local file, flushing every few seconds so a crash loses seconds, not the run.",
+      "arch": { "active": ["phone"], "dim": ["gw", "act", "blob", "db", "queue", "work", "feed"], "notes": { "phone": "offline" } },
+      "vars": { "points saved": "1,200" }
+    },
+    {
+      "caption": "He stops after 45 minutes: 2,700 points, 11 KB compressed. Stats are computed on the phone, so he sees them at once. The upload waits in a local queue.",
+      "arch": { "active": ["phone"], "dim": ["gw", "act", "blob", "db", "queue", "work", "feed"], "notes": { "phone": "1 to upload" } },
+      "vars": { "points saved": "2,700" }
+    },
+    {
+      "caption": "Signal is back. The phone sends <code>PUT /activities/a7f3</code> with the file and its hash.",
+      "arch": { "active": ["act", ["phone", "gw"], ["gw", "act"]], "dim": ["queue", "work", "feed"] }
+    },
+    {
+      "caption": "The service writes the file to <code>traces/u42/a7f3-9c1e.gz</code>, a key that includes the file's hash. A retry writes the same bytes to the same key; a different file could never overwrite this one.",
+      "arch": { "active": ["blob", ["act", "blob"]], "dim": ["queue", "work", "feed"], "notes": { "blob": "a7f3-9c1e.gz" } }
+    },
+    {
+      "caption": "It inserts the row only if <code>a7f3</code> is absent, with status <code>processing</code>, and publishes an \"uploaded\" event.",
+      "arch": { "active": ["db", "queue", ["act", "db"], ["act", "queue"]], "dim": ["work", "feed"], "notes": { "db": "a7f3: processing" } },
+      "vars": { "rows for a7f3": 1 }
+    },
+    {
+      "caption": "The 201 reply is lost when the phone switches from mobile data to Wi-Fi. The phone cannot tell whether the upload worked, so it keeps the file.",
+      "arch": { "fail": [["gw", "phone"]], "active": ["phone"], "mark": ["db", "blob"], "dim": ["work", "feed"], "notes": { "phone": "timeout" } },
+      "vars": { "rows for a7f3": 1 }
+    },
+    {
+      "caption": "It retries the same <code>PUT</code>. The insert finds <code>a7f3</code> already there with the same hash, so the service returns 200 with the existing activity. Still one row.",
+      "arch": { "active": ["act", "db", ["phone", "gw"], ["gw", "act"], ["act", "db"], ["gw", "phone"]], "mark": ["phone"], "dim": ["work", "feed"], "notes": { "db": "exists: 200" } },
+      "vars": { "rows for a7f3": 1 }
+    },
+    {
+      "caption": "A worker reads the event and the file, cleans GPS jumps, computes distance and climb, simplifies the line to about 100 points, and matches segments.",
+      "arch": { "active": ["work", "db", ["queue", "work"], ["work", "db"]], "dim": ["phone", "gw", "feed"], "notes": { "db": "a7f3: ready" } }
+    },
+    {
+      "caption": "It writes the activity id into the feeds of Leo's 50 followers. Feed entries are keyed by follower and activity, so a redelivered event writes the same 50 entries, not 100.",
+      "arch": { "active": ["work", "feed", ["work", "feed"]], "dim": ["phone", "gw", "blob"], "notes": { "feed": "+50 entries" } },
+      "vars": { "feed entries": 50 }
+    },
+    {
+      "caption": "Leo's friend opens the app. The service reads her feed ids, loads the summary rows, drops any she may no longer see, and returns cards with the small route line.",
+      "arch": { "active": ["act", "feed", "db", ["phone", "gw"], ["gw", "act"], ["act", "feed"], ["act", "db"]], "mark": ["phone"], "dim": ["queue", "work", "blob"] }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on four things: recording and syncing safely, storing traces, live sharing, and how the feed differs from a general social feed.</p>
+
+<h3>Recording offline and syncing</h3>
+
+<p>Treat the phone as the source of truth until the server confirms. That gives four rules.</p>
+
+<ul>
+<li><strong>Write locally first.</strong> GPS needs no data connection, so recording never touches the network. Points go to an append-only local file, flushed every few seconds. If the app is killed, it reopens the file and continues the same activity.</li>
+<li><strong>Name it at the start.</strong> The phone makes a random UUID when recording starts. Every later step uses it.</li>
+<li><strong>Upload from a queue.</strong> Finished activities wait in a local upload queue that retries with growing delays whenever the network returns. A file is deleted from the phone only after a 200 or 201.</li>
+<li><strong>Make every server step repeatable.</strong> Store the file under a key that includes its hash; insert the row only if absent; feed entries keyed by follower and activity. Any step can run twice and the result is the same.</li>
+</ul>
+
+<x-tradeoffs caption="When the phone sends GPS data">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Stream every point live",
+      "good": "The server always has the latest data.",
+      "bad": "Breaks with no signal, which is exactly where people run. Drains battery with constant radio use.",
+      "pick": "Never as the only path; use it only for live sharing."
+    },
+    {
+      "name": "Upload the whole file at the end",
+      "good": "Works fully offline. One small request, easy to make idempotent with a phone-made id.",
+      "bad": "If the phone is lost or broken mid-run, the run is gone.",
+      "pick": "The usual answer: simple and offline-first.",
+      "default": true
+    },
+    {
+      "name": "Upload chunks during the activity",
+      "good": "A lost phone loses only the last chunk.",
+      "bad": "The server must assemble chunks that arrive late and out of order, and the activity exists half-finished.",
+      "pick": "Very long events, such as a 24-hour race, where losing everything is unacceptable."
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<x-callout type="mistake" title="Letting the server assign the activity id">
+<p>With a server-made id, a lost reply leaves the phone two bad choices: retry and maybe create a duplicate, or give up and maybe lose the run. Deduplicating by "same user, same start time" is fragile when two devices record the same run. Make the id on the phone, before any network call.</p>
+</x-callout>
+
+<p>A subtler race: a user edits the title on the website while the phone still has the activity queued with the old title. Send edits as separate small updates, and never let the upload overwrite a field already edited on the server. The trace file never changes after upload.</p>
+
+<h3>Storing GPS traces</h3>
+
+<p>Every reader takes a trace whole; nobody asks for "point 1,734 of activity a7f3". That decides the format.</p>
+
+<x-tradeoffs caption="Where GPS points live">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "One row per point",
+      "good": "Easy to query with SQL.",
+      "bad": "27 billion rows a day, about 312,500 inserts a second, each with row overhead bigger than the point.",
+      "pick": "Small apps, or analytics copies, not the main store."
+    },
+    {
+      "name": "Time-series database",
+      "good": "Compresses well and answers time-range queries.",
+      "bad": "Built for many series read by time range; here every read is one whole activity.",
+      "pick": "You need queries across many activities by time."
+    },
+    {
+      "name": "One compressed file per activity",
+      "good": "About 11 KB each, about 40 TB a year in cheap object storage; one read gets everything.",
+      "bad": "No queries inside the file; anything you search on must be copied into the summary row.",
+      "pick": "Traces read whole. The usual answer.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Delta encoding makes the file small: consecutive points are a few metres apart, so storing each as the difference from the previous one turns 4-byte coordinates into a byte or two. Keep the original upload as well as the cleaned version, so improved cleaning code can recompute from it.</p>
+
+<h3>Live sharing</h3>
+
+<p>Live sharing is a separate, lossy path. It must never be able to break recording.</p>
+
+<x-arch caption="Live points take their own path: overwritten in memory, read by a few viewers, and gone ten minutes after the last update.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "runner", "label": "Runner's phone", "kind": "client", "col": 0, "row": 0 },
+    { "id": "viewer", "label": "Friend's phone", "kind": "client", "col": 0, "row": 2 },
+    { "id": "live", "label": "Live service", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "mem", "label": "Live positions", "kind": "cache", "col": 2, "row": 1 }
+  ],
+  "edges": [
+    { "from": "runner", "to": "live", "label": "points every 15 s" },
+    { "from": "viewer", "to": "live", "label": "poll every 15 s" },
+    { "from": "live", "to": "mem", "label": "set, expire 10 min" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The phone sends the last 15 seconds of points while still writing its local file. The live service overwrites a key holding the latest 20 points, with an expiry, and viewers poll every 15 seconds: 3,300 writes a second and a few times that in reads, which one in-memory store with a replica handles. Push would cut the delay, but for a few viewers and a 15-second rate, polling is simpler; see <a href="/system-design/realtime-communication.html">realtime communication</a> for when push is worth it.</p>
+
+<p>The safety detail interviewers like: show <strong>how old</strong> the position is. If the runner loses signal, the viewer should see "last update 6 minutes ago", not a dot that looks current. Losing the in-memory store loses only the current positions, which come back with the next updates.</p>
+
+<h3>The friends feed</h3>
+
+<p>The mechanics match <a href="/system-design/design-a-news-feed.html">Design a News Feed</a>: fan-out on write into per-user lists of ids for most people, fan-out on read for the few pro athletes with millions of followers. Spend your time on what is different here.</p>
+
+<ul>
+<li><strong>Posts arrive late.</strong> A run recorded on Saturday may upload on Monday. Order the feed by upload time, so friends actually see it, and show the activity date on the card.</li>
+<li><strong>Fan-out waits for processing.</strong> The card needs distance and the route line, so the worker fans out after stats are ready, not at upload.</li>
+<li><strong>Visibility changes after fan-out.</strong> Feeds store ids only, and the read path loads each row and drops activities the reader may not see. Making a run private takes effect at once, with no feed rewrite.</li>
+<li><strong>Privacy zones.</strong> Users hide the first and last few hundred metres near home. Apply it when making the route line, so no public copy holds the real endpoints.</li>
+</ul>
+
+<h3>Segment leaderboards, in outline</h3>
+
+<p>A segment is a named stretch of road or trail. After processing, a worker looks up segments in the map cells the trace passes through, checks that the trace passes near the segment's start, follows it, and reaches its end, and records the time between those two points as an effort. Each segment's board keeps each athlete's best time, smallest first. <a href="/system-design/design-a-leaderboard.html">Design a Leaderboard</a> covers ranking at scale; most segments have small boards that a database index on <code>(segment_id, elapsed_s)</code> serves well.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x (100 million activities a day, 5,800 uploads a second at peak), the activity service stays stateless and scales out, the object store absorbs about 400 TB a year, and the activities table adds partitions by user. The first real strain is feed fan-out: 5 billion entries a day, about 58,000 a second. Raise the threshold above which an athlete's posts are fetched on read, and let fan-out lag a little at peaks.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>The network</td><td>Nothing for recording.</td><td>The upload queue on the phone retries later.</td></tr>
+<tr><td>An activity server</td><td>In-flight uploads fail.</td><td>The phone retries the same <code>PUT</code>; the result is one activity.</td></tr>
+<tr><td>The event queue</td><td>Rows sit in <code>processing</code>; nothing reaches feeds.</td><td>Uploads still succeed. A sweeper republishes events for rows stuck over 10 minutes; workers are idempotent, so a duplicate is harmless.</td></tr>
+<tr><td>A processing worker</td><td>Its event is not acknowledged.</td><td>The queue redelivers it to another worker.</td></tr>
+<tr><td>The live store</td><td>Viewers lose the position until the next update.</td><td>Recording is unaffected; positions return within 15 seconds.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="Publishing the event before the row is committed">
+<p>If the event goes out first and the insert then fails, a worker processes an activity that does not exist. If the insert commits and the service crashes before publishing, nothing processes it. Commit first, publish after, and run a sweeper for rows left in <code>processing</code>, or write the event in the same transaction as the row (an outbox table) and relay it.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Streams GPS points to a server that stores them in a table, and adds a feed from a followers query.</td></tr>
+<tr><td>Mid</td><td>Records locally and uploads at the end, stores traces as files with summary rows, and reuses fan-out on write for the feed.</td></tr>
+<tr><td>Senior</td><td>Makes the id on the phone so every retry is safe, makes each server step repeatable, keeps live sharing on a separate lossy path, and handles late posts and visibility changes in the feed.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="A lost reply" tone="strong">
+<x-interviewer>The upload reply times out. What does the phone do?</x-interviewer>
+<x-you>It retries the same <code>PUT /activities/a7f3</code>. The id was made when recording started, so the server either creates the activity or finds it and returns 200. The phone deletes its copy only after one of those. Every step behind it is repeatable: file keyed by its hash, insert if absent, feed entries keyed by follower and activity.</x-you>
+<x-interviewer>What if two phones upload the same run, a watch and a phone?</x-interviewer>
+<x-you>They have different ids, so we would store two. I'd detect overlap after processing, same user and mostly the same time range, and ask the user which to keep, rather than guess.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>The phone's clock is wrong. Does it matter?</h3>
+<p>Use GPS time in each point, which is accurate, for pace and ordering. The phone clock is used only for display, and the server sets <code>uploaded_at</code> itself.</p>
+
+<h3>How do you handle GPS noise?</h3>
+<p>Drop points with poor reported accuracy, reject jumps that imply impossible speed, and smooth the rest. Compute distance from the cleaned line; raw noise adds distance on every wiggle.</p>
+
+<h3>How would you show a heatmap of popular routes?</h3>
+<p>A nightly batch job reads public traces, counts passes per small map cell, and renders tiles from the counts. It runs on the files in object storage and never touches the live path.</p>
+
+<h3>How do you delete an account?</h3>
+<p>Delete the summary rows and trace files, and remove feed entries by id in the background. Readers already drop missing activities on hydration, so feeds look right at once.</p>
+
+<h3>Can you tell a cyclist from a runner logging a ride as a run?</h3>
+<p>Flag activities whose speed does not fit the type, for example a "run" with long stretches at 35 km/h, and keep them off running segment boards until the user confirms.</p>
+
+<x-checklist title="Self-review: fitness tracking">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether recording must work offline", "I asked about activities per day, duration and follower counts", "I made \"never lost, never duplicated\" a stated requirement"] },
+    { "title": "Numbers and interfaces", "items": ["I computed points and bytes per activity and storage per year", "I showed why one row per point is too many rows", "I made the activity id on the phone and uploaded with PUT", "I said what the server returns for a repeated and a conflicting upload"] },
+    { "title": "Design and depth", "items": ["I answered the upload after storing the file and row, and did the rest in workers", "I made every server step safe to repeat", "I stored traces as compressed files with a summary row", "I kept live sharing on a separate path and showed the age of the position", "I said how the feed handles late uploads and visibility changes"] },
+    { "title": "Failure", "items": ["I said what happens when the reply is lost and when the event queue fails"] }
+  ]
+}
+</script>
+</x-checklist>

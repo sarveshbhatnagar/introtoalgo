@@ -1,0 +1,389 @@
+<!--
+{
+  "title": "Design a Distributed Cache",
+  "description": "Build the cache cluster itself: hash table and LRU in memory, expiry, slots and routing, replication and what failover loses, hot keys and leases.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "in-memory", "partitioning", "replication", "eviction"]
+}
+-->
+<p>Every team in your company puts a cache in front of its database. Now you are asked to build that cache: a cluster of machines that holds two billion small values in memory, answers in well under a millisecond, and keeps working while nodes die. It is the kind of product people mean when they say Redis or Memcached.</p>
+
+<p>Interviewers like it because it spans data structures and distributed systems: the hash table inside one node, how keys spread over many nodes, and an honest account of what a failover throws away. How to <em>use</em> a cache is in <a href="/system-design/caching.html">Caching</a>. Unlike <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>, losing data is allowed here, so the design trades durability for speed. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design a distributed cache.</x-interviewer>
+<x-you>First, is it a cache or a database? If every value can be rebuilt from a database behind it, I can lose some writes on a failure and keep everything in memory.</x-you>
+<x-interviewer>It's a cache. The source of truth is elsewhere.</x-interviewer>
+<x-you>Which operations? I'm assuming get, set with an optional time to live, and delete, on string values. How big are values, how many keys, and what traffic?</x-you>
+<x-interviewer>Those three operations. Values average 500 bytes, at most 1 MB. About 2 billion items. 400,000 operations a second on average, a million at peak, and 90% are reads.</x-interviewer>
+<x-you>Then latency and availability come first. I'll aim for gets under a millisecond inside one data center, keep serving when a node dies, and accept losing the last few milliseconds of writes on a failover. I'll leave out rich data types, transactions and cross-region replication.</x-you>
+<x-coach>"Cache or database?" is the question that decides the design. Once the interviewer says data may be lost, asynchronous replication and memory-only storage become defensible.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> <code>get(key)</code>; <code>set(key, value, ttl)</code>; <code>delete(key)</code>; expired keys are never returned; when memory is full, some keys are evicted.</li>
+<li><strong>Non-functional:</strong> p99 get under 1 ms within a data center; keeps serving when any one node dies; grows by adding nodes without downtime; a failover may lose the last few milliseconds of acknowledged writes, and that window is bounded.</li>
+<li><strong>Out of scope:</strong> lists, sets and counters; multi-key transactions; durable storage; replication across regions.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<ul>
+<li><strong>Bytes per item:</strong> a 50-byte key, a 500-byte value, and about 50 bytes of bookkeeping (hash chain pointer, eviction pointers, expiry time, sizes). Call it 600 bytes.</li>
+<li><strong>Usable memory per node:</strong> machines with 64 GB, of which about 50 GB holds items. The rest is headroom.</li>
+<li><strong>Throughput budget:</strong> assume one node handles about 100,000 simple operations a second. Leave room below it.</li>
+</ul>
+
+<x-estimate title="How many primaries">
+<script type="application/json">
+{
+  "question": "How many primary nodes do you need to hold every item in memory?",
+  "givens": ["2 billion items", "About 600 bytes per item, bookkeeping included", "About 50 GB usable per node"],
+  "unit": "count",
+  "answer": "24",
+  "accept": ["10", "60"],
+  "steps": ["2 × 10<sup>9</sup> × 600 B = 1.2 × 10<sup>12</sup> B = 1.2 TB", "1.2 TB ÷ 50 GB = 24 primaries", "With one replica each: 48 nodes"],
+  "note": "Memory sets the node count here, not traffic. Check traffic next."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Load on one primary at peak">
+<script type="application/json">
+{
+  "question": "Keys spread evenly over 24 primaries. How many operations per second does one primary serve at peak?",
+  "givens": ["1 million operations a second at peak", "24 primaries", "All reads and writes go to primaries"],
+  "unit": "count/s",
+  "answer": "42 thousand/s",
+  "accept": ["15 thousand/s", "120 thousand/s"],
+  "choices": ["4 thousand/s", "42 thousand/s", "420 thousand/s", "4 million/s"],
+  "steps": ["1,000,000 ÷ 24 ≈ 41,700, call it 42,000 a second", "That is under half the 100,000 budget, so traffic fits"],
+  "note": "The average is 400,000 ÷ 24 ≈ 17,000. The headroom matters later, for hot keys and failover."
+}
+</script>
+</x-estimate>
+
+<p>Bandwidth is 1,000,000 × 600 B = 600 MB/s, or 25 MB/s per node: easy. Writes are 10% of peak, about 4,200 a second per primary; that number returns when we count what a failover loses.</p>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write the three operations with their arguments and replies. What does the client get back when it asked the wrong node, or when the value is too large?</p>
+</x-task>
+<x-answer>
+<p>Get, set with TTL and conditions, and delete, over long-lived TCP connections rather than HTTP. Replies include a miss, a "not stored" for failed conditions, a size error, and a redirect naming the node that owns the key.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="Cache protocol">
+<pre lang="text">
+GET key
+  VALUE bytes            hit
+  MISS lease=501         miss; you may fill it with lease 501
+  WAIT                   someone else holds the lease; retry in about 20 ms
+
+SET key value [TTL seconds] [NX | XX] [LEASE token]
+  OK
+  NOT_STORED             NX and the key exists, XX and it does not,
+                         or the lease was cancelled by a delete
+  TOO_LARGE              value over 1 MB
+  OUT_OF_MEMORY          full, and the policy is not to evict
+
+DEL key
+  DELETED | NOT_FOUND    also cancels any open lease on the key
+
+any command
+  MOVED 9301 10.0.4.17:7000   slot 9301 lives on another node
+</pre>
+</x-code>
+
+<p>The decision worth arguing is the transport. A get takes microseconds on the server and about 0.5 ms on the network, so HTTP headers and parsing would cost more than the work. Use persistent TCP connections and a compact protocol, and let clients <strong>pipeline</strong>: send 10 gets without waiting, and pay one round trip instead of ten.</p>
+
+<x-tryit variant="turn" minutes="2" title="Model the data">
+<x-task>
+<p>What does one entry hold in memory, and what structures give O(1) lookup, O(1) eviction and cheap expiry? What does the cluster as a whole need to store?</p>
+</x-task>
+<x-answer>
+<p>Each node holds a hash table from key to entry, plus an ordering for eviction. Each entry carries its expiry time. The cluster needs one small map: which slot of the key space lives on which node.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Inside one node, and the cluster map">
+<pre lang="text">
+entry                                        about 50 B of bookkeeping
+  key          bytes   (up to 250 B)
+  value        bytes   (up to 1 MB)
+  expires_at   8 B     ms since epoch, 0 = never
+  hash_next    8 B     next entry in the same bucket
+  lru_prev     8 B     neighbours in the recency list
+  lru_next     8 B
+  sizes, flags ~10 B
+
+cluster map                                  a few hundred KB
+  slot 0..16383   -> shard id
+  shard id        -> primary address, replica addresses
+  epoch           -> bumped on every change
+</pre>
+</x-code>
+
+<p>Every access is by exact key: no range scans, no indexes, no joins. So there is no database to choose: the store is a <a href="/algorithms/hash-tables.html">hash table</a> in RAM, with a doubly <a href="/algorithms/linked-lists.html">linked list</a> threaded through the same entries to track recency. That pair is the LRU cache from <a href="/algorithms/designing-data-structures.html">Designing Data Structures</a>, O(1) for every operation. The cluster map is tiny but everyone must agree on it, so it lives in a small consensus-backed config service.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the cluster: how does an app server know which node to ask, where do copies live, and who decides that a node is dead?</p>
+</x-task>
+<x-answer>
+<p>A client library in each app server hashes the key to a slot and looks it up in a cached copy of the cluster map. Each shard is a primary with one replica. A config service watches health, promotes replicas and publishes new maps.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>There is no load balancer. The client library is the router: it keeps the cluster map in memory and talks straight to the owning primary.</p>
+
+<x-arch caption="The client library routes each key to its shard's primary. Primaries copy writes to their replicas asynchronously; the config service tracks health and publishes the map.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "cfg", "label": "Cluster config", "kind": "service", "col": 0, "row": 0 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 0, "row": 2, "stack": true },
+    { "id": "db", "label": "Source database", "kind": "database", "col": 0, "row": 4 },
+    { "id": "a", "label": "Shard A primary", "kind": "cache", "col": 1, "row": 0 },
+    { "id": "b", "label": "Shard B primary", "kind": "cache", "col": 1, "row": 2 },
+    { "id": "c", "label": "Shard C primary", "kind": "cache", "col": 1, "row": 4 },
+    { "id": "ar", "label": "Shard A replica", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "br", "label": "Shard B replica", "kind": "cache", "col": 2, "row": 2 },
+    { "id": "cr", "label": "Shard C replica", "kind": "cache", "col": 2, "row": 4 }
+  ],
+  "edges": [
+    { "from": "app", "to": "cfg", "label": "cluster map" },
+    { "from": "app", "to": "db", "label": "read on miss" },
+    { "from": "cfg", "to": "a", "label": "health checks" },
+    { "from": "app", "to": "a" },
+    { "from": "app", "to": "b", "label": "get / set / del" },
+    { "from": "app", "to": "c" },
+    { "from": "a", "to": "ar", "style": "async" },
+    { "from": "b", "to": "br", "label": "replicate", "style": "async" },
+    { "from": "c", "to": "cr", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The real cluster has 24 shards; three show the shape.</p>
+
+<x-tracer title="A hit, a miss under a lease, then a primary dies">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "cfg", "label": "Cluster config", "kind": "service", "col": 0, "row": 0 },
+      { "id": "app", "label": "App servers", "kind": "service", "col": 0, "row": 2 },
+      { "id": "db", "label": "Source database", "kind": "database", "col": 0, "row": 4 },
+      { "id": "a", "label": "Shard A primary", "kind": "cache", "col": 1, "row": 0 },
+      { "id": "b", "label": "Shard B primary", "kind": "cache", "col": 1, "row": 2 },
+      { "id": "c", "label": "Shard C primary", "kind": "cache", "col": 1, "row": 4 },
+      { "id": "ar", "label": "Shard A replica", "kind": "cache", "col": 2, "row": 0 },
+      { "id": "br", "label": "Shard B replica", "kind": "cache", "col": 2, "row": 2 },
+      { "id": "cr", "label": "Shard C replica", "kind": "cache", "col": 2, "row": 4 }
+    ],
+    "edges": [
+      { "from": "app", "to": "cfg" },
+      { "from": "app", "to": "db" },
+      { "from": "cfg", "to": "a" },
+      { "from": "app", "to": "a" },
+      { "from": "app", "to": "b" },
+      { "from": "app", "to": "c" },
+      { "from": "a", "to": "ar", "style": "async" },
+      { "from": "b", "to": "br", "style": "async" },
+      { "from": "c", "to": "cr", "style": "async" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "An app server wants <code>user:42</code>. The client hashes it to slot 9,301; its cached map says shard B. No extra hop.",
+      "arch": { "active": ["app", "b", ["app", "b"]], "dim": ["db", "cfg"], "notes": { "b": "slot 9301" } },
+      "vars": { "map epoch": 7 }
+    },
+    {
+      "caption": "Shard B finds the entry, checks <code>expires_at</code>, marks it recently used and replies. About 0.5 ms, nearly all network.",
+      "arch": { "active": ["b", ["b", "app"]], "mark": ["app"], "dim": ["db", "cfg"], "notes": { "b": "hit" } },
+      "vars": { "map epoch": 7, "db reads": 0 }
+    },
+    {
+      "caption": "Next, <code>product:7</code> on shard A is a miss. Shard A returns lease 501 with the miss: only this caller may fill the key.",
+      "arch": { "active": ["a", ["app", "a"], ["a", "app"]], "dim": ["db", "cfg"], "notes": { "a": "miss, lease 501" } },
+      "vars": { "map epoch": 7, "db reads": 0 }
+    },
+    {
+      "caption": "A second app server asks for <code>product:7</code> a millisecond later. The lease is still open, so shard A answers <code>WAIT</code> instead of a miss. No second database query.",
+      "arch": { "active": ["a", ["app", "a"]], "dim": ["db", "cfg"], "notes": { "a": "WAIT" } },
+      "vars": { "map epoch": 7, "db reads": 0 }
+    },
+    {
+      "caption": "The lease holder reads the database (about 5 ms) and sends <code>SET … TTL 300 LEASE 501</code>. Shard A replies OK before the replica has it.",
+      "arch": { "active": ["db", "a", ["app", "db"], ["app", "a"]], "dim": ["cfg"], "notes": { "a": "stored" } },
+      "vars": { "map epoch": 7, "db reads": 1 }
+    },
+    {
+      "caption": "Shard A streams the write to its replica a few milliseconds later. The waiting app server retries and gets a hit.",
+      "arch": { "active": ["a", "ar", ["a", "ar"], ["a", "app"]], "mark": ["ar"], "dim": ["db", "cfg"] },
+      "vars": { "map epoch": 7, "db reads": 1 }
+    },
+    {
+      "caption": "Shard A's machine dies. Writes it acknowledged in its last ~10 ms never reached the replica: at 4,200 writes a second, about 42 values are gone.",
+      "arch": { "fail": ["a", ["a", "ar"]], "dim": ["db", "cfg"], "notes": { "a": "down", "ar": "42 behind" } },
+      "vars": { "map epoch": 7, "lost writes": 42 }
+    },
+    {
+      "caption": "Until a replica takes over, calls to shard A time out and the client treats them as misses. At peak that is 90% of about 41,700 operations: 37,500 extra reads a second hit the database.",
+      "arch": { "fail": ["a"], "active": ["db", ["app", "db"]], "dim": ["cfg"], "notes": { "db": "+37,500 reads/s" } },
+      "vars": { "map epoch": 7, "lost writes": 42 }
+    },
+    {
+      "caption": "After 5 seconds of failed health checks from a majority of its members, the config service promotes the replica and bumps the epoch.",
+      "arch": { "fail": ["a"], "active": ["cfg", "ar", ["cfg", "a"]], "dim": ["db"], "notes": { "ar": "now primary", "cfg": "epoch 8" } },
+      "vars": { "map epoch": 8, "lost writes": 42 }
+    },
+    {
+      "caption": "The client fetches the epoch 8 map and sends shard A's keys to the new primary. The 42 lost values are just misses, refilled from the database.",
+      "arch": { "fail": ["a"], "active": ["app", "ar", ["app", "cfg"]], "mark": ["ar"], "dim": ["db"] },
+      "vars": { "map epoch": 8, "lost writes": 42 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<p>Interviewers push on four things: one node's internals, routing, what replication promises, and hot keys.</p>
+
+<h3>Inside one node: memory, expiry and eviction</h3>
+
+<p><strong>The hash table.</strong> One node holds 2 billion ÷ 24 ≈ 83 million entries, usually served by one thread on an event loop, with no locks. The trap is growing the table. Moving 67 million entries from 2<sup>26</sup> buckets to 2<sup>27</sup> in one go, at say 50 ns each, blocks the node for over 3 seconds. Rehash <strong>incrementally</strong> instead: keep both tables, move a few buckets on every operation, look in both until the old one is empty.</p>
+
+<p><strong>Expiry.</strong> A timer per key is too costly. Combine two cheap mechanisms:</p>
+<ul>
+<li><strong>Lazy:</strong> every read checks <code>expires_at</code> and deletes the entry if it has passed. A reader can never see an expired value.</li>
+<li><strong>Sampling:</strong> in one common scheme, about 10 times a second, pick 20 random keys that have a TTL and delete the expired ones. If more than a quarter of the sample was expired, go again. Unread keys still get cleaned up, without a full scan.</li>
+</ul>
+<p>The primary decides expiry and sends a delete to the replica, so both copies agree.</p>
+
+<p><strong>Eviction.</strong> Exact LRU, as in the data model, rewrites list pointers on every read and costs 16 bytes per entry. Many caches approximate it instead: keep a small "last used" clock in each entry, sample 5 to 10 keys when memory is full, and evict the oldest of the sample. That is close to true LRU. The policy is set per cluster: <strong>LRU over all keys</strong> (the usual default), <strong>LRU over keys with a TTL</strong> (keys without one are never evicted), <strong>LFU</strong> (keeps steady favourites when one-off scans would flush LRU), or <strong>no eviction</strong> (writes fail with <code>OUT_OF_MEMORY</code>).</p>
+
+<x-callout type="mistake" title="Sizing to the RAM on the box">
+<p>A 64 GB machine cannot hold 64 GB of items. The allocator wastes space between items of different sizes, every connection has buffers, and replication keeps a backlog. Set the limit well below RAM (here 50 GB), or the operating system kills the process and the shard goes cold.</p>
+</x-callout>
+
+<h3>Partitioning and routing</h3>
+
+<p>Plain <code>hash(key) mod 24</code> remaps almost every key when a 25th node arrives. Use <a href="/system-design/consistent-hashing.html">consistent hashing</a> in its fixed-slot form: hash each key into one of 16,384 <strong>slots</strong>, and assign slots to shards. Each of 24 shards owns about 683 slots. Adding a 25th moves about 655 slots, 1 ÷ 25 = 4% of the keys, one slot at a time. While a slot moves, the old node answers keys it still has and sends the rest to the new node for that one request; when the move ends, the map changes and the old node replies <code>MOVED</code>.</p>
+
+<x-tradeoffs caption="Who decides which node gets a key">
+<script type="application/json">
+{
+  "options": [
+    { "name": "Smart client", "good": "One network hop. No extra tier to run or scale.", "bad": "A client library for every language, each caching the map and handling <code>MOVED</code>. Every app server connects to every primary.", "pick": "Most traffic comes from a few languages you control. The usual default.", "default": true },
+    { "name": "Proxy tier", "good": "Clients stay dumb. Connections are pooled, so primaries see a few hundred instead of thousands.", "bad": "An extra hop, about 0.2 to 0.5 ms, and a fleet of proxies to keep up.", "pick": "Many languages, legacy clients, or thousands of app servers." }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Pick the smart client with redirects as the safety net. The cost: clients learn of map changes on their next error, so some requests briefly take two hops.</p>
+
+<h3>Replication and what failover loses</h3>
+
+<p>Each shard has a primary and one replica on a different rack. The primary acknowledges a write as soon as it is in its own memory, then streams it to the replica (see <a href="/system-design/replication.html">Replication</a>). So be precise about the guarantee: <strong>an acknowledged write can be lost</strong>. With 10 ms of lag and 4,200 writes a second, a crash loses about 42 values. For a cache that is fine; those keys become misses and are refilled from the database.</p>
+
+<p>The loss that hurts is a lost <em>delete</em>. An app updates the database and deletes the cached key; the primary acknowledges and dies before the replica hears of it. The new primary serves the old value until its TTL ends. So give every key a TTL, even a long one: it caps how long such a ghost lives.</p>
+
+<p>Failure detection must not be one machine's opinion: the config service runs on 3 or 5 nodes with <a href="/system-design/consensus-and-leader-election.html">consensus</a>; a primary is declared dead only when a majority has failed to reach it for the timeout, 5 seconds here. One more race: a primary cut off from the config service but still reachable by some clients keeps taking writes the new primary never sees. Close it with a <strong>leadership lease</strong> (not the fill lease from the API): a primary accepts writes only while its lease from the config service is valid. It renews every second, each renewal lasts 4 seconds, and the config service promotes the replica only after 5 seconds. So two primaries never take writes at once. The 1-second margin covers clocks that run at slightly different speeds. Writes it took after the cut are lost.</p>
+
+<p>Synchronous replication would add a round trip to every write to protect data the database already has, so keep it asynchronous.</p>
+
+<h3>Hot keys and the thundering herd</h3>
+
+<p>One key, a celebrity profile, gets 150,000 reads a second. One shard handles about 100,000, and adding nodes does not split a key. Two fixes:</p>
+<ul>
+<li><strong>Near cache in the client:</strong> each app server keeps that key in its own memory for 1 second. With 300 app servers, the shard sees at most 300 reads a second for it, at the cost of up to 1 second of staleness.</li>
+<li><strong>Copies under several keys:</strong> write the value as <code>profile:9#0</code> to <code>profile:9#7</code>, which hash to different slots, and read a random one. 150,000 ÷ 8 ≈ 18,750 reads per copy. The cost: a write or delete must touch all 8.</li>
+</ul>
+<p>Find hot keys by sampling on each node and reporting the top few every second, as in <a href="/system-design/design-top-k-trending.html">Design Top-K Trending</a>.</p>
+
+<p>The <strong>thundering herd</strong> is the other side: a hot key expires or is deleted, and hundreds of app servers miss at once and query the database together. The cache server can help through the <strong>lease</strong>. The first miss gets a lease; later callers get <code>WAIT</code> until the value is set. Leases also fix a race: app 1 reads an old row, app 2 updates the row and deletes the key, then app 1 writes the old value back. The delete cancelled lease 501, so app 1's <code>SET</code> gets <code>NOT_STORED</code>. A lease needs its own short timeout, say 2 seconds, so a holder that crashes does not block the key.</p>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x (12 TB, 10 million operations a second) you need about 240 primaries. Connections strain first: 3,000 app servers (10x today's 300) each connected to 240 primaries is 720,000 connections, 3,000 per node, so add a proxy tier or pooling. Slot moves become routine; automate them and cap their bandwidth.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A primary</td><td>Its 1/24 of keys miss for about 5 seconds; about 42 recent writes are lost.</td><td>Promote the replica. Clients fall back to the database and use a circuit breaker so 37,500 extra reads a second cannot pile up.</td></tr>
+<tr><td>A replica</td><td>Nothing visible; the shard has no spare.</td><td>Start a new replica and copy a snapshot from the primary. 50 GB at 1 Gbit/s (125 MB/s) is under 7 minutes.</td></tr>
+<tr><td>Primary and replica together</td><td>That shard is empty until a fresh node starts cold.</td><td>Put them on different racks. Warm the new node gradually, or the database takes every read for that shard.</td></tr>
+<tr><td>The config service</td><td>No failovers or slot moves; traffic continues on the current map.</td><td>Run 3 or 5 members.</td></tr>
+<tr><td>A network partition</td><td>A cut-off primary may still take writes from nearby clients.</td><td>Its lease runs out after at most 4 seconds, before the replica is promoted at 5. Writes it took after the cut are lost.</td></tr>
+</tbody>
+</table>
+
+<x-callout type="mistake" title="Treating the cache as the source of truth">
+<p>Sessions or carts kept only in the cache become the 42 lost writes of the next failover. Data that must survive belongs in a durable store, such as the <a href="/system-design/design-a-key-value-store.html">key-value store</a>.</p>
+</x-callout>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Describes a hash map with LRU on each server and splits keys with <code>hash mod N</code>; with a prompt, moves to consistent hashing.</td></tr>
+<tr><td>Mid</td><td>Sizes the cluster from memory, explains lazy plus sampled expiry, chooses slots and a smart client, and adds a replica per shard.</td></tr>
+<tr><td>Senior</td><td>Opens with "cache or database?", states exactly what an acknowledged write promises, handles split brain and lost deletes, plans for hot keys and stampedes with leases, and says what each choice costs.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="What does OK mean?" tone="strong">
+<x-interviewer>A client gets OK on a set. Is the value safe?</x-interviewer>
+<x-you>Only while that primary lives. Replication is asynchronous, so if it dies in the next few milliseconds the value can be gone: about 42 values per failover at our write rate. I accept that because the database has every value. The dangerous case is a lost delete, so every key carries a TTL to cap how long a stale value can come back.</x-you>
+<x-interviewer>And if a team needs it to be safe?</x-interviewer>
+<x-you>Then it is not cache data. I'd steer them to a replicated store with quorum writes rather than make every cache write wait for a replica.</x-you>
+<x-coach>An exact guarantee, a number on the loss, and the failure that matters most.</x-coach>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How do you get several keys in one call?</h3>
+<p>A multi-get works only within one node, so the client splits it by shard and sends the pieces in parallel. If a group of keys must always live together, give them a shared tag, such as <code>{user:42}:cart</code> and <code>{user:42}:prefs</code>, and hash only the tag.</p>
+
+<h3>Should a node write to disk?</h3>
+<p>Only to restart warm. A periodic snapshot lets a rebooted node load 50 GB from disk instead of starting empty. It is not durability: writes since the snapshot are gone.</p>
+
+<h3>What about one huge value?</h3>
+<p>On a single-threaded node, every request waits behind a 1 MB send. Cap the size, split big objects into chunks, and alert on keys above about 100 KB.</p>
+
+<h3>How would you serve two regions?</h3>
+<p>One independent cluster per region, each in front of its local database replica. When data changes, publish an invalidation event that every region applies.</p>
+
+<h3>Why not read from replicas?</h3>
+<p>It would double read capacity, but a replica lags by about 10 ms, so a client can miss its own fresh write or read a value it just deleted. Here memory sets the node count and primaries run under half their budget, so reads stay on primaries. Allow replica reads only for hot keys that tolerate a little staleness.</p>
+
+<x-checklist title="Self-review: distributed cache">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked whether data may be lost before choosing replication", "I got value sizes, item count, traffic and the read share", "I set a latency target and said which guarantees I would give up"] },
+    { "title": "Numbers and interfaces", "items": ["I sized the node count from memory, leaving headroom below RAM", "I checked operations per node against a budget", "I chose a compact TCP protocol with pipelining and a redirect reply"] },
+    { "title": "Design and depth", "items": ["I explained the hash table plus recency list, and incremental rehashing", "I explained lazy and sampled expiry", "I named eviction policies and when each fits", "I used fixed slots and compared client routing with a proxy", "I handled hot keys and stampedes, including the stale-set race"] },
+    { "title": "Failure", "items": ["I said how many acknowledged writes a failover loses, and why lost deletes matter", "I prevented a cut-off primary from taking writes forever"] }
+  ]
+}
+</script>
+</x-checklist>

@@ -1,0 +1,427 @@
+<!--
+{
+  "title": "Design Object Storage",
+  "description": "Build the object store itself: metadata apart from data nodes, replication versus erasure coding with the durability maths, multipart, listing and GC.",
+  "minutes": 32,
+  "kind": "design",
+  "tags": ["case study", "storage", "durability", "erasure coding", "metadata"]
+}
+-->
+<p>Most designs in this track end with "the bytes go in an object store". Here you build that box. A user sends <code>PUT photos/2026/cat.jpg</code> with 4 MB of bytes, and years later, after thousands of disks have died and been replaced, a <code>GET</code> must return exactly those 4 MB. Amazon S3 is the kind of product this question means.</p>
+
+<p>The API is tiny and every hard part is underneath: keeping billions of names apart from petabytes of bytes, turning "never lose data" into arithmetic, storing a 1 TB object, and reclaiming space without deleting something still in use. For the user's side, read <a href="/system-design/blob-storage.html">Blob Storage</a>; this lesson does not repeat it. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+
+<h2>Clarify the problem</h2>
+
+<x-interview title="The first five minutes">
+<x-interviewer>Design an object storage service.</x-interviewer>
+<x-you>I'll assume buckets holding objects addressed by key, with put, get, delete and list by prefix, and objects replaced whole, never edited. How big can one object be? Do we need versioning?</x-you>
+<x-interviewer>From zero bytes up to 1 TB. Versioning is a stretch goal.</x-interviewer>
+<x-you>How much data, and how busy is it?</x-you>
+<x-interviewer>100 PB today in about 100 billion objects, growing 10 PB a month. About 4,000 writes and 40,000 reads a second on average.</x-interviewer>
+<x-you>Then durability comes first, since a lost object can never be fixed; then read availability; then cost per byte, because at 100 PB the storage overhead is the bill. I'll give read-after-write consistency, list included. I'll leave out access policies, billing, storage tiers and cross-region copies.</x-you>
+<x-coach>Saying why cost matters turns storage overhead into a deep dive the interviewer now expects.</x-coach>
+</x-interview>
+
+<ul>
+<li><strong>Functional:</strong> create buckets; put, get (whole or a byte range) and delete objects; list keys by prefix, page by page; upload large objects in parts.</li>
+<li><strong>Non-functional:</strong> eleven nines of durability per object per year (checked with arithmetic below); reads available 99.99% of the time; a successful put is visible to every later get and list; first byte within about 100 ms; storage overhead well under 3x.</li>
+<li><strong>Out of scope:</strong> access policies, billing, storage classes, cross-region replication; versioning is a follow-up.</li>
+</ul>
+
+<h2>Estimate the scale</h2>
+
+<p>The average object is 100 PB ÷ 100 billion = 1 MB.</p>
+
+<ul>
+<li><strong>Ingest:</strong> 4,000 puts a second × 1 MB = 4 GB/s. A month is about 2.6 million seconds, so 4,000 × 2.6 million ≈ 10 billion objects, 10 PB, a month, which matches the growth given.</li>
+<li><strong>Egress:</strong> 40,000 gets a second × 1 MB = 40 GB/s on average, 120 GB/s at a 3x peak. If one front-end server moves about 1 GB/s, that is about 120 servers for peak reads alone. This store is limited by bandwidth, not request count.</li>
+</ul>
+
+<x-estimate title="Metadata size">
+<script type="application/json">
+{
+  "question": "Each object has a metadata row: bucket, key, size, checksum, where its bytes live. How much metadata is there, before replication?",
+  "givens": ["100 billion objects", "About 500 bytes per metadata row"],
+  "unit": "bytes",
+  "answer": "50 TB",
+  "accept": ["15 TB", "150 TB"],
+  "steps": ["100 × 10<sup>9</sup> × 500 B = 5 × 10<sup>13</sup> B = 50 TB", "With 3 replicas: 150 TB"],
+  "note": "Far too much for one machine: the metadata store is itself a sharded database, and every request touches it."
+}
+</script>
+</x-estimate>
+
+<x-estimate title="Raw disk with erasure coding">
+<script type="application/json">
+{
+  "question": "Instead of 3 copies, data is split into 10 data fragments plus 4 parity fragments, and any 10 rebuild it. How much raw disk do 100 PB of objects need?",
+  "givens": ["100 PB of objects", "10 data + 4 parity fragments"],
+  "unit": "bytes",
+  "answer": "140 PB",
+  "accept": ["50 PB", "400 PB"],
+  "choices": ["14 PB", "140 PB", "1.4 EB", "14 EB"],
+  "steps": ["Overhead: 14 ÷ 10 = 1.4x", "100 PB × 1.4 = 140 PB", "At 20 TB a disk: 7,000 disks. Three copies would be 300 PB, 15,000 disks."],
+  "note": "160 PB of disk saved is why most data ends up erasure coded."
+}
+</script>
+</x-estimate>
+
+<x-tryit variant="turn" minutes="2" title="Define the API">
+<x-task>
+<p>Write put, get, delete, list, and the calls of a multipart upload. How can the client be sure the bytes arrived intact?</p>
+</x-task>
+<x-answer>
+<p>Put, get and delete on <code>/{bucket}/{key}</code>, list on <code>/{bucket}</code> with a prefix and a page token, and start, part and complete for multipart. The put carries a checksum, and the store refuses to commit bytes that do not match it.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Define the API</h2>
+
+<x-code single title="HTTP API">
+<pre lang="text">
+PUT    /{bucket}/{key}          x-checksum: sha256=9f2c...
+  200 { "etag": "9f2c...", "version": "v2" }
+  400 Bad Digest            bytes do not match the checksum; nothing stored
+  412 Precondition Failed   If-Match / If-None-Match did not hold
+
+GET    /{bucket}/{key}          Range: bytes=0-1048575 (optional)
+  200 or 206 + bytes         404 no such key
+
+DELETE /{bucket}/{key}
+  204 No Content             also when the key did not exist
+
+GET    /{bucket}?prefix=photos/2026/&delimiter=/&limit=1000&after=...
+  200 { "keys": [...], "prefixes": ["photos/2026/01/"], "next": "token" }
+
+POST   /{bucket}/{key}?uploads                start  -> { "upload_id": "u7" }
+PUT    /{bucket}/{key}?upload_id=u7&part=3   one part -> { "etag": "..." }
+POST   /{bucket}/{key}?upload_id=u7          complete, body: [{part, etag}, ...]
+DELETE /{bucket}/{key}?upload_id=u7          abort
+</pre>
+</x-code>
+
+<p>The decision worth arguing is two clients putting the same key at once. Default to last writer wins, ordered by the metadata commit, and offer conditional puts: <code>If-None-Match: *</code> ("only if the key does not exist") and <code>If-Match: &lt;etag&gt;</code> ("only if nobody changed it since I read it"). Users get compare-and-swap with no locks in the store. Delete returns 204 even for a missing key, so retries are safe (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
+
+<x-tryit variant="turn" minutes="3" title="Model the data">
+<x-task>
+<p>What records describe an object, and where do its bytes live? Think about what must change when a disk dies and its data is rebuilt elsewhere.</p>
+</x-task>
+<x-answer>
+<p>An object row maps a key to chunk ids. Chunks live in large volumes, and a volume map says which disks hold each volume. Rebuilding a disk changes the volume map, never billions of object rows.</p>
+</x-answer>
+</x-tryit>
+
+<h2>Model the data</h2>
+
+<x-code single title="Metadata">
+<pre lang="sql">
+objects                       -- sorted by (bucket_id, key)
+  bucket_id    BIGINT
+  key          VARCHAR(1024)  -- "photos/2026/cat.jpg"
+  version      BIGINT
+  size_bytes   BIGINT
+  checksum     CHAR(64)       -- sha256 of the bytes (multipart: of the parts' sums)
+  chunks       LIST           -- [(volume_id, chunk_id, length, crc32c), ...]
+  PRIMARY KEY (bucket_id, key)
+
+volumes                       -- the volume map, about 10 million rows
+  volume_id    BIGINT PRIMARY KEY
+  state        VARCHAR(8)     -- open | sealed | coded
+  layout       LIST           -- 3 disks while open; 14 fragment disks once coded
+  generation   INT            -- bumped when compaction rewrites it
+
+multipart_parts
+  upload_id, part_number, chunks, checksum
+</pre>
+</x-code>
+
+<p>The indirection is <strong>key → chunks → volume → disks</strong>. A volume is a 10 GB append-only file packing many objects' chunks; 100 PB ÷ 10 GB = 10 million volumes, and at about 200 bytes each the volume map is 2 GB, small enough for every front end to cache. Each storage node keeps its own index from chunk id to offset.</p>
+
+<p>Gets and puts are single-key lookups that must be strongly consistent. List scans keys in sorted order from a prefix, which rules out hash partitioning: it scatters neighbouring keys. Use a <strong>range-partitioned, sorted key-value store with consensus per range</strong>, such as TiKV. Each contiguous key range is replicated three ways with a leader chosen by <a href="/system-design/consensus-and-leader-election.html">consensus</a>, and busy ranges split.</p>
+
+<x-tryit variant="turn" minutes="4" title="High-level design">
+<x-task>
+<p>Sketch the boxes. What picks the disks, where is the commit point that makes an object visible, and what runs in the background?</p>
+</x-task>
+<x-answer>
+<p>Stateless front ends; a metadata service over the sorted store; a placement service that hands out volumes; storage nodes; background workers for scrubbing, repair, coding and garbage collection. The metadata commit is the moment the object exists.</p>
+</x-answer>
+</x-tryit>
+
+<h2>High-level design</h2>
+
+<p>Metadata is small, strongly consistent and touched by every request. Data is huge, written once and mostly cold. They scale for different reasons, so they are separate services. The front end writes bytes first and metadata second, so an object never points at bytes that are not there.</p>
+
+<x-arch caption="Bytes go to storage nodes chosen by placement; the object exists only once the metadata service commits its row.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Client", "kind": "client", "col": 0, "row": 1 },
+    { "id": "api", "label": "Front-end API", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "meta", "label": "Metadata service", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "place", "label": "Placement service", "kind": "service", "col": 2, "row": 1 },
+    { "id": "data", "label": "Storage nodes", "kind": "blob-store", "col": 2, "row": 2, "stack": true },
+    { "id": "metadb", "label": "Sorted metadata store", "kind": "database", "col": 3, "row": 0 },
+    { "id": "bg", "label": "Scrub, repair, GC", "kind": "worker", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "api", "label": "PUT / GET" },
+    { "from": "api", "to": "meta", "label": "key → chunks" },
+    { "from": "api", "to": "place", "label": "which volume" },
+    { "from": "api", "to": "data", "label": "chunk bytes" },
+    { "from": "meta", "to": "metadb" },
+    { "from": "data", "to": "place", "label": "heartbeats", "style": "async" },
+    { "from": "bg", "to": "data", "label": "verify, rebuild" },
+    { "from": "bg", "to": "metadb", "label": "live chunks" }
+  ]
+}
+</script>
+</x-arch>
+
+<x-tracer title="Put, get, bit rot, and a crash before commit">
+<script type="application/json">
+{
+  "arch": {
+    "nodes": [
+      { "id": "client", "label": "Client", "kind": "client", "col": 0, "row": 1 },
+      { "id": "api", "label": "Front-end API", "kind": "service", "col": 1, "row": 1 },
+      { "id": "meta", "label": "Metadata service", "kind": "service", "col": 2, "row": 0 },
+      { "id": "place", "label": "Placement service", "kind": "service", "col": 2, "row": 1 },
+      { "id": "data", "label": "Storage nodes", "kind": "blob-store", "col": 2, "row": 2 },
+      { "id": "metadb", "label": "Sorted metadata store", "kind": "database", "col": 3, "row": 0 },
+      { "id": "bg", "label": "Scrub, repair, GC", "kind": "worker", "col": 3, "row": 2 }
+    ],
+    "edges": [
+      { "from": "client", "to": "api" },
+      { "from": "api", "to": "meta" },
+      { "from": "api", "to": "place" },
+      { "from": "api", "to": "data" },
+      { "from": "meta", "to": "metadb" },
+      { "from": "data", "to": "place", "style": "async" },
+      { "from": "bg", "to": "data" },
+      { "from": "bg", "to": "metadb" }
+    ]
+  },
+  "steps": [
+    {
+      "caption": "A client sends <code>PUT photos/2026/cat.jpg</code>: 4 MB plus a SHA-256 of the bytes. Any front end can take it.",
+      "arch": { "active": ["client", "api", ["client", "api"]], "dim": ["bg"] },
+      "vars": { "object": "4 MB", "visible": "no" }
+    },
+    {
+      "caption": "Placement hands out open volume 5,120,331, replicated on three nodes in three racks, so one rack losing power cannot take every copy.",
+      "arch": { "active": ["place", ["api", "place"]], "dim": ["bg"], "notes": { "place": "vol 5,120,331" } },
+      "vars": { "object": "4 MB", "visible": "no" }
+    },
+    {
+      "caption": "The 4 MB streams to all three nodes. Each appends the chunk, verifies the checksum and flushes to disk before saying yes.",
+      "arch": { "active": ["data", ["api", "data"]], "dim": ["bg"], "notes": { "data": "3 of 3 synced" } },
+      "vars": { "object": "4 MB", "copies on disk": 3, "visible": "no" }
+    },
+    {
+      "caption": "The commit point: the metadata service writes the key's row, pointing at the new chunk, through the range's consensus group. From now on every get and list sees it.",
+      "arch": { "active": ["meta", "metadb", ["api", "meta"], ["meta", "metadb"]], "dim": ["bg"], "notes": { "metadb": "cat.jpg v2" } },
+      "vars": { "object": "4 MB", "copies on disk": 3, "visible": "yes" }
+    },
+    {
+      "caption": "The client gets 200 and the etag. Bytes first, then metadata: neither is visible without the other.",
+      "arch": { "active": [["api", "client"]], "mark": ["client", "metadb", "data"], "dim": ["bg"] },
+      "vars": { "copies on disk": 3, "visible": "yes" }
+    },
+    {
+      "caption": "Later, a get. One key lookup gives the chunk and its volume; the cached volume map gives the disks.",
+      "arch": { "active": ["client", "api", "meta", ["client", "api"], ["api", "meta"]], "dim": ["bg", "place"], "notes": { "meta": "vol 5,120,331" } },
+      "vars": { "copies on disk": 3 }
+    },
+    {
+      "caption": "The first copy fails its CRC: bits on that disk flipped since the write.",
+      "arch": { "fail": ["data"], "active": [["api", "data"]], "dim": ["bg", "place"], "notes": { "data": "CRC mismatch" } },
+      "vars": { "good copies": 2 }
+    },
+    {
+      "caption": "The second copy checks out and streams to the client. The bad copy is reported, and a repair worker rewrites it from a good one.",
+      "arch": { "active": ["bg", ["api", "data"], ["api", "client"], ["bg", "data"]], "mark": ["client"], "dim": ["place"], "notes": { "bg": "repair copy 1" } },
+      "vars": { "good copies": 3 }
+    },
+    {
+      "caption": "Another put: the bytes reach all three nodes, then the front end crashes before writing metadata. The client sees an error and retries; the old object is untouched.",
+      "arch": { "fail": ["api"], "active": ["data", ["client", "api"]], "dim": ["bg", "meta", "metadb"], "notes": { "data": "4 MB orphan" } },
+      "vars": { "orphaned bytes": "4 MB", "visible": "old version" }
+    },
+    {
+      "caption": "No row points at those 4 MB. The garbage collector finds them, waits out a grace period in case a commit is still in flight, and reclaims them.",
+      "arch": { "active": ["bg", ["bg", "metadb"], ["bg", "data"]], "mark": ["data"], "dim": ["client", "api", "place"] },
+      "vars": { "orphaned bytes": 0 }
+    }
+  ]
+}
+</script>
+</x-tracer>
+
+<h2>Deep dives</h2>
+
+<h3>Durability: copies or erasure coding</h3>
+
+<p>Eleven nines means a 1 in 10<sup>11</sup> chance of losing a given object in a year: across 100 billion objects, about 1 object a year. Assume, as a planning figure, that 2% of disks fail a year and a lost piece is rebuilt within 24 hours.</p>
+
+<ul>
+<li>The chance a given disk fails in a 24-hour window: p = 0.02 × 24 ÷ 8,760 ≈ 5.5 × 10<sup>−5</sup>.</li>
+<li><strong>3 copies.</strong> One of the 3 disks fails 3 × 0.02 = 0.06 times a year, and the object is lost only if both others fail before the rebuild: p² ≈ 3.0 × 10<sup>−9</sup>. Yearly loss ≈ 0.06 × 3.0 × 10<sup>−9</sup> = 1.8 × 10<sup>−10</sup>, just under ten nines: about 18 objects a year. Fresh data stays in copies only until its volume fills and is coded, so the coded figure is the one that counts.</li>
+<li><strong>10 + 4 coding.</strong> One of 14 disks fails 14 × 0.02 = 0.28 times a year, and the object is lost only if 4 of the other 13 fail before the rebuild: 715 ways to pick them, so 715 × p⁴ ≈ 6.4 × 10<sup>−15</sup>. Yearly loss ≈ 0.28 × 6.4 × 10<sup>−15</sup> ≈ 1.8 × 10<sup>−15</sup>, almost fifteen nines.</li>
+<li><strong>Faster repair pays twice.</strong> Repair in 1 hour and p falls 24 times, so the 3-copy loss falls 24² = 576 times, to about 3 × 10<sup>−13</sup>.</li>
+</ul>
+
+<p>The model assumes disks fail independently. They do not: a rack loses power, a disk batch shares a firmware bug, a release deletes the wrong files. Correlated failures, not code maths, are the real threat. So put each volume's pieces in different racks, roll out software slowly, and wait days before erasing deleted data.</p>
+
+<x-tradeoffs caption="How to survive disk failures">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "3 full copies",
+      "good": "Simple. Any copy serves a read; a rebuild reads only what was lost.",
+      "bad": "3x disk: 300 PB for 100 PB. About ten nines with day-long repair.",
+      "pick": "Open volumes, until they fill and are sealed."
+    },
+    {
+      "name": "Erasure coding 10 + 4",
+      "good": "1.4x disk: 140 PB. Survives any 4 lost fragments.",
+      "bad": "Rebuilding one fragment reads 10. A read during an outage fetches and decodes 10 fragments.",
+      "pick": "Large, sealed, mostly cold data: most of the store."
+    },
+    {
+      "name": "Copies first, then code",
+      "good": "Puts are fast appends to 3 replicas; a full, sealed volume is coded in the background.",
+      "bad": "Coding traffic is about as large as ingest, and there are two layouts to operate.",
+      "pick": "Fast writes and cheap storage. Our design.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Repair is the price of coding, so compute it. 7,000 disks at 2% a year is 140 failures, one every 2.6 days. Rebuilding a 20 TB disk under 10 + 4 reads 10 fragments per lost one: 200 TB read, 20 TB written. Over 24 hours that is 200 TB ÷ 86,400 s ≈ 2.3 GB/s of background traffic, against 0.23 GB/s for copies. Normal reads do not pay it: the code is systematic, so the 10 data fragments hold the original bytes and a 1 MB read usually touches one fragment and decodes nothing.</p>
+
+<p>Durability also needs <strong>detection</strong>: a silently rotted copy is a copy you do not have. Every chunk carries a CRC checked on each read, and a scrubber reads every disk end to end. Scrubbing a 20 TB disk every 14 days is 20 TB ÷ 1.2 million s ≈ 17 MB/s, a small slice of a disk's sequential speed.</p>
+
+<h3>Huge objects and multipart upload</h3>
+
+<p>A 1 TB object arrives as parts, say 10,000 of 100 MB, uploaded in any order and in parallel. Inside the store a part is just a small put: chunks appended to volumes plus a <code>multipart_parts</code> row. Re-uploading part 3 replaces its row.</p>
+
+<p><strong>Complete moves no bytes</strong>. It checks every listed part exists with the given etag, then writes one object row whose chunk list is the parts' chunks in order, in one metadata transaction. A 1 TB object appears atomically, in milliseconds, with a checksum computed from the parts' checksums. Abort, or a rule that expires uploads idle for a week, deletes the part rows and leaves the chunks to garbage collection. Range reads map a byte range to the chunks that cover it.</p>
+
+<h3>Listing by prefix</h3>
+
+<p>There are no folders. <code>photos/2026/</code> is just the start of some keys, so listing it scans the sorted store from the first key at or after the prefix until keys stop matching. Range partitioning means that scan touches one or two ranges, not all of them.</p>
+
+<ul>
+<li><strong>Pages:</strong> at most 1,000 keys plus a token holding the last key returned; the next page starts after it.</li>
+<li><strong>Delimiter:</strong> with <code>delimiter=/</code>, keys under <code>photos/2026/01/</code> collapse into one entry, and the scan seeks straight past them instead of reading a million rows.</li>
+<li><strong>Hot ranges:</strong> keys starting with a timestamp all land at the end of one range, and splitting cannot help because every new key goes to the newest half. Suggest a short hash prefix for hot writers.</li>
+</ul>
+
+<p>List reads the same consistent store as get, so a key is listed the moment its put returns. A separate listing index updated asynchronously would show new objects late and break every job that writes files and then lists them.</p>
+
+<h3>Deleting and reclaiming space</h3>
+
+<p>Delete removes the object row in one metadata write, so the object vanishes at once. Its bytes still sit in an append-only volume beside live chunks. Reclaiming them is a separate, slower job.</p>
+
+<x-tradeoffs caption="Finding garbage">
+<script type="application/json">
+{
+  "options": [
+    {
+      "name": "Reference counts",
+      "good": "Each delete updates a dead-bytes counter per volume, so you know at once which volumes are mostly garbage.",
+      "bad": "A lost update leaks space; an extra one deletes live data. Crashed puts were never counted.",
+      "pick": "As the fast path for choosing volumes to compact."
+    },
+    {
+      "name": "Mark and sweep",
+      "good": "Scans all object and part rows for live chunk ids; anything else is garbage, crashed puts included.",
+      "bad": "Scanning 50 TB of metadata takes hours, so garbage waits days.",
+      "pick": "As the authority on what may be erased.",
+      "default": true
+    }
+  ]
+}
+</script>
+</x-tradeoffs>
+
+<p>Use both, with two safety rules. A <strong>grace period</strong>: never erase a chunk younger than a few days, because a put may have written bytes and not yet committed its row. The commit refuses chunks older than a day, so a put stalled past the window fails instead of pointing at erased bytes. And <strong>compaction keeps chunk ids</strong>: when a sealed volume is over 40% dead, a worker copies its live chunks into a new generation of the same volume and updates the volume map. Object rows still say "volume 5,120,331, chunk 88", so the metadata never changes. The old generation stays readable for a day for gets that looked up the old layout.</p>
+
+<x-callout type="mistake" title="Erasing bytes the moment the row goes">
+<p>Synchronous erasure puts slow disk work on the request path, races with puts and compaction, and lets a bug in delete destroy data instantly. A few days between "unreferenced" and "erased" is your undo window.</p>
+</x-callout>
+
+<h2>Bottlenecks and failures</h2>
+
+<p>At 10x, 40,000 puts and 400,000 gets a second, add storage nodes (placement sends new volumes to the emptiest disks, so nothing old moves) and front ends. The metadata store strains first: every request is a lookup and every put a consensus write. Split busy ranges and cache hot rows in the front ends.</p>
+
+<table>
+<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<tbody>
+<tr><td>A front end</td><td>In-flight requests fail; an interrupted put leaves orphan bytes, never half an object.</td><td>Clients retry; GC reclaims the orphans.</td></tr>
+<tr><td>A metadata range leader</td><td>Requests for that range pause for seconds.</td><td>A new leader is elected; committed rows are on a majority, so none are lost.</td></tr>
+<tr><td>The placement service</td><td>No new volumes are handed out.</td><td>Front ends use the open volumes and cached map they hold. Run it as a consensus group.</td></tr>
+<tr><td>A disk or storage node</td><td>Its copies or fragments are gone.</td><td>Read another copy or decode from 10 fragments; repair rebuilds elsewhere within hours.</td></tr>
+<tr><td>A whole rack</td><td>Many disks at once.</td><td>No volume has two pieces in one rack, so each loses at most one.</td></tr>
+<tr><td>Scrubber or GC</td><td>Rot is found later; disks fill faster.</td><td>Nothing breaks today. Alert on time since last scrub and on free space.</td></tr>
+</tbody>
+</table>
+
+<h2>What a strong answer sounds like</h2>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Stores files on servers with a database of names, keeps 3 copies, and with prompting splits big files into parts.</td></tr>
+<tr><td>Mid</td><td>Separates metadata from data, compares replication with erasure coding by overhead, and covers multipart upload and checksums.</td></tr>
+<tr><td>Senior</td><td>Derives a durability figure and names its assumptions, prices repair traffic, makes the metadata commit the single point of visibility, picks a sorted store because of list, and makes deletion delayed and safe.</td></tr>
+</tbody>
+</table>
+
+<x-interview title="Defending durability" tone="weak">
+<x-interviewer>How durable is your design?</x-interviewer>
+<x-you>Eleven nines, because we keep three copies.</x-you>
+<x-coach>A quoted number with no arithmetic. Three copies with day-long repair is about ten nines, and correlated failures are ignored.</x-coach>
+</x-interview>
+
+<x-interview title="Defending durability" tone="strong">
+<x-interviewer>How durable is your design?</x-interviewer>
+<x-you>With 2% of disks failing a year and day-long repair, 3 copies lose about 2 objects in 10 billion a year, just short of ten nines. 10 + 4 coding is around fifteen nines at 1.4x space, so sealed data is coded. The real risks are correlated, a rack or our own bugs, so pieces go on different racks and erasure waits days after a delete.</x-you>
+<x-interviewer>What does coding cost you?</x-interviewer>
+<x-you>Repair: rebuilding a 20 TB disk reads 200 TB. With a failure every couple of days that's a few GB/s of background traffic, which I'd budget and throttle.</x-you>
+</x-interview>
+
+<h2>Follow-up questions</h2>
+
+<h3>How would you add versioning?</h3>
+<p>Put the version in the key so each put adds a row, and make delete add a "delete marker" row. A plain get reads the newest row that is not a marker. GC must treat every version's chunks as live.</p>
+
+<h3>How do you survive losing a whole data center?</h3>
+<p>No zone may hold more fragments than the code can lose. With 3 zones, 12 data + 6 parity, 6 per zone, survives a zone at 18 ÷ 12 = 1.5x. While a zone is down there is no margin left, so repair must be fast.</p>
+
+<h3>What about billions of tiny objects?</h3>
+<p>Coding is per 10 GB volume, so a 1 KB object costs 1.4 KB of disk. Its 500-byte metadata row now rivals the data, so the metadata store is the real limit.</p>
+
+<h3>One object gets 50,000 gets a second. What breaks?</h3>
+<p>The disk holding its data fragment. Cache hot objects in front-end memory or behind a CDN. Objects never change in place, so cached copies cannot go stale.</p>
+
+<h3>How do you delete a bucket with a billion objects?</h3>
+<p>Mark it deleted so it refuses requests, then remove its key range in background batches: one contiguous scan in a range-partitioned store.</p>
+
+<x-checklist title="Self-review: object storage">
+<script type="application/json">
+{
+  "groups": [
+    { "title": "Before drawing", "items": ["I asked about object sizes, total data and request rates", "I ranked durability first and said why storage overhead matters", "I promised read-after-write consistency, including for list"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated egress bandwidth and the size of the metadata", "I compared raw disk for 3 copies and for erasure coding", "I made put carry a checksum and gave a rule for concurrent puts"] },
+    { "title": "Design and depth", "items": ["I separated metadata from storage nodes and named the commit point", "I derived a durability figure from a failure rate and a repair time, and named its assumptions", "I priced the repair traffic of erasure coding", "I explained why completing a multipart upload moves no bytes", "I chose a sorted, range-partitioned store because of list by prefix"] },
+    { "title": "Failure", "items": ["I described scrubbing and what a CRC mismatch on read does", "I delayed garbage collection with a grace period for uncommitted puts"] }
+  ]
+}
+</script>
+</x-checklist>

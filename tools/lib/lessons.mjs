@@ -18,7 +18,7 @@ export const DESIGN_SECTIONS = [
   'What a strong answer sounds like',
   'Follow-up questions',
 ];
-export const DESIGN_MODULES = ['classic-designs', 'harder-designs'];
+export const DESIGN_MODULES = ['classic-designs', 'harder-designs', 'product-designs', 'realtime-location-designs', 'infrastructure-designs'];
 const WORDS = { concept: [900, 1600], design: [1800, 3200] };
 
 export function legacySlugs() {
