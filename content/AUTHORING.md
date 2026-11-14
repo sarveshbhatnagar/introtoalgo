@@ -81,7 +81,7 @@ Front matter is strict JSON (double quotes, no trailing commas) inside an HTML c
 | `description` | yes | Plain text, at most 155 characters (aim for 80 to 155). Used as the page lead and by search engines. Say what the reader will be able to do. |
 | `minutes` | yes | Whole number, 3 to 40. Reading time plus time to use the tracer and quiz. Roughly words ÷ 150, plus 3. |
 | `tags` | no | List of short lowercase strings. |
-| `kind` | system design only | `"design"` for a case study (every lesson in the Classic Designs and Harder Designs modules, and only those). Leave it out for every other lesson. See [section 10](#10-system-design-track). |
+| `kind` | system design only | `"design"` for a case study (every lesson in modules 5 to 9 of the system design track, and only those). Leave it out for every other lesson. See [section 10](#10-system-design-track). |
 | `legacy` | no | Old 2017 posts this lesson replaces, from: `mergesort`, `mst`, `speedinguplinkedlist`, `networktheory`, `communitydetection`, `semanticnetworks`, `markovchains`. They are listed at the end of the lesson. Some are already mapped; adding one twice is harmless. |
 
 Body rules:
@@ -646,7 +646,10 @@ To see a page as learners will, the orchestrator runs `node tools/build.mjs` and
 | `distributed-ideas` | 4. Distributed Systems Ideas | `cap-and-consistency`, `transactions-and-isolation`, `message-queues-and-streams`, `idempotency-and-retries`, `consensus-and-leader-election`, `unique-ids`, `reliability-and-failure`, `observability` |
 | `classic-designs` | 5. Classic Designs (case studies, `"kind": "design"`) | `design-a-url-shortener`, `design-a-rate-limiter`, `design-a-key-value-store`, `design-a-news-feed`, `design-a-chat-app`, `design-a-notification-system`, `design-typeahead-search` |
 | `harder-designs` | 6. Harder Designs (case studies, `"kind": "design"`) | `design-a-web-crawler`, `design-video-streaming`, `design-ride-sharing`, `design-file-sync`, `design-ticket-booking`, `design-a-payment-system`, `design-a-job-scheduler`, `design-a-rag-system` |
-| `interview-craft` | 7. Interview Craft | `talking-through-trade-offs`, `system-design-mistakes`, `what-changes-by-level`, `numbers-to-know`, `mock-interview-practice` |
+| `product-designs` | 7. Product Designs (case studies, `"kind": "design"`) | `design-photo-sharing`, `design-post-search`, `design-an-online-judge`, `design-a-stock-trading-app`, `design-an-online-auction`, `design-a-price-tracker`, `design-hotel-booking`, `design-an-email-service`, `design-a-calendar`, `design-an-llm-chat-service` |
+| `realtime-location-designs` | 8. Realtime and Location Designs (case studies, `"kind": "design"`) | `design-proximity-search`, `design-swipe-matching`, `design-local-delivery`, `design-maps-and-navigation`, `design-fitness-tracking`, `design-a-collaborative-editor`, `design-live-comments`, `design-a-leaderboard` |
+| `infrastructure-designs` | 9. Infrastructure and Data Designs (case studies, `"kind": "design"`) | `design-an-ad-click-aggregator`, `design-top-k-trending`, `design-metrics-monitoring`, `design-a-distributed-cache`, `design-a-distributed-message-queue`, `design-object-storage`, `design-a-digital-wallet` |
+| `interview-craft` | 10. Interview Craft | `talking-through-trade-offs`, `system-design-mistakes`, `what-changes-by-level`, `numbers-to-know`, `mock-interview-practice` |
 
 ### AI track (`content/ai/<slug>.html`, URL `/ai/<slug>.html`)
 
