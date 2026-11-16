@@ -19,7 +19,7 @@ export const DESIGN_SECTIONS = [
   'Follow-up questions',
 ];
 export const DESIGN_MODULES = ['classic-designs', 'harder-designs', 'product-designs', 'realtime-location-designs', 'infrastructure-designs'];
-const WORDS = { concept: [900, 1600], design: [1800, 3200] };
+const WORDS = { concept: [600, 1250], design: [1300, 2500] };
 
 export function legacySlugs() {
   return listFiles(join(CONTENT, 'legacy'), '.html').map((f) => f.replace(/\.html$/, ''));
