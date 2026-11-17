@@ -2,66 +2,63 @@
 {
   "title": "Design an Ad Click Aggregator",
   "description": "Count ad clicks per minute, fresh in seconds and exact for billing: a click log, windowed stream processing, dedup, hot ads, late events and a recount.",
-  "minutes": 34,
+  "minutes": 28,
   "kind": "design",
   "tags": ["case study", "stream processing", "deduplication", "aggregation", "exactly-once"]
 }
 -->
-<p>Someone taps an ad and lands on the advertiser's site, and a counter for that ad goes up by one. The advertiser watches those counters on a dashboard and is billed for every click. Count too few and the platform loses money. Count too many and it overcharges a customer, which is worse.</p>
+<p>Someone taps an ad, lands on the advertiser's site, and that ad's counter goes up by one. The advertiser watches the counters live and is billed per click. Count too few and the platform loses money; count too many and it overcharges a customer, which is worse.</p>
 
-<p>Interviewers ask this because counting gets hard at this scale: over a hundred thousand events a second, a few ads that get most of them, clicks that arrive late or twice, and a number that must be both fresh and exact. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read on.</p>
+<p>Counting gets hard at this scale: over 100,000 events a second, a few ads getting most, clicks arriving late or twice, and a number that must be fresh and exact. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before you read on.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a system that aggregates ad clicks.</x-interviewer>
-<x-you>A user clicks, we record it and redirect them to the landing page, and advertisers see counts. At what granularity, and how fresh?</x-you>
-<x-interviewer>Clicks per ad per minute. Advertisers want to see a click on the dashboard within a few seconds.</x-interviewer>
+<x-you>A user clicks, we record it and redirect, and advertisers see counts. At what granularity, and how fresh?</x-you>
+<x-interviewer>Clicks per ad per minute, on the dashboard within a few seconds.</x-interviewer>
 <x-you>And are we billing from these counts?</x-you>
 <x-interviewer>Yes. Advertisers pay per click.</x-interviewer>
-<x-you>Then there are two accuracy needs: the dashboard can show a provisional number, but the billed number must count every valid click exactly once. How many clicks and ads?</x-you>
+<x-you>Then the dashboard can show a provisional number, but the billed number must count every valid click exactly once. How many clicks and ads?</x-you>
 <x-interviewer>About 10 billion clicks a day across 1 million active ads.</x-interviewer>
-<x-you>I'll keep the redirect fast and never let counting slow it down, and I'll treat fraud detection as a separate system that can mark clicks invalid later.</x-you>
 <x-coach>Splitting accuracy into "fresh" and "final" shapes the rest of the design.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> record a click and redirect the user to the ad's landing page; let advertisers query click counts per ad per minute over any time range; produce final counts for billing.</li>
-<li><strong>Non-functional:</strong> the redirect adds under 50 ms; a click shows on the dashboard within about 10 seconds; billed counts are exact, with each valid click counted once; no accepted click is lost; the system survives the loss of any one machine.</li>
+<li><strong>Functional:</strong> record a click and redirect to the landing page; query clicks per ad per minute over any range; produce final counts for billing.</li>
+<li><strong>Non-functional:</strong> redirect adds under 50 ms; dashboard within about 10 seconds; billed counts exact, each valid click once; no accepted click lost; survives losing any one machine.</li>
 <li><strong>Out of scope:</strong> choosing which ad to show, fraud scoring (we leave a hook for it), unique-user counts, the billing system itself.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>The scenario: 10 billion clicks a day, 1 million active ads, about 300 bytes per raw click event (ids, timestamps, a device hash, IP and user agent).</p>
-
 <ul>
-<li><strong>Click rate:</strong> 10<sup>10</sup> ÷ 86,400 s ≈ 116,000 clicks a second on average. Assume peaks of 3x: about 350,000 a second.</li>
-<li><strong>Ingest bandwidth:</strong> 350,000 × 300 B ≈ 105 MB/s at peak. Easy for a partitioned log; impossible as single-row database increments.</li>
-<li><strong>Aggregate rows:</strong> at most one row per ad per minute: 10<sup>6</sup> × 1,440 = 1.44 billion rows a day. At about 40 bytes each that is about 58 GB a day, a ceiling, since a minute with no clicks writes no row. The average ad gets 10<sup>10</sup> ÷ 1.44 × 10<sup>9</sup> ≈ 7 clicks a minute.</li>
-<li><strong>Partitions:</strong> if one log partition and one processor task comfortably handle 10,000 events a second (the scenario's assumption), the peak needs 350,000 ÷ 10,000 = 35. Use 64 for headroom: about 5,500 a second each, if clicks spread evenly. They do not, which is the hot-ad deep dive.</li>
+<li><strong>Clicks:</strong> 10<sup>10</sup> ÷ 86,400 s ≈ 116,000 a second; about 350,000 at a 3x peak.</li>
+<li><strong>Ingest:</strong> at about 300 B per raw event, 350,000 × 300 B ≈ 105 MB/s at peak. Easy for a partitioned log; impossible as single-row increments.</li>
+<li><strong>Aggregate rows:</strong> at most one per ad per minute: 10<sup>6</sup> × 1,440 = 1.44 billion a day, at about 40 bytes about 58 GB a day (a ceiling: empty minutes write no row). The average ad gets 10<sup>10</sup> ÷ 1.44 × 10<sup>9</sup> ≈ 7 clicks a minute.</li>
+<li><strong>Partitions:</strong> if one partition and task handle 10,000 events a second (an assumption), the peak needs 35. Use 64: about 5,500 a second each, if clicks spread evenly. They do not; see hot ads.</li>
 </ul>
 
 <x-estimate title="Raw click storage">
 <script type="application/json">
 {
-  "question": "How much raw click data arrives per day? We keep it to recount clicks and to settle billing disputes.",
+  "question": "How much raw click data arrives per day? We keep it for recounts and billing disputes.",
   "givens": ["10 billion clicks a day", "About 300 bytes per raw click event"],
   "unit": "bytes",
   "answer": "3 TB",
   "accept": ["1 TB", "10 TB"],
-  "steps": ["10<sup>10</sup> × 300 B = 3 × 10<sup>12</sup> B = 3 TB a day", "Kept 90 days for disputes: 3 TB × 90 = 270 TB, which belongs in object storage, not in the query store"],
-  "note": "The raw log is 50 times the size of the minute aggregates (3 TB versus 58 GB a day). Queries read aggregates; only recounts read raw data."
+  "steps": ["10<sup>10</sup> × 300 B = 3 × 10<sup>12</sup> B = 3 TB a day", "Kept 90 days: 3 TB × 90 = 270 TB, in object storage, not the query store"],
+  "note": "Raw data is 50 times the minute aggregates (3 TB versus 58 GB a day). Queries read aggregates; only recounts read raw data."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the click endpoint and the query endpoint. What does the click URL carry, and where does the landing-page address come from?</p>
+<p>Write the click and query endpoints. What does the click URL carry?</p>
 </x-task>
 <x-answer>
-<p>The click is a <code>GET</code> that returns a 302 redirect; the query is a read over a time range. The URL carries a signed impression token, and the landing page is looked up from the ad id, never taken from the URL, or the click service becomes an open redirect anyone can abuse.</p>
+<p>The click is a <code>GET</code> returning a 302; the query reads a time range. The URL carries a signed impression token. The landing page is looked up by ad id, never taken from the URL, or you have an open redirect.</p>
 </x-answer>
 </x-tryit>
 
@@ -84,14 +81,14 @@ GET /v1/advertisers/{id}/clicks?from=...&to=...&group_by=ad&granularity=hour
 </pre>
 </x-code>
 
-<p>The token is the decision worth arguing. When the ad server shows an ad, it creates a random <strong>impression id</strong> and signs <code>{impression_id, ad_id, shown_at}</code> with a secret key (an HMAC). The click service checks the signature with no database call, which proves we really served that impression, and the impression id gives every click a natural key for spotting duplicates. Without it, a script can invent clicks on a competitor's ad.</p>
+<p>The token is the decision worth arguing. When the ad server shows an ad, it creates a random <strong>impression id</strong> and signs <code>{impression_id, ad_id, shown_at}</code> with a secret key (an HMAC). Checking the signature needs no database call and proves we served that impression; without it, a script can invent clicks on a competitor's ad. The impression id is also the natural key for spotting duplicates.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the raw click event and the aggregate record. Which store holds each, and what is the key of the aggregate?</p>
+<p>Sketch the raw event and the aggregate. Which store holds each?</p>
 </x-task>
 <x-answer>
-<p>Raw events live in an append-only log and then in object storage. Aggregates are one row per (ad, minute) in a columnar analytics store, keyed so that a write for the same (ad, minute) replaces the old value instead of adding to it.</p>
+<p>Raw events: a log, then object storage. Aggregates: one row per (ad, minute) in a columnar analytics store, where a write replaces the value instead of adding to it.</p>
 </x-answer>
 </x-tryit>
 
@@ -118,22 +115,22 @@ ad_clicks_minute
 </pre>
 </x-code>
 
-<p>Clicks are written once, read in order by the processor, and read again in bulk by recounts: an append-only, partitioned <strong>log</strong> (such as Kafka), copied to <strong>object storage</strong>. Queries are "sum clicks for these ads over this range, grouped by minute or hour": a scan over a few columns of many rows, which a <strong>columnar analytics (OLAP) store</strong> such as ClickHouse or Druid does well. A key-value store cannot sum a range at all.</p>
+<p>Clicks are written once, read in order, and reread in bulk by recounts: a partitioned <strong>log</strong> (such as Kafka), copied to <strong>object storage</strong>. Queries sum clicks over a range, grouped by minute or hour: a scan of a few columns over many rows, which a <strong>columnar analytics (OLAP) store</strong> such as ClickHouse or Druid does well.</p>
 
-<p>Store <code>clicks</code> as an absolute value that a later write replaces, never as an increment, so every writer is safe to retry.</p>
+<p>Store <code>clicks</code> as an absolute value that a later write replaces, never an increment, so every writer can safely retry.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes from the click to the dashboard. Where is a click made durable before the redirect, where is it counted, and where does a recount come from?</p>
+<p>Sketch click to dashboard. Where is a click made durable, counted, and recounted?</p>
 </x-task>
 <x-answer>
-<p>A stateless click service writes each click to a partitioned log and then redirects. A stream processor reads the log, drops duplicates, counts per ad per minute and writes to an OLAP store. The log is also archived to object storage, where a batch job recounts and overwrites the stream's numbers with final ones.</p>
+<p>A click service appends each click to a partitioned log, then redirects. A stream processor dedups, counts per ad per minute and writes to an OLAP store. A batch job recounts from the archive and overwrites with final numbers.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Two paths compute the same numbers. The stream is fast and nearly always right; the batch recount is slower and is the truth for billing. Both write one OLAP table, and the batch write wins.</p>
+<p>Two paths compute the same numbers: the fast stream, nearly always right, and the slower batch recount, the truth for billing. Both write one OLAP table; the batch write wins.</p>
 
 <x-arch caption="Clicks become durable in the log before the redirect. The stream processor makes fresh counts; the batch job recounts from the archive and marks them final.">
 <script type="application/json">
@@ -166,8 +163,6 @@ ad_clicks_minute
 </script>
 </x-arch>
 
-<p>Step through one click from impression to invoice, including a double click, a crash and a late arrival.</p>
-
 <x-tracer title="A click: count it once, keep it fresh, make it final">
 <script type="application/json">
 {
@@ -199,57 +194,57 @@ ad_clicks_minute
   },
   "steps": [
     {
-      "caption": "The ad server shows ad 42 with a signed token in its click URL: impression <code>7f3a</code>, shown at 10:04:40. Nothing is stored; the signature is the proof.",
+      "caption": "The ad server shows ad 42 with a signed token: impression <code>7f3a</code>, shown at 10:04:40. Nothing is stored.",
       "arch": { "active": ["adsrv", "user", ["adsrv", "user"]], "dim": ["proc", "batch", "olap", "query", "adv", "archive"] },
       "vars": { "impression": "7f3a", "ad": 42 }
     },
     {
-      "caption": "At 10:05:12 the user clicks. The click service checks the HMAC in memory and stamps the event time.",
+      "caption": "At 10:05:12 the user clicks. The click service checks the HMAC and stamps the event time.",
       "arch": { "active": ["user", "click", ["user", "click"]], "dim": ["proc", "batch", "olap", "query", "adv", "archive"], "notes": { "click": "signature ok" } },
       "vars": { "impression": "7f3a", "clicked_at": "10:05:12" }
     },
     {
-      "caption": "It appends the event to ad 42's log partition and waits for 3 replicas, a few milliseconds. Only then does it answer 302, so an accepted click cannot be lost.",
+      "caption": "It appends to ad 42's log partition and waits a few milliseconds for 3 replicas. Only then does it answer 302.",
       "arch": { "active": ["log", ["click", "log"], ["click", "user"]], "mark": ["user"], "dim": ["proc", "batch", "olap", "query", "adv", "archive"], "notes": { "log": "3 copies" } },
       "vars": { "impression": "7f3a", "redirect": "302" }
     },
     {
-      "caption": "The processor task for that partition has not seen <code>7f3a</code>, so it records it and adds 1 to ad 42's 10:05 window.",
+      "caption": "The partition's processor task has not seen <code>7f3a</code>, so it records it and adds 1 to ad 42's 10:05 window.",
       "arch": { "active": ["proc", ["log", "proc"]], "dim": ["batch", "olap", "query", "adv", "archive", "adsrv"], "notes": { "proc": "+1 at 10:05" } },
       "vars": { "ad 42 @ 10:05": "1,288" }
     },
     {
-      "caption": "A second click follows. Its event reaches the same task, which finds <code>7f3a</code> already seen and drops it.",
+      "caption": "A second click reaches the same task, which finds <code>7f3a</code> already seen and drops it.",
       "arch": { "active": ["click", "log", "proc", ["user", "click"], ["click", "log"], ["log", "proc"]], "dim": ["batch", "olap", "query", "adv", "archive", "adsrv"], "notes": { "proc": "7f3a seen: drop" } },
       "vars": { "ad 42 @ 10:05": "1,288", "duplicates dropped": 1 }
     },
     {
-      "caption": "Every 5 seconds the processor upserts the open window: the row (42, 10:05) is replaced with 1,288 and <code>final = false</code>.",
+      "caption": "Every 5 seconds the processor upserts open windows: row (42, 10:05) becomes 1,288, <code>final = false</code>.",
       "arch": { "active": ["proc", "olap", ["proc", "olap"]], "dim": ["batch", "query", "adv", "archive", "adsrv", "user", "click"], "notes": { "olap": "1,288 (draft)" } },
       "vars": { "ad 42 @ 10:05": "1,288" }
     },
     {
-      "caption": "The dashboard reads the last hour for ad 42 and shows 10:05 as provisional, about 6 seconds after the click.",
+      "caption": "The dashboard shows 10:05 as provisional, about 6 seconds after the click.",
       "arch": { "active": ["adv", "query", "olap", ["adv", "query"], ["query", "olap"]], "dim": ["batch", "archive", "adsrv", "user", "click", "log", "proc"] },
       "vars": { "ad 42 @ 10:05": "1,288", "click to screen": "about 6 s" }
     },
     {
-      "caption": "The task crashes. Its last checkpoint saved log offsets, counts and dedup state together, at 1,270. A new task restores it and replays from that offset.",
+      "caption": "The task crashes. Its last checkpoint saved log offsets, counts and dedup state together, at 1,270. A new task restores it and replays.",
       "arch": { "fail": ["proc"], "active": ["log"], "dim": ["batch", "query", "adv", "archive", "adsrv", "user", "click"], "notes": { "proc": "restore: 1,270" } },
       "vars": { "ad 42 @ 10:05": "1,270 restored" }
     },
     {
-      "caption": "Replay rebuilds exactly 1,288, because dedup state and counts rewound together. The upsert writes 1,288 again: nothing doubled.",
+      "caption": "Replay rebuilds exactly 1,288, because dedup state and counts rewound together. The upsert writes 1,288 again.",
       "arch": { "active": ["proc", "olap", ["log", "proc"], ["proc", "olap"]], "dim": ["batch", "query", "adv", "archive", "adsrv", "user", "click"], "notes": { "olap": "1,288 again" } },
       "vars": { "ad 42 @ 10:05": "1,288" }
     },
     {
-      "caption": "At 10:09 a click stamped 10:05:58 arrives from a click server that spooled it to disk. The 10:05 window closed at 10:08, so it goes to a late-events side output.",
+      "caption": "At 10:09 a click stamped 10:05:58 arrives from a server that spooled it to disk. The 10:05 window closed at 10:08, so it goes to a side output.",
       "arch": { "active": ["log", "proc", ["log", "proc"]], "dim": ["batch", "query", "adv", "adsrv", "user", "click", "olap"], "notes": { "proc": "too late" } },
       "vars": { "ad 42 @ 10:05": "1,288", "late clicks": 1 }
     },
     {
-      "caption": "The hourly recount reads the archive for 10:00 to 11:00 with the same rules and finds 1,289 for (42, 10:05), the late click included. It overwrites the row as final.",
+      "caption": "The hourly recount reads 10:00 to 11:00 from the archive with the same rules: 1,289 for (42, 10:05), late click included. It overwrites the row as final.",
       "arch": { "active": ["archive", "batch", "olap", ["archive", "batch"], ["batch", "olap"]], "mark": ["olap"], "dim": ["query", "adv", "adsrv", "user", "click", "proc"], "notes": { "olap": "1,289 final" } },
       "vars": { "ad 42 @ 10:05": "1,289 final", "stream was off by": 1 }
     }
@@ -262,7 +257,7 @@ ad_clicks_minute
 
 <h3>The counting pipeline</h3>
 
-<p>The obvious design, <code>UPDATE ads SET clicks = clicks + 1</code> per click, means 350,000 row writes a second, and a popular ad turns one row into a lock everyone waits for. Count in memory instead, and write totals.</p>
+<p><code>UPDATE ads SET clicks = clicks + 1</code> per click means 350,000 row writes a second. Count in memory and write totals.</p>
 
 <x-tradeoffs caption="Where the counting happens">
 <script type="application/json">
@@ -271,19 +266,19 @@ ad_clicks_minute
     {
       "name": "Increment a row per click",
       "good": "Simple, and the count is current.",
-      "bad": "One write per click; a hot ad makes one row the bottleneck. A retried request counts twice.",
+      "bad": "One write per click; a hot ad's row is the bottleneck. A retry counts twice.",
       "pick": "A few clicks a second. Not this question."
     },
     {
       "name": "Batch job over the logs only",
-      "good": "Simple and exact: recount from raw events every hour.",
-      "bad": "Counts are an hour or more old, which fails the 10-second requirement.",
+      "good": "Simple and exact.",
+      "bad": "Counts are an hour old, failing the 10-second requirement.",
       "pick": "Billing only, with no live dashboard."
     },
     {
       "name": "Stream processor, plus batch recount",
-      "good": "Fresh counts in seconds from windowed in-memory state; the recount fixes anything the stream got wrong.",
-      "bad": "Two code paths that must apply the same rules, and more moving parts to run.",
+      "good": "Fresh counts in seconds; the recount fixes anything the stream got wrong.",
+      "bad": "Two code paths that must apply the same rules; more to run.",
       "pick": "Fresh dashboards and exact billing. The usual answer.",
       "default": true
     }
@@ -292,21 +287,19 @@ ad_clicks_minute
 </script>
 </x-tradeoffs>
 
-<p>The stream processor (such as Flink) keys events by <code>ad_id</code>, so one ad's clicks reach one task. Each task keeps, per ad, a count for each open one-minute <strong>tumbling window</strong> (fixed, non-overlapping minutes). Windows use <strong>event time</strong>, the <code>clicked_at</code> stamp, so a backlog after an outage still lands clicks in the right minute. For freshness, the task emits each open window every 5 seconds instead of waiting for the minute to close.</p>
-
-<p>The <a href="/system-design/message-queues-and-streams.html">log</a> makes this recoverable: it keeps 7 days of events (3 TB × 7 = 21 TB, 63 TB with three replicas), so any consumer can rewind.</p>
+<p>The stream processor (such as Flink) keys events by <code>ad_id</code>, so one ad reaches one task, which counts in one-minute <strong>tumbling windows</strong> (fixed, non-overlapping). Windows use <strong>event time</strong>, the <code>clicked_at</code> stamp, so a backlog after an outage still lands in the right minute. Open windows are emitted every 5 seconds. The <a href="/system-design/message-queues-and-streams.html">log</a> keeps 7 days (21 TB, 63 TB with three replicas), so any consumer can rewind.</p>
 
 <h3>Counting each click once</h3>
 
-<p>Duplicates come from users double-clicking, click servers retrying an append whose acknowledgement was lost, and the processor replaying after a crash.</p>
+<p>Duplicates come from double clicks, append retries after a lost ack, and processor replays.</p>
 
 <ul>
-<li><strong>Users and retries:</strong> the processor keeps every impression id it has seen in the last 24 hours, the longest a click is valid after its impression (the token's <code>shown_at</code> enforces that). An impression belongs to one ad and the log is keyed by <code>ad_id</code>, so both copies of a click reach the same task. The cost: 10<sup>10</sup> ids a day × 16 B = 160 GB, about 2.5 GB per task across 64 partitions, kept in a disk-backed state store.</li>
-<li><strong>Processor crashes:</strong> the processor checkpoints log offsets, window counts and the dedup set together. On restart it rewinds all three to the same point and replays, so its state ends up as if each event had been processed once.</li>
-<li><strong>Writes to the OLAP store:</strong> the replay re-sends rows the store already has. Because each write replaces the row for (ad, minute) with an absolute count, writing it twice changes nothing.</li>
+<li><strong>Users and retries:</strong> the processor keeps every impression id seen in the last 24 hours, the longest a click stays valid (checked against <code>shown_at</code>). Keying by <code>ad_id</code> sends both copies to one task. Cost: 10<sup>10</sup> ids a day × 16 B = 160 GB, about 2.5 GB per task over 64 partitions, in a disk-backed state store.</li>
+<li><strong>Processor crashes:</strong> log offsets, window counts and the dedup set are checkpointed together. A restart rewinds all three and replays, so state ends as if each event was processed once.</li>
+<li><strong>OLAP writes:</strong> a replay re-sends rows the store has. Each write replaces the (ad, minute) row with an absolute count, so twice changes nothing.</li>
 </ul>
 
-<p>Be precise: the log delivers at least once. What you build is <strong>exactly-once effect</strong>: dedup by a business key plus <a href="/system-design/idempotency-and-retries.html">idempotent</a> writes. "The broker gives exactly-once", with nothing about how the sink handles a replay, is a weak answer.</p>
+<p>The log delivers at least once. What you build is <strong>exactly-once effect</strong>: dedup by a business key plus <a href="/system-design/idempotency-and-retries.html">idempotent</a> writes. "The broker gives exactly-once", with nothing about how the sink handles a replay, is a weak answer.</p>
 
 <x-tradeoffs caption="Where to remember which impressions were clicked">
 <script type="application/json">
@@ -314,22 +307,22 @@ ad_clicks_minute
   "options": [
     {
       "name": "Exact set in processor state",
-      "good": "Local lookups; checkpointed with the counts, so a replay stays consistent.",
-      "bad": "Memory and disk grow with the clicks in the validity window: 2.5 GB per task here.",
+      "good": "Local lookups, checkpointed with the counts, so replays stay consistent.",
+      "bad": "Grows with clicks in the validity window: 2.5 GB per task here.",
       "pick": "Billing-grade counts. The default.",
       "default": true
     },
     {
       "name": "Bloom filter",
-      "good": "Ten times smaller or more for the same ids.",
+      "good": "Ten times smaller or more.",
       "bad": "False positives drop real clicks. At a 0.1% rate that is 10<sup>10</sup> × 0.001 = 10 million real clicks a day never billed.",
-      "pick": "Approximate dashboards where undercounting slightly is fine."
+      "pick": "Approximate dashboards."
     },
     {
       "name": "Shared key-value store, set if absent",
       "good": "Any task, or the batch job, can check it.",
-      "bad": "A network call per click, and its writes are not rolled back on replay, so a replayed click looks like a duplicate and is lost.",
-      "pick": "Several independent consumers must share one dedup decision."
+      "bad": "A network call per click, not rolled back on replay, so a replayed click is lost as a duplicate.",
+      "pick": "Independent consumers sharing one dedup decision."
     }
   ]
 }
@@ -337,41 +330,41 @@ ad_clicks_minute
 </x-tradeoffs>
 
 <x-callout type="mistake" title="Deduplicating by user and ad">
-<p>Treating "same user, same ad, same minute" as a duplicate silently drops genuine repeat clicks and still lets a bot with many device ids through. Deduplicate on the impression id, which the server minted and signed, and leave fraud judgments to a fraud system.</p>
+<p>"Same user, same ad, same minute" drops genuine repeat clicks and still lets a bot with many device ids through. Deduplicate on the signed impression id; leave fraud to a fraud system.</p>
 </x-callout>
 
 <h3>Hot ads and partition skew</h3>
 
-<p>Keying by <code>ad_id</code> puts all of one ad's clicks on one log partition and one task. Fine for 7 clicks a minute; not for an ad during a live final drawing 30,000 a second. The partition and its task were sized for 10,000, so they fall behind, and so does every other ad on them.</p>
+<p>Keying by <code>ad_id</code> puts one ad on one partition. Fine at 7 clicks a minute; not for an ad in a live final drawing 30,000 a second. The partition was sized for 10,000, so it falls behind with every other ad on it.</p>
 
-<p>Split the hot key in two stages. The click service keys a hot ad's events by <code>(ad_id, salt)</code>, with <code>salt = hash(impression_id) mod 8</code>, so ad 42's clicks spread over 8 partitions and tasks of about 3,750 a second each. A second stage keyed by <code>ad_id</code> keeps the latest partial count from each of the 8 and writes their sum: 8 records every 5 seconds instead of 1.8 million clicks a minute. The salt comes from the impression id, not a random number, so both copies of a double click still meet in one task.</p>
+<p>Split the hot key in two stages. Key a hot ad's events by <code>(ad_id, salt)</code>, with <code>salt = hash(impression_id) mod 8</code>, spreading ad 42 over 8 tasks of about 3,750 a second. A second stage keyed by <code>ad_id</code> sums the latest partial count from each: 8 records every 5 seconds instead of 1.8 million clicks a minute. The salt comes from the impression id, not a random number, so both copies of a double click still meet in one task.</p>
 
-<p>Salt only the ads on a hot list that the click service refreshes every minute. One gap remains: if an ad joins the list between the two halves of a double click, the copies reach different tasks and the stream counts both. The recount removes it.</p>
+<p>Salt only ads on a hot list, refreshed every minute. If an ad joins the list between the two halves of a double click, the stream counts both; the recount fixes it.</p>
 
 <h3>Late events and the recount</h3>
 
-<p>Some clicks arrive late: a click server spooled them to disk while the log was unreachable. The processor tracks a <strong>watermark</strong>, its estimate that "no more events older than this will come", and keeps each minute open until the watermark is 2 minutes past its end. A later event goes to a side output and is left to the recount.</p>
+<p>Clicks spooled to disk during a log outage arrive late. The processor tracks a <strong>watermark</strong>, its estimate that "no older events will come", and keeps each minute open until the watermark is 2 minutes past it. Later events go to a side output for the recount.</p>
 
-<p>The <strong>batch recount</strong> runs every hour on the hour before last, reading the archived raw events with the same signature, validity and dedup rules. It carries the last 24 hours of seen impression ids from run to run, so a double click that straddles an hour still counts once. It overwrites the stream's rows and sets <code>final = true</code>. A click that arrives after its hour is final reruns that hour, and billing gets an adjustment. Later fraud verdicts fit here too: the recount excludes clicks marked invalid. Billing reads only final rows. Alert if the two paths disagree by more than, say, 0.1% in an hour; that means a bug in one of them.</p>
+<p>The <strong>batch recount</strong> runs hourly on the hour before last, applying the same rules to the archive and carrying 24 hours of seen impression ids between runs. It overwrites the stream's rows with <code>final = true</code>, excluding clicks fraud has marked invalid. A click arriving after its hour is final reruns that hour, with a billing adjustment. Alert if the paths disagree by more than, say, 0.1% in an hour: one has a bug.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, about 3.5 million clicks a second at peak, add click servers and go to 640 partitions at the same 5,500 a second each; dedup state stays 2.5 GB per task. The OLAP store gets more shards by advertiser. More ads cross the hot threshold, so salting becomes routine.</p>
+<p>At 10x (3.5 million clicks a second at peak), go to 640 partitions at 5,500 a second each; dedup state stays 2.5 GB per task. Shard the OLAP store further by advertiser. Salting hot ads becomes routine.</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A click server</td><td>Clicks in flight fail.</td><td>Health checks remove it; a retry hits another server, and dedup drops any copy already logged.</td></tr>
-<tr><td>The click log</td><td>Appends fail or time out.</td><td>Still redirect the user. Spool the click to local disk and append it when the log is back; it arrives late and the recount picks it up.</td></tr>
-<tr><td>A stream task</td><td>Counts for its ads stop updating.</td><td>Restart from the last checkpoint and replay; counts are exact again within a minute or two.</td></tr>
-<tr><td>The OLAP store</td><td>Dashboards show nothing new.</td><td>The processor retries its upserts; replicas serve reads. The log still holds every event.</td></tr>
-<tr><td>The batch recount</td><td>Minutes stay provisional.</td><td>Billing waits for final rows; rerun the job, which is idempotent because it overwrites.</td></tr>
-<tr><td>The signing key leaks</td><td>Forged tokens pass the check.</td><td>Rotate keys; tokens carry a key id so old and new keys overlap during rotation.</td></tr>
+<tr><td>A click server</td><td>Clicks in flight fail.</td><td>Health checks remove it; retries go elsewhere; dedup drops copies.</td></tr>
+<tr><td>The click log</td><td>Appends fail or time out.</td><td>Still redirect. Spool to local disk and append when the log is back; the recount picks up the late click.</td></tr>
+<tr><td>A stream task</td><td>Counts for its ads stop updating.</td><td>Restart from the checkpoint and replay; exact again within a minute or two.</td></tr>
+<tr><td>The OLAP store</td><td>Dashboards show nothing new.</td><td>The processor retries upserts; replicas serve reads; the log holds every event.</td></tr>
+<tr><td>The batch recount</td><td>Minutes stay provisional.</td><td>Billing waits; rerun the job, which is idempotent because it overwrites.</td></tr>
+<tr><td>The signing key leaks</td><td>Forged tokens pass.</td><td>Rotate keys; a key id in each token lets old and new overlap.</td></tr>
 </tbody>
 </table>
 
 <x-callout type="mistake" title="Redirecting before the click is durable">
-<p>Answering 302 and writing the click in the background saves a few milliseconds, but a crash in between loses a billable click with no trace. Wait for the log's acknowledgement; spool to local disk only when the log is down.</p>
+<p>Answering 302 and logging in the background saves a few milliseconds, but a crash in between loses a billable click without trace. Wait for the log's ack; spool to disk only when the log is down.</p>
 </x-callout>
 
 <h2>What a strong answer sounds like</h2>
@@ -379,44 +372,44 @@ ad_clicks_minute
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Counts with a database row per ad; with prompting, adds a queue so the redirect is not slowed.</td></tr>
-<tr><td>Mid</td><td>Uses a log and a stream processor with one-minute windows, writes to an analytics store, and handles duplicates with an id once asked.</td></tr>
-<tr><td>Senior</td><td>Splits fresh from final accuracy up front, uses signed impression ids, explains exactly-once effect as dedup plus idempotent writes and checkpoints, handles hot ads and late events, and makes a recount the source of truth for billing.</td></tr>
+<tr><td>Junior</td><td>Counts in a database row per ad; with prompting, adds a queue to protect the redirect.</td></tr>
+<tr><td>Mid</td><td>Uses a log, a stream processor with minute windows and an analytics store; dedups by id once asked.</td></tr>
+<tr><td>Senior</td><td>Splits fresh from final, signs impression ids, explains exactly-once effect, handles hot ads and late events, bills from a recount.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Exactly once" tone="strong">
 <x-interviewer>How do you guarantee a click is billed exactly once?</x-interviewer>
-<x-you>Delivery is at least once, so I make the effect exactly once. Every click carries a signed impression id. The processor keys by ad, so both copies of a click meet in one task, which keeps a set of seen ids for 24 hours. The set, the counts and the log offsets are checkpointed together, so a crash rewinds all three. Writes to the store replace the row for that ad and minute, so a replay rewrites the same value.</x-you>
+<x-you>Delivery is at least once, so I make the effect exactly once. Keying by ad sends both copies of a click to one task, which remembers signed impression ids for 24 hours. Seen ids, counts and offsets are checkpointed together, so a crash rewinds all three. Writes replace the (ad, minute) row, so a replay rewrites the same value.</x-you>
 <x-interviewer>And if the stream still gets it wrong?</x-interviewer>
-<x-you>An hourly recount from the raw archive overwrites the stream's numbers and marks them final, and billing reads only final rows. The stream is for freshness; the recount is for money.</x-you>
+<x-you>An hourly recount from the raw archive overwrites the stream's numbers as final, and billing reads only final rows. The stream is for freshness; the recount is for money.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>Advertisers want counts by country and device too. What changes?</h3>
-<p>Add those columns to the aggregate key. Rows multiply by the combinations that occur, so keep the minute table to a few dimensions and serve finer breakdowns from hourly rollups.</p>
+<p>Add them to the aggregate key. Rows multiply by the combinations that occur, so keep minute rows to a few dimensions and serve finer breakdowns hourly.</p>
 
 <h3>How do you stop click fraud?</h3>
-<p>A separate system reads the same log, scores clicks (rate per device and IP range, impossible timing) and writes verdicts that the recount applies.</p>
+<p>A separate system reads the log, scores clicks (rate per device and IP range, impossible timing) and writes verdicts the recount applies.</p>
 
 <h3>Why not query the raw events directly?</h3>
-<p>A month for one advertiser can be billions of rows. Minute aggregates are about 50 times smaller than raw data (58 GB versus 3 TB a day).</p>
+<p>A month for one advertiser can be billions of rows; minute aggregates are about 50 times smaller.</p>
 
 <h3>How long do you keep minute-level rows?</h3>
-<p>About 30 days (58 GB × 30 ≈ 1.7 TB), then roll up to hourly rows, 60 times fewer, kept for years.</p>
+<p>About 30 days (58 GB × 30 ≈ 1.7 TB), then hourly rollups, 60 times fewer, kept for years.</p>
 
 <h3>How would you run it in several regions?</h3>
-<p>Run click services and a log per region, and ship raw events to one region for the recount. The impression id still deduplicates across regions, because it was minted once.</p>
+<p>Run click services and a log per region, and ship raw events to one region for the recount. The impression id, minted once, still deduplicates across regions.</p>
 
 <x-checklist title="Self-review: ad click aggregator">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked about granularity, freshness and whether the counts drive billing", "I separated provisional dashboard counts from final billed counts"] },
-    { "title": "Numbers and interfaces", "items": ["I turned clicks a day into an average and peak rate", "I sized the raw log and the aggregate table separately", "I put a signed impression id in the click URL and looked up the landing page server-side"] },
-    { "title": "Design and depth", "items": ["I made the click durable in a log before redirecting", "I counted in a stream processor with event-time windows, not with per-click row updates", "I explained exactly-once effect as dedup, checkpoints and idempotent writes", "I split hot ads with a salted two-stage aggregation", "I said what happens to late events and how the recount makes counts final"] },
-    { "title": "Failure", "items": ["I said what happens when the log, a stream task and the OLAP store each fail", "I said how I would notice the stream and the recount disagreeing"] }
+    { "title": "Before drawing", "items": ["I asked about granularity, freshness and billing", "I separated provisional from final counts"] },
+    { "title": "Numbers and interfaces", "items": ["I turned clicks a day into average and peak rates", "I sized raw data and aggregates separately", "I signed the impression id and looked up the landing page server-side"] },
+    { "title": "Design and depth", "items": ["I made the click durable before redirecting", "I counted in event-time windows, not per-click row updates", "I explained exactly-once effect as dedup, checkpoints and idempotent writes", "I split hot ads with salted two-stage aggregation", "I handled late events and made counts final with a recount"] },
+    { "title": "Failure", "items": ["I covered log, stream task and OLAP store failures", "I alerted on the stream and recount disagreeing"] }
   ]
 }
 </script>

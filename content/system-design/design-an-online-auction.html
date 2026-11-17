@@ -2,58 +2,58 @@
 {
   "title": "Design an Online Auction",
   "description": "Design an auction site where concurrent bids never conflict, the highest bid shows live, and auctions close exactly on time despite last-second bidding.",
-  "minutes": 30,
+  "minutes": 28,
   "kind": "design",
   "tags": ["case study", "concurrency", "real-time", "conditional writes", "scheduling"]
 }
 -->
-<p>A seller lists a vintage camera, starting at $50, ending Sunday at 20:00:00. All week a few people bid. In the last ten seconds, fifty people bid at once, each sure they are on top. When the clock hits 20:00:00, exactly one of them must have won, every watcher must have seen the same price, and a bid that arrived 40 milliseconds late must not count.</p>
+<p>A seller lists a vintage camera at $50, ending Sunday at 20:00:00. In the last ten seconds, fifty people bid at once. At 20:00:00 exactly one must have won, every watcher must have seen the same price, and a bid 40 milliseconds late must not count.</p>
 
-<p>It looks like a simple CRUD app and hides three hard problems: many people writing one record at once, showing it live to everyone, and an exact deadline. The question means the kind of product eBay runs: timed auctions. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read on.</p>
+<p>It looks like CRUD but hides three hard problems: many people writing one record at once, showing it live, and an exact deadline. Think eBay's timed auctions. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design an online auction site.</x-interviewer>
-<x-you>Which auction rules? I'm assuming the highest bid wins at a fixed end time, and each bid must beat the current one by a minimum increment.</x-you>
-<x-interviewer>Yes. Fixed end time, highest bid wins.</x-interviewer>
+<x-you>I'm assuming the highest bid wins at a fixed end time, and each bid must beat the current one by a minimum increment.</x-you>
+<x-interviewer>Yes.</x-interviewer>
 <x-you>Do bids in the final seconds count, or does a late bid extend the auction?</x-you>
 <x-interviewer>They count, up to the end time. No extensions.</x-interviewer>
-<x-you>And scale? How many auctions run at once, and how busy does the most popular one get?</x-you>
+<x-you>How many auctions, and how busy does the hottest get?</x-you>
 <x-interviewer>About 1.5 million new auctions a day, each running 7 days, about 10 bids each on average. A hot one can have 50,000 people watching and hundreds of bids in its last ten seconds.</x-interviewer>
-<x-you>Then my priorities: two bids can never both win; an accepted bid is never lost; one clock enforces the end time to the millisecond; watchers see a new high within a second. I'll leave out payment, shipping, search and fraud.</x-you>
+<x-you>Then two bids can never both win, an accepted bid is never lost, one clock enforces the end time, and watchers see a new high within a second.</x-you>
 <x-coach>Asking about late bids matters most: a hard or soft close changes the hardest part of the design.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> create an auction (item, starting price, increment, end time); place a bid; see the current highest bid update live; close the auction at its end time and tell the winner and seller; see the bid history.</li>
-<li><strong>Non-functional:</strong> bids on one auction are strictly ordered and never conflict (strong consistency per auction); an accepted bid is durable; bids are rejected after the end time by an exact rule; new highs reach watchers within 1 second; the site stays up while a hot auction ends.</li>
-<li><strong>Out of scope:</strong> payment and shipping, search and recommendations, fraud detection, buy-it-now and reserve prices.</li>
+<li><strong>Functional:</strong> create an auction (item, starting price, increment, end time); bid; see the highest bid live; close at the end time and tell winner and seller; see bid history.</li>
+<li><strong>Non-functional:</strong> strong consistency per auction (bids strictly ordered); accepted bids durable; an exact rule rejects late bids; new highs reach watchers within 1 second; the site stays up while a hot auction ends.</li>
+<li><strong>Out of scope:</strong> payment, shipping, search, fraud, buy-it-now, reserve prices.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>These are the scenario's givens. A day has 86,400 seconds.</p>
+<p>A day has 86,400 seconds.</p>
 
 <ul>
 <li><strong>Live auctions:</strong> 1.5 million a day × 7 days ≈ 10 million open at any time.</li>
-<li><strong>Bids:</strong> 1.5 million × 10 = 15 million a day ÷ 86,400 ≈ 170 a second. Endings cluster in the evening; assume a 10x peak, about 1,700 a second.</li>
-<li><strong>Page reads:</strong> 100 views per bid gives about 17,000 reads a second: a job for caches and replicas.</li>
-<li><strong>Storage:</strong> bids at 100 B: 1.5 GB a day, about 550 GB a year. Auctions at 2 KB: 3 GB a day, about 1.1 TB a year. Photos go in <a href="/system-design/blob-storage.html">blob storage</a>.</li>
+<li><strong>Bids:</strong> 15 million a day ÷ 86,400 ≈ 170 a second; endings cluster in the evening, so about 1,700 at a 10x peak.</li>
+<li><strong>Page reads:</strong> 100 views per bid is about 17,000 reads a second: caches and replicas.</li>
+<li><strong>Storage:</strong> bids at 100 B: 1.5 GB a day, about 550 GB a year. Auctions at 2 KB: about 1.1 TB a year. Photos go in <a href="/system-design/blob-storage.html">blob storage</a>.</li>
 <li><strong>The hot auction:</strong> 500 bids in its last 10 seconds is 50 bids a second, all on one row.</li>
 </ul>
 
 <x-estimate title="Updates for one hot auction">
 <script type="application/json">
 {
-  "question": "A hot auction gets 50 bids a second and has 50,000 watchers. If every accepted bid is pushed to every watcher, how many messages a second is that?",
+  "question": "If every accepted bid on the hot auction is pushed to every watcher, how many messages a second is that?",
   "givens": ["50 accepted bids a second", "50,000 people watching"],
   "unit": "count/s",
   "answer": "2.5 million/s",
   "accept": ["800 thousand/s", "8 million/s"],
   "choices": ["25 thousand/s", "250 thousand/s", "2.5 million/s", "25 million/s"],
   "steps": ["50 bids × 50,000 watchers = 2,500,000 messages a second", "Capping each auction at 4 updates a second (every 250 ms) gives 4 × 50,000 = 200,000"],
-  "note": "One auction can generate more push traffic than the whole site's bids. Sending only the latest high every 250 ms cuts it 12.5 times."
+  "note": "Sending only the latest high every 250 ms cuts it 12.5 times."
 }
 </script>
 </x-estimate>
@@ -61,23 +61,23 @@
 <x-estimate title="How many bids can one auction take?">
 <script type="application/json">
 {
-  "question": "Every bid on an auction updates that auction's one row and holds its lock for about 2 ms, including the synchronous replica write. At most how many bids a second can one auction accept?",
-  "givens": ["One row per auction; bids on it run one at a time", "About 2 ms per bid while the row is locked"],
+  "question": "Bids on one auction update its one row, one at a time. At most how many bids a second can it accept?",
+  "givens": ["One row per auction; bids on it run one at a time", "About 2 ms per bid while the row is locked, including the synchronous replica write"],
   "unit": "count/s",
   "answer": "500/s",
   "accept": ["150/s", "1.5 thousand/s"],
   "steps": ["1 second ÷ 2 ms = 500 bids a second", "The hot auction needs 50 a second: 10% of that ceiling"],
-  "note": "So a plain row update is enough even for hot auctions; you need something cleverer only above a few hundred bids a second on one item."
+  "note": "A plain row update is enough; you need something cleverer only above a few hundred bids a second on one item."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls to create an auction, place a bid and watch an auction live. What does a bid return when it is too low, or too late?</p>
+<p>Write the calls to create, bid on and watch an auction. What does a bid return when too low or too late?</p>
 </x-task>
 <x-answer>
-<p>A bid is a <code>POST</code> carrying an id from the client, so a retry cannot turn an accepted bid into a "too low" error. It answers synchronously with accepted, outbid (with the new minimum) or ended. Watching is a one-way stream of new highs, so server-sent events are enough.</p>
+<p>A bid is a <code>POST</code> with a client id, answered at once: accepted, outbid (with the new minimum) or ended. Watching is a one-way stream, so server-sent events are enough.</p>
 </x-answer>
 </x-tryit>
 
@@ -109,16 +109,16 @@ GET  /auctions/{id}/bids?before_seq=37&limit=20     history, newest first
 </pre>
 </x-code>
 
-<p>The decision worth arguing: <strong>the bid answers synchronously</strong>. You could queue bids and reply "received", but a bidder in the last ten seconds must know now whether to bid again. The path is one conditional write, so a direct answer is cheap.</p>
+<p>The decision worth arguing: <strong>the bid answers synchronously</strong>. A bidder in the last ten seconds must know now whether to bid again, and the path is one conditional write, so a direct answer is cheap.</p>
 
-<p><code>bid_id</code> is the bid's <a href="/system-design/idempotency-and-retries.html">idempotency key</a>. Without it, a retried $120 bid that already succeeded is checked against the new $125 minimum and comes back "outbid". <code>server_time</code> lets the countdown run on the server's clock.</p>
+<p><code>bid_id</code> is the bid's <a href="/system-design/idempotency-and-retries.html">idempotency key</a>. <code>server_time</code> lets the countdown run on the server's clock.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records for auctions and bids. Where does "the current highest bid" live, and how do you keep every bid?</p>
+<p>Sketch auctions and bids. Where does the current high live, and how do you keep every bid?</p>
 </x-task>
 <x-answer>
-<p>The auction row holds the current high, the next minimum and a bid counter; everyone competes for it. Each accepted bid is also appended to a bids table in the same transaction, numbered by that counter.</p>
+<p>The auction row holds the high, the next minimum and a bid counter. Each accepted bid is appended to a bids table in the same transaction, numbered by that counter.</p>
 </x-answer>
 </x-tryit>
 
@@ -151,16 +151,14 @@ bids
 </pre>
 </x-code>
 
-<p>Access patterns: a conditional update of one auction plus one bid insert, together; reads of one auction and its history; and "open auctions past their end" for the closer. Every write touches one auction, so use a <strong>relational database</strong> <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>auction_id</code>, bids beside their auction. Each bid is a single-partition transaction.</p>
-
-<p>Keep every bid: "your bid was #37, at 19:59:58.100, for $120" settles disputes. Rejected attempts go to a separate log, off the hot path, for fraud checks.</p>
+<p>Every write touches one auction: a conditional update plus a bid insert. So use a <strong>relational database</strong> <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>auction_id</code>, bids beside their auction, and each bid is a single-partition transaction. Keep every bid: "your bid was #37, at 19:59:58.100, for $120" settles disputes. Rejected attempts go to a separate log for fraud checks.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes: where are bids checked and written, how does a new high reach 50,000 browsers, and what closes an auction at its end time?</p>
+<p>Where are bids checked and written, how does a new high reach 50,000 browsers, and what closes an auction?</p>
 </x-task>
 <x-answer>
-<p>An auction service runs the conditional write and publishes each new high to a topic per auction; live servers hold the event streams and subscribe for their viewers. A closer worker finds auctions past their end, closes them and triggers notifications.</p>
+<p>An auction service runs the conditional write and publishes each new high to a topic per auction; live servers hold the streams and subscribe. A closer worker closes auctions past their end and triggers notifications.</p>
 </x-answer>
 </x-tryit>
 
@@ -192,8 +190,6 @@ bids
 </script>
 </x-arch>
 
-<p>Step through the last seconds of auction 812: a race, a retry, a live server failing, a late bid and the close.</p>
-
 <x-tracer title="The last seconds of a hot auction">
 <script type="application/json">
 {
@@ -220,52 +216,52 @@ bids
   },
   "steps": [
     {
-      "caption": "50,000 browsers hold event streams to live servers, each subscribed to auction 812. The high is $110, so the next bid must be at least $115. It ends at 20:00:00.",
+      "caption": "50,000 browsers watch auction 812 through live servers. The high is $110, so the next bid must be at least $115. It ends at 20:00:00.",
       "arch": { "active": ["user", "live", ["live", "user"]], "dim": ["api", "db", "closer", "notif"] },
       "vars": { "high": "$110", "min next": "$115", "seq": 36 }
     },
     {
-      "caption": "19:59:58.100. Ana bids $120. One update: set the high only if the auction is open, <code>end_at</code> is still ahead, and $120 ≥ $115. 1 row changes; bid #37 is inserted and committed.",
+      "caption": "19:59:58.100. Ana bids $120. One update sets the high only if the auction is open, <code>end_at</code> is ahead, and $120 ≥ $115. 1 row: bid #37 committed.",
       "arch": { "active": ["api", "db", ["user", "api"], ["api", "db"]], "mark": ["db"], "dim": ["live", "bus", "closer", "notif"], "notes": { "db": "#37 Ana $120" } },
       "vars": { "high": "$120", "min next": "$125", "seq": 37 }
     },
     {
-      "caption": "Ben also bid $120 in the same millisecond. His update waited for Ana's row lock, then re-checked its condition: $120 ≥ $125 is false. 0 rows, so he gets 409 with the new minimum.",
+      "caption": "Ben bid $120 in the same millisecond. His update waited for Ana's lock, then re-checked: $120 ≥ $125 is false. 0 rows: 409 with the new minimum.",
       "arch": { "active": ["api", ["api", "db"], ["api", "user"]], "fail": [["api", "db"]], "dim": ["live", "bus", "closer", "notif"], "notes": { "db": "0 rows: outbid" } },
       "vars": { "high": "$120", "min next": "$125", "seq": 37 }
     },
     {
-      "caption": "After the commit, the service publishes seq 37 to the auction's topic. Each live server gets one copy and pushes it to its own watchers within about 250 ms.",
+      "caption": "After the commit, seq 37 goes to the auction's topic. Each live server gets one copy and pushes it to its watchers within about 250 ms.",
       "arch": { "active": ["api", "bus", "live", "user", ["api", "bus"], ["bus", "live"], ["live", "user"]], "dim": ["db", "closer", "notif"] },
       "vars": { "high": "$120", "seq": 37, "watchers": "50,000" }
     },
     {
-      "caption": "Ana's phone lost the reply and retries bid b-1. The unique <code>bid_id</code> finds bid #37 and returns \"accepted\". Without it, $120 would be checked against $125 and come back \"outbid\".",
+      "caption": "Ana's phone lost the reply and retries b-1. The <code>bid_id</code> finds #37: \"accepted\". Without it, $120 would be checked against $125 and come back \"outbid\".",
       "arch": { "active": ["api", "db", ["user", "api"], ["api", "db"]], "dim": ["live", "bus", "closer", "notif"], "notes": { "db": "b-1 exists" } },
       "vars": { "high": "$120", "seq": 37, "bids created": 1 }
     },
     {
-      "caption": "19:59:59.950. Cara bids $130. The database clock says the auction is still open, so it is accepted as #38. Bids count up to the last millisecond.",
+      "caption": "19:59:59.950. Cara bids $130. By the database clock the auction is open: accepted as #38.",
       "arch": { "active": ["api", "db", "bus", "live", ["user", "api"], ["api", "db"], ["api", "bus"], ["bus", "live"]], "mark": ["db"], "dim": ["closer", "notif"], "notes": { "db": "#38 Cara $130" } },
       "vars": { "high": "$130", "min next": "$135", "seq": 38 }
     },
     {
-      "caption": "19:59:59.990. A live server dies. Its viewers reconnect elsewhere and get a snapshot at seq 38. A delayed seq 37 message arrives after it and is ignored: 37 &lt; 38.",
+      "caption": "19:59:59.990. A live server dies. Its viewers reconnect and get a snapshot at seq 38. A delayed seq 37 arrives after it and is ignored: 37 &lt; 38.",
       "arch": { "fail": ["live"], "active": ["user", ["live", "user"]], "dim": ["api", "db", "closer", "notif"], "notes": { "user": "keep max seq" } },
       "vars": { "shown seq": 38, "late message seq": 37 }
     },
     {
-      "caption": "20:00:00.040. Dan's $140 arrives 40 ms late. The closer has not run yet, but it does not need to: <code>end_at &gt; now()</code> is false, so 0 rows change and Dan gets 410.",
+      "caption": "20:00:00.040. Dan's $140 is 40 ms late. The closer has not run, and need not: <code>end_at &gt; now()</code> is false, 0 rows, 410.",
       "arch": { "active": ["api", ["user", "api"], ["api", "db"]], "fail": [["api", "db"]], "dim": ["live", "bus", "closer", "notif"], "notes": { "db": "ended: 0 rows" } },
       "vars": { "high": "$130", "seq": 38, "clock": "20:00:00.040" }
     },
     {
-      "caption": "20:00:01. The closer finds 812 open with <code>end_at</code> passed and sets it closed, only if still open. 1 row, so this closer owns the close: winner Cara at $130.",
+      "caption": "20:00:01. The closer sets 812 closed, only if still open. 1 row, so this closer owns the close: Cara wins at $130.",
       "arch": { "active": ["closer", "db", ["closer", "db"]], "mark": ["db"], "dim": ["live", "bus", "api", "user"], "notes": { "db": "closed: Cara" } },
       "vars": { "status": "closed", "winner": "Cara", "price": "$130" }
     },
     {
-      "caption": "It emits one \"auction ended\" event: the winner and seller are notified, and every watcher gets an <code>ended</code> event through the live servers.",
+      "caption": "It emits one \"auction ended\" event: winner and seller are notified, and every watcher gets <code>ended</code>.",
       "arch": { "active": ["closer", "notif", "bus", "live", "user", ["closer", "notif"], ["closer", "bus"], ["bus", "live"], ["live", "user"]], "mark": ["notif", "user"], "dim": ["api", "db"] },
       "vars": { "status": "closed", "winner": "Cara", "price": "$130" }
     }
@@ -276,11 +272,9 @@ bids
 
 <h2>Deep dives</h2>
 
-<p>Interviewers push on four things: concurrent bids, the live price, the deadline, and the one auction everyone wants.</p>
-
 <h3>Concurrent bids</h3>
 
-<p>Two bids arrive together. Each would read "high is $110" and write a new high. Every bid must be judged against the true current high.</p>
+<p>Two bids arrive together; each reads "high is $110" and writes. Every bid must be judged against the true current high.</p>
 
 <x-tradeoffs caption="Ways to serialise bids on one auction">
 <script type="application/json">
@@ -289,26 +283,26 @@ bids
     {
       "name": "Read, then write",
       "good": "Simplest code.",
-      "bad": "Two bids both read $110 and both write; the second overwrites the first. A lost bid, and maybe the wrong winner.",
+      "bad": "The second write overwrites the first: a lost bid, maybe the wrong winner.",
       "pick": "Never."
     },
     {
       "name": "Lock the row first",
       "good": "<code>SELECT … FOR UPDATE</code>, check in code, write. Easy to read.",
-      "bad": "Two round trips while holding the lock, so fewer bids a second per auction.",
-      "pick": "The check is too complex for one <code>WHERE</code> clause, such as automatic proxy bidding."
+      "bad": "Two round trips while holding the lock: fewer bids a second.",
+      "pick": "The check is too complex for one <code>WHERE</code> clause, such as proxy bidding."
     },
     {
       "name": "Conditional update",
-      "good": "One statement checks open, deadline and minimum, and writes. The row lock lasts one round trip and the commit, about 2 ms.",
-      "bad": "The rule must fit in a <code>WHERE</code> clause, and 0 rows needs a follow-up read to say why.",
-      "pick": "Up to a few hundred bids a second per auction. The choice here.",
+      "good": "One statement checks open, deadline and minimum, and writes. The lock lasts about 2 ms.",
+      "bad": "The rule must fit a <code>WHERE</code> clause; 0 rows needs a follow-up read to say why.",
+      "pick": "Up to a few hundred bids a second per auction, as here.",
       "default": true
     },
     {
       "name": "One owner per auction",
-      "good": "Route all bids for an auction to one server that holds its state in memory and appends each bid to a durable log before replying. Thousands of bids a second.",
-      "bad": "Failover is hard: a new owner must take over without the old one still accepting bids. Needs leases and fencing tokens.",
+      "good": "One server holds the auction in memory and logs each bid durably before replying. Thousands of bids a second.",
+      "bad": "Hard failover: the old owner must stop accepting bids. Needs leases and fencing tokens.",
       "pick": "Single items get thousands of bids a second."
     }
   ]
@@ -334,28 +328,28 @@ SELECT 812, bid_count, 'b-1', :ana, 12000, now() FROM won;
 </pre>
 </x-code>
 
-<p>The row lock is the serialisation point: the order bids get the lock is the order of <code>seq</code>. The lock is held until the commit, about 2 ms with the synchronous replica. It is the conditional update from <a href="/system-design/design-ticket-booking.html">ticket booking</a>, which explains the isolation details. In PostgreSQL, <code>now()</code> is when the bid's transaction started, so a bid that arrived before the end but waited for the lock still counts. Before the statement, the service looks up the <code>bid_id</code> to answer retries; the unique key catches two copies that race. One auction needs 50 bids a second and the row allows about 500. At 5,000 a second on one item, move to one owner per auction and name the failover cost.</p>
+<p>The row lock is the serialisation point: lock order is <code>seq</code> order. It is the conditional update from <a href="/system-design/design-ticket-booking.html">ticket booking</a>, which explains the isolation details. In PostgreSQL, <code>now()</code> is when the bid's transaction started, so a bid that arrived before the end but waited for the lock still counts. The service looks up <code>bid_id</code> first to answer retries; the unique key catches two racing copies. At 5,000 bids a second on one item, move to one owner per auction and name the failover cost.</p>
 
 <x-callout type="mistake" title="Validating the bid against a cached price">
-<p>Checking "is $120 above the current high?" against the cached or pushed price, then writing, reopens the race. The cache is for display only; the check must happen in the same atomic step as the write, against the database row.</p>
+<p>Checking $120 against a cached or pushed price, then writing, reopens the race. The cache is for display; the check belongs in the same atomic write, against the row.</p>
 </x-callout>
 
 <h3>Showing the highest bid live</h3>
 
-<p>Watchers only receive; bids go over <code>POST</code>. So use <a href="/system-design/realtime-communication.html">server-sent events</a>: one-way, plain HTTP, automatic reconnect. A WebSocket would add a channel nobody uses. Fan-out works as in <a href="/system-design/design-a-stock-trading-app.html">the stock trading app</a>: a topic per auction, one subscription per live server. Two details matter here:</p>
+<p>Watchers only receive, so use <a href="/system-design/realtime-communication.html">server-sent events</a>: one-way, plain HTTP, automatic reconnect. Fan-out works as in <a href="/system-design/design-a-stock-trading-app.html">the stock trading app</a>: a topic per auction, one subscription per live server. Two details matter:</p>
 
 <ul>
-<li><strong>Every update carries <code>seq</code>; the browser keeps the highest.</strong> Two auction servers can publish seq 37 and 38 a millisecond apart, and they can arrive in either order; so can a snapshot and a delayed message across a reconnect. Without the rule the screen would drop back to $120 in the final second.</li>
-<li><strong>Send the latest state, at most every 250 ms.</strong> Each message is the whole current high, so skipping some is safe: 200,000 messages a second instead of 2.5 million. A bidder's own result comes from the <code>POST</code>, not the stream.</li>
+<li><strong>Every update carries <code>seq</code>; the browser keeps the highest.</strong> Seq 37 and 38 can arrive in either order, as can a snapshot and a delayed message. Without the rule the screen could drop back to $120 in the final second.</li>
+<li><strong>Send the latest state, at most every 250 ms.</strong> Each message is the whole high, so skipping some is safe: 200,000 messages a second instead of 2.5 million.</li>
 </ul>
 
 <h3>Closing exactly at the end time</h3>
 
-<p>The tempting design is a timer that closes the auction at 20:00:00. Timers fire late and job queues fall seconds behind; if the close is what stops bidding, a slow closer lets late bids in.</p>
+<p>A timer that closes the auction at 20:00:00 is tempting, but timers fire late. If the close stops bidding, a slow closer lets late bids in.</p>
 
-<p>So separate the jobs. <strong>The deadline is enforced in the bid's write</strong>: <code>end_at &gt; now()</code>, judged by the database that owns the row. One clock judges every bid on that auction, so drifting app-server clocks cannot disagree. The closer only does bookkeeping, and can run seconds late with the same result.</p>
+<p>So <strong>enforce the deadline in the bid's write</strong>: <code>end_at &gt; now()</code>, judged by the one database clock that owns the row, so drifting app-server clocks cannot disagree. The closer only does bookkeeping and can run seconds late.</p>
 
-<p>Every second, the closer reads the <code>(status, end_at)</code> index and closes each auction past its end with <code>SET status = 'closed' WHERE auction_id = 812 AND status = 'open' AND end_at &lt;= now()</code>. The last condition matters with a soft close, where a bid may have moved the end since the closer looked. Only the closer that changes 1 row emits "ended", so two closers never notify twice (see <a href="/system-design/design-a-job-scheduler.html">the job scheduler</a>). If 10% of a day's 1.5 million auctions end in one hour, that is 150,000 ÷ 3,600 ≈ 42 closes a second: no load problem.</p>
+<p>Every second, the closer reads the <code>(status, end_at)</code> index and runs <code>SET status = 'closed' WHERE auction_id = 812 AND status = 'open' AND end_at &lt;= now()</code>. The last condition matters with a soft close, where a bid may have moved the end. Only the closer that changes 1 row emits "ended", so none notify twice (see <a href="/system-design/design-a-job-scheduler.html">the job scheduler</a>). 10% of a day's auctions ending in one hour is 150,000 ÷ 3,600 ≈ 42 closes a second: easy.</p>
 
 <x-tradeoffs caption="Hard close or soft close">
 <script type="application/json">
@@ -363,40 +357,40 @@ SELECT 812, bid_count, 'b-1', :ana, 12000, now() FROM won;
   "options": [
     {
       "name": "Hard close",
-      "good": "Simple, predictable end time; one rule in the bid's <code>WHERE</code> clause.",
-      "bad": "Rewards bidding in the final second. A bidder with a slow connection loses a race they never saw.",
-      "pick": "The interviewer says bids count up to a fixed time. The case here.",
+      "good": "Simple, predictable end; one rule in the bid's <code>WHERE</code> clause.",
+      "bad": "Rewards final-second bidding; a slow connection loses a race it never saw.",
+      "pick": "Bids count up to a fixed time, as here.",
       "default": true
     },
     {
       "name": "Soft close",
       "good": "A bid in the last 2 minutes moves <code>end_at</code> to 2 minutes after that bid, so others can answer.",
-      "bad": "The end time moves, so the closer and the countdown must handle it, and an auction can run long.",
-      "pick": "The product wants the true highest price over a fixed deadline."
+      "bad": "The closer and countdown must handle a moving end, and an auction can run long.",
+      "pick": "The true highest price matters more than a fixed deadline."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>A soft close fits the same update: add <code>end_at = GREATEST(end_at, now() + interval '2 minutes')</code> to the <code>SET</code>. Either way, the server's receipt time decides: a bid sent at 19:59:59.900 that arrives at 20:00:00.100 is late.</p>
+<p>A soft close fits the same update: add <code>end_at = GREATEST(end_at, now() + interval '2 minutes')</code> to the <code>SET</code>. Either way, arrival time decides: a bid sent at 19:59:59.900 that arrives at 20:00:00.100 is late.</p>
 
 <h3>Scaling hot auctions</h3>
 
-<p>One auction cannot be split across machines, and need not be: 50 writes a second against a ceiling of about 500. Its real load is 50,000 viewers. Serve the page from a <a href="/system-design/cdns.html">CDN</a> and the current price from the live servers' memory, so the database sees bids, not viewers. Partitioning by <code>auction_id</code> usually puts two hot auctions on different partitions.</p>
+<p>One auction cannot be split, and need not be: 50 writes a second against a ceiling of 500. Its real load is 50,000 viewers. Serve the page from a <a href="/system-design/cdns.html">CDN</a> and the price from live servers' memory, so the database sees bids, not viewers.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, 17,000 bids a second at peak, add database partitions; each auction still lives on one. 170,000 page reads a second is a cache and CDN problem. A single item at 10 times the hot auction, 500 bids a second, reaches the row's ceiling, which is when one owner per auction earns its complexity.</p>
+<p>At 10x (17,000 bids a second at peak), add partitions; 170,000 page reads a second is for caches and the CDN. A single item at 500 bids a second reaches the row's ceiling: that is when one owner per auction earns its complexity.</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
 <tr><td>An auction server</td><td>Bids in flight get no reply; committed bids are safe.</td><td>The browser retries with the same <code>bid_id</code> and gets the real result.</td></tr>
-<tr><td>The database primary</td><td>Bids on its auctions fail until a replica takes over.</td><td>Replicate synchronously so no acknowledged bid is lost. Bids during failover are rejected, not queued; say so in the error.</td></tr>
+<tr><td>The database primary</td><td>Bids on its auctions fail until a replica takes over.</td><td>Replicate synchronously so no acknowledged bid is lost. Reject bids during failover, with a clear error.</td></tr>
 <tr><td>A live server</td><td>Its viewers' streams drop.</td><td>Browsers reconnect, get a snapshot with <code>seq</code>, and ignore older messages.</td></tr>
-<tr><td>The pub/sub, or a lost publish</td><td>Screens stop updating; bids still work, and each bidder's own result comes from the <code>POST</code>.</td><td>Messages are full state, so the next bid repairs a lost one, and <code>ended</code> carries the final price. If even one lost update is too many, publish from the database's change stream instead of the service.</td></tr>
-<tr><td>The closer</td><td>Auctions stay <code>open</code> after their end.</td><td>No late bid can get in: the bid's own condition rejects it. Restart the closer; it catches up from the index.</td></tr>
+<tr><td>The pub/sub, or a lost publish</td><td>Screens stop updating; bids still work.</td><td>Messages are full state, so the next one repairs a loss. If that is not enough, publish from the database's change stream.</td></tr>
+<tr><td>The closer</td><td>Auctions stay <code>open</code> after their end.</td><td>No late bid gets in. Restart the closer; it catches up from the index.</td></tr>
 </tbody>
 </table>
 
@@ -405,49 +399,49 @@ SELECT 812, bid_count, 'b-1', :ana, 12000, now() FROM won;
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Stores auctions and bids, checks the bid in code, then writes. Adds a transaction once the race is pointed out.</td></tr>
-<tr><td>Mid</td><td>Uses a conditional update, keeps every bid, pushes highs over a stream, and runs a scheduled job to close auctions.</td></tr>
-<tr><td>Senior</td><td>Puts the deadline in the bid's write so the closer's timing cannot change a result, numbers bids per auction and uses that to order pushes, makes bids idempotent, computes the row's bid ceiling, and asks about hard versus soft close.</td></tr>
+<tr><td>Junior</td><td>Checks the bid in code, then writes; adds a transaction once the race is pointed out.</td></tr>
+<tr><td>Mid</td><td>Uses a conditional update, keeps every bid, streams highs, and closes auctions with a scheduled job.</td></tr>
+<tr><td>Senior</td><td>Puts the deadline in the bid's write, orders pushes by per-auction seq, makes bids idempotent, computes the row's ceiling, and asks about hard versus soft close.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="The last second" tone="weak">
 <x-interviewer>A bid arrives 40 ms after the end time. What happens?</x-interviewer>
 <x-you>The close job runs at 20:00:00 and marks the auction closed, so the bid is rejected.</x-you>
-<x-coach>Only if the job ran exactly on time. If it ran 2 seconds late, the bid is accepted and may win.</x-coach>
+<x-coach>Only if the job ran exactly on time. Two seconds late, and the bid may win.</x-coach>
 </x-interview>
 
 <x-interview title="The last second" tone="strong">
 <x-interviewer>A bid arrives 40 ms after the end time. What happens?</x-interviewer>
-<x-you>It's rejected by its own write: the update requires <code>end_at &gt; now()</code>, judged by the database clock that owns that auction. The closer could be seconds late and the result would be the same, because the closer only records the winner and sends notifications.</x-you>
+<x-you>Its own write rejects it: the update requires <code>end_at &gt; now()</code>, by the database clock that owns the auction. The closer only records the winner and notifies, so it could run seconds late with the same result.</x-you>
 <x-interviewer>Isn't that unfair to someone on a slow connection?</x-interviewer>
-<x-you>Yes, with a hard close the arrival time decides. That's why I asked about soft close at the start. If the product wants it, a bid in the last two minutes moves <code>end_at</code> to two minutes after it, in the same update.</x-you>
+<x-you>Yes; with a hard close, arrival decides. That's why I asked about soft close, which fits the same update.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you support automatic bidding up to a maximum?</h3>
-<p>Store each bidder's secret maximum. On each new bid, the visible price becomes the second-highest maximum plus one increment, capped at the highest maximum; ties go to the earlier bid. The check reads several values, so lock the auction row, compute in code and write, all in one short transaction.</p>
+<p>Store each bidder's secret maximum. The visible price becomes the second-highest maximum plus one increment, capped at the highest; ties go to the earlier bid. That reads several values, so lock the row, compute in code and write, in one short transaction.</p>
 
 <h3>How do you stop a seller bidding up their own item?</h3>
 <p>Reject the seller's own account in the write. Shill bids from other accounts need offline analysis of the bid history.</p>
 
 <h3>Can a bidder retract a bid?</h3>
-<p>Mark the bid retracted and recompute the high from the remaining bids, in one transaction on the auction row. Allow it only well before the end, or retraction becomes a way to probe other bidders' limits.</p>
+<p>Mark it retracted and recompute the high in one transaction on the auction row. Allow it only well before the end, or it becomes a way to probe others' limits.</p>
 
 <h3>How do you show "you've been outbid" to someone who left the page?</h3>
-<p>The auction service publishes an "outbid" event for the previous high bidder, and the <a href="/system-design/design-a-notification-system.html">notification system</a> sends a push or email, rate-limited so a bidding war does not send fifty.</p>
+<p>Publish an "outbid" event for the previous high bidder; the <a href="/system-design/design-a-notification-system.html">notification system</a> sends a push or email, rate-limited so a bidding war does not send fifty.</p>
 
 <h3>How would you run this in several regions?</h3>
-<p>Each auction has one home region where its bids are written; bidders elsewhere pay a round trip. Writing one auction in several regions would need consensus on every bid, which is slower.</p>
+<p>Each auction has one home region for its bids; others pay a round trip. Multi-region writes would need consensus on every bid, which is slower.</p>
 
 <x-checklist title="Self-review: online auction">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked whether late bids extend the auction", "I asked how busy the hottest auction gets, as well as the average", "I stated strong consistency per auction as a requirement"] },
-    { "title": "Numbers and interfaces", "items": ["I computed the push load for one hot auction", "I computed how many bids one row can take", "I made bids answer synchronously and idempotent with a client bid id", "I returned server time so the countdown is fair"] },
-    { "title": "Design and depth", "items": ["I checked and wrote each bid in one conditional update and compared it with locking", "I kept every bid with a per-auction sequence number", "I used the sequence number so screens never go back to an older price", "I enforced the deadline in the bid's write, not in the closer"] },
+    { "title": "Before drawing", "items": ["I asked whether late bids extend the auction", "I asked how busy the hottest auction gets", "I required strong consistency per auction"] },
+    { "title": "Numbers and interfaces", "items": ["I computed the push load for one hot auction", "I computed how many bids one row can take", "I made bids synchronous and idempotent", "I returned server time for the countdown"] },
+    { "title": "Design and depth", "items": ["I used one conditional update and compared it with locking", "I kept every bid with a per-auction seq", "I used seq so screens never show an older price", "I enforced the deadline in the bid's write, not the closer"] },
     { "title": "Failure", "items": ["I said what happens when the closer is late or down", "I said how viewers recover when a live server dies"] }
   ]
 }

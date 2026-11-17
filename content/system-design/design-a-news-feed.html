@@ -2,44 +2,43 @@
 {
   "title": "Design a News Feed",
   "description": "Design a social news feed: fan-out on write vs on read, the hybrid for huge accounts, feed storage, cursor pagination, ranking and caching.",
-  "minutes": 32,
+  "minutes": 30,
   "kind": "design",
   "tags": ["case study", "fan-out", "caching", "pagination", "read-heavy"]
 }
 -->
-<p>You open a social app and see posts from the people you follow, newest or most interesting first. Scroll down and older ones load. Post something and your followers see it within seconds. Behind that screen is one hard question: when someone posts, do you do the work then, copying the post into every follower's feed, or later, gathering posts when each follower opens the app?</p>
+<p>You open a social app and see posts from the people you follow; scroll and older ones load. Post something and your followers see it within seconds. The hard question: when someone posts, do you copy it into every follower's feed then, or gather posts later, when each follower opens the app?</p>
 
-<p>Interviewers like it because the two obvious answers fail at scale in opposite directions, and the fix is a hybrid you must justify with numbers. It also tests caching and pagination. It follows <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The two obvious answers fail at scale in opposite directions, and the fix is a hybrid you justify with numbers. It follows <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
-<p>Pin down what the feed contains, how it is ordered, and the shape of the follow graph. The last one decides the design.</p>
+<p>Pin down what the feed contains, its order, and the shape of the follow graph, which decides the design.</p>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design the news feed for a social app.</x-interviewer>
-<x-you>Is the feed only posts from accounts I follow, or also recommendations and ads? And is it chronological or ranked?</x-you>
-<x-interviewer>Only accounts you follow. Ranked, but start chronological and add ranking later.</x-interviewer>
+<x-you>Only posts from accounts I follow, or also recommendations and ads? Chronological or ranked?</x-you>
+<x-interviewer>Only accounts you follow. Ranked, but start chronological.</x-interviewer>
 <x-you>How many daily users, how often do they open the feed, and how often do they post?</x-you>
-<x-interviewer>100 million daily users. Each opens the feed about 10 times a day. About 10 million posts a day.</x-interviewer>
-<x-you>How are follower counts spread? Is there a cap, or can one account have tens of millions of followers?</x-you>
+<x-interviewer>100 million daily users, each opening it about 10 times a day. About 10 million posts a day.</x-interviewer>
+<x-you>How are follower counts spread? Can one account have tens of millions?</x-you>
 <x-interviewer>The average is about 200 followers, but some accounts have 50 million.</x-interviewer>
-<x-you>Then the feed read is the hot path and must be fast. A new post can take a few seconds to appear in feeds, and a feed that is briefly missing a post is fine. Those huge accounts will need special handling. I'll leave out posting media, search and notifications.</x-you>
-<x-coach>Asking about the follower distribution, not just the average, sets up the hybrid design. Most candidates miss it until the interviewer brings up celebrities.</x-coach>
+<x-you>Then the feed read is the hot path. A new post can take a few seconds to appear, and a feed briefly missing a post is fine. Huge accounts need special handling. I'll leave out media, search and notifications.</x-you>
+<x-coach>Asking about the distribution, not just the average, sets up the hybrid. Most candidates miss it until the interviewer mentions celebrities.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> publish a post; see a feed of posts from followed accounts, newest first at launch and ranked later; scroll back through older posts.</li>
-<li><strong>Non-functional:</strong> the feed loads in under 200 ms at p99 on our side; it stays available when parts fail; a new post reaches followers' feeds within about 5 seconds; feeds may be eventually consistent.</li>
-<li><strong>Out of scope:</strong> media upload, search, notifications, ads, recommendations from accounts you do not follow.</li>
+<li><strong>Functional:</strong> publish a post; see posts from followed accounts, newest first at launch, ranked later; scroll back through older ones.</li>
+<li><strong>Non-functional:</strong> the feed loads in under 200 ms at p99 on our side; stays available when parts fail; a new post reaches feeds within about 5 seconds; feeds may be eventually consistent.</li>
+<li><strong>Out of scope:</strong> media upload, search, notifications, ads, recommendations.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Feed reads:</strong> 100 million × 10 = 1 billion a day. 10<sup>9</sup> ÷ 86,400 ≈ 11,600 a second; call it 12,000. Assume a 3x peak: 36,000 a second.</li>
+<li><strong>Feed reads:</strong> 100 million × 10 = 10<sup>9</sup> a day ÷ 86,400 ≈ 12,000 a second; 36,000 at a 3x peak.</li>
 <li><strong>Posts:</strong> 10 million a day ÷ 86,400 ≈ 116 a second; about 350 at peak. Reads outnumber posts 100 to 1.</li>
-<li><strong>Post storage:</strong> about 1 KB of text and metadata per post (media lives in a <a href="/system-design/blob-storage.html">blob store</a>), so 10<sup>7</sup> × 1 KB = 10 GB a day, about 3.7 TB a year.</li>
-<li><strong>Read bandwidth:</strong> a page of 20 posts at 1 KB is 20 KB; 36,000 × 20 KB = 720 MB/s at peak.</li>
+<li><strong>Post storage:</strong> about 1 KB per post (media lives in a <a href="/system-design/blob-storage.html">blob store</a>): 10<sup>7</sup> × 1 KB = 10 GB a day, about 3.7 TB a year.</li>
 </ul>
 
 <x-estimate title="Fan-out writes">
@@ -51,7 +50,7 @@
   "answer": "23 thousand/s",
   "accept": ["8 thousand/s", "70 thousand/s"],
   "steps": ["Inserts a day: 10<sup>7</sup> × 200 = 2 × 10<sup>9</sup>", "2 × 10<sup>9</sup> ÷ 86,400 ≈ 23,000 a second", "At a 3x peak: about 69,000 a second"],
-  "note": "That is manageable. The average hides the problem: one post from a 50-million-follower account is 50 million inserts at once."
+  "note": "Manageable. The average hides the problem: one post from a 50-million-follower account is 50 million inserts at once."
 }
 </script>
 </x-estimate>
@@ -65,17 +64,17 @@
   "answer": "800 GB",
   "accept": ["300 GB", "3 TB"],
   "steps": ["One feed: 500 × 16 B = 8 KB", "All feeds: 10<sup>8</sup> × 8 KB = 8 × 10<sup>11</sup> B = 800 GB"],
-  "note": "That is raw data. In-memory sorted structures add per-entry overhead, often several times the 16 bytes, so plan for a few TB across a few dozen cache nodes. Storing ids, not whole posts, is what keeps it this small."
+  "note": "Raw data: in-memory sorted structures add several times that, so plan a few TB over a few dozen cache nodes. Storing ids, not posts, keeps it this small."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the endpoints for posting and for reading the feed. How does the client ask for the next page?</p>
+<p>Write the endpoints for posting and reading the feed. How does the client ask for the next page?</p>
 </x-task>
 <x-answer>
-<p><code>POST /v1/posts</code> and <code>GET /v1/feed</code> with a limit and a cursor. The decision to argue is cursor versus page-number pagination: in a feed where new posts keep arriving at the top, page numbers return duplicates.</p>
+<p><code>POST /v1/posts</code> and <code>GET /v1/feed</code> with a limit and a cursor. Page numbers return duplicates when new posts keep arriving at the top.</p>
 </x-answer>
 </x-tryit>
 
@@ -99,14 +98,14 @@ DELETE /v1/users/{id}/follow
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>cursor pagination</strong>. With <code>?page=2</code>, the server skips the first 20 items, but if 3 new posts arrived since page 1, items 18 to 20 of the old page 1 show up again. A cursor says "continue after this exact item", so new posts at the top cannot shift the next page. The cursor is opaque to the client, so its contents can change when ranking arrives. The deep dive below shows both.</p>
+<p>The decision worth arguing is <strong>cursor pagination</strong>: "continue after this exact item", so new posts at the top cannot shift the next page the way <code>?page=2</code> does. It is opaque, so its contents can change when ranking arrives. The deep dive shows both.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>List the records: posts, who follows whom, and the feed itself. For each, what is the main lookup, and what kind of store fits?</p>
+<p>For posts, follows and the feed: what is the main lookup, and what store fits?</p>
 </x-task>
 <x-answer>
-<p>Posts are looked up by id. Follows are looked up both ways: "who follows X" for fan-out and "whom does Y follow" for reads. The feed is a short list of post ids per user, read on every open: an in-memory list, not a table.</p>
+<p>Posts by id. Follows both ways: "who follows X" for fan-out, "whom does Y follow" for reads. The feed: a short in-memory list of post ids per user.</p>
 </x-answer>
 </x-tryit>
 
@@ -130,24 +129,24 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 </pre>
 </x-code>
 
-<p>Posts are written once, read by id, and partitioned by <code>post_id</code>: a <strong>wide-column or key-value store</strong> fits, with a cache in front for hot posts. A post id that sorts by time (see <a href="/system-design/unique-ids.html">Unique IDs</a>) lets you order feeds by id alone, no timestamp lookups.</p>
-
-<p>The follow graph is stored twice, once per direction, each partitioned by its first column, so both questions are single-partition reads. Keeping two copies in step is the cost; write both in the follow request and repair with a background job.</p>
-
-<p>The feed lists live in an <strong>in-memory store</strong> with replicas, such as Redis. They hold ids, not posts, so an edit or delete never has to touch 50 million feeds. And they are derived data: if a list is lost, rebuild it from <code>following</code> and <code>author_posts</code>.</p>
+<ul>
+<li><strong>Posts</strong> are written once, read by id, and partitioned by <code>post_id</code>: a <strong>wide-column or key-value store</strong> with a cache for hot posts. A time-sortable id (see <a href="/system-design/unique-ids.html">Unique IDs</a>) lets feeds sort by id alone.</li>
+<li><strong>The follow graph</strong> is stored once per direction, each partitioned by its first column, so both lookups are single-partition reads. The cost is keeping two copies in step: write both on follow, repair with a background job.</li>
+<li><strong>Feed lists</strong> live in a replicated <strong>in-memory store</strong> such as Redis. They hold ids, so an edit or delete never touches 50 million feeds, and they are derived: a lost list is rebuilt from <code>following</code> and <code>author_posts</code>.</li>
+</ul>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
 <p>Sketch the write path (a post reaching followers' feeds) and the read path (a feed page reaching the app). Which parts are synchronous?</p>
 </x-task>
 <x-answer>
-<p>The post is stored synchronously; copying it into feeds happens asynchronously through a queue and fan-out workers. The read path reads one feed list from cache and fills in the posts. The next section draws it.</p>
+<p>The post is stored synchronously; a queue and fan-out workers copy it into feeds asynchronously. A read takes one feed list from cache and fills in the posts.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Writes and reads are separate services. The post service stores the post and publishes an event; fan-out workers do the slow copying into feeds. The feed service reads one list, adds posts from the few huge accounts the user follows, and fills in post bodies from the post cache.</p>
+<p>The post service stores the post and publishes an event; fan-out workers do the slow copying into feeds. The feed service reads one list, adds posts from the few huge accounts the user follows, and fills in post bodies from the post cache.</p>
 
 <x-arch caption="Posting is quick because fan-out happens in workers behind a queue. Reading the feed touches only caches in the normal case.">
 <script type="application/json">
@@ -205,45 +204,45 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
   },
   "steps": [
     {
-      "caption": "Maya, who has 200 followers, posts a photo caption. The post service gives it a time-sortable id and stores it.",
+      "caption": "Maya, who has 200 followers, posts. The post service gives it a time-sortable id and stores it.",
       "arch": { "active": ["client", "post", "posts", ["client", "post"], ["post", "posts"]], "dim": ["feed", "feeds"], "notes": { "posts": "insert p_901" } }
     },
     {
-      "caption": "It publishes a \"new post\" event and replies 201 to Maya at once. She does not wait for 200 feeds to be updated.",
+      "caption": "It publishes a \"new post\" event and replies 201 at once. Maya does not wait for 200 feeds.",
       "arch": { "active": ["queue", ["post", "queue"], ["post", "client"]], "mark": ["client", "posts"], "dim": ["feed", "feeds"] }
     },
     {
-      "caption": "A fan-out worker takes the event and asks the follow graph for Maya's followers: 200 ids. It skips the 30 who have not opened the app in a month; their feeds are rebuilt if they return.",
+      "caption": "A fan-out worker gets Maya's 200 followers and skips the 30 inactive for a month; their feeds are rebuilt if they return.",
       "arch": { "active": ["workers", "graph", ["queue", "workers"], ["workers", "graph"]], "dim": ["feed", "client"], "notes": { "graph": "200 followers" } },
       "vars": { "followers": 200, "active": 170 }
     },
     {
-      "caption": "It adds <code>p_901</code> to 170 feed lists, in batches, and trims each to 500. About 2 seconds after Maya posted, her followers can see it.",
+      "caption": "It adds <code>p_901</code> to 170 feed lists in batches, trimming each to 500. About 2 seconds after posting, followers see it.",
       "arch": { "active": ["feeds", ["workers", "feeds"]], "mark": ["posts"], "dim": ["feed", "client"], "notes": { "feeds": "+p_901 ×170" } },
       "vars": { "followers": 200, "active": 170, "inserts": 170 }
     },
     {
-      "caption": "Leo, one of those followers, opens the app. The feed service reads the first 20 ids of his list, and his cached following list.",
+      "caption": "Leo, a follower, opens the app. The feed service reads the first 20 ids of his list, and his cached following list.",
       "arch": { "active": ["client", "feed", "feeds", ["client", "feed"], ["feed", "feeds"]], "dim": ["post", "queue", "workers", "graph"], "notes": { "feeds": "20 ids" } },
       "vars": { "page": 1, "ids": 20 }
     },
     {
-      "caption": "Every feed server keeps the set of huge accounts in memory; 3 of them are in Leo's following list. Their posts were never copied into his list, so the service reads their newest post ids, cached because millions of readers need them, and merges by id.",
+      "caption": "Leo follows 3 huge accounts, whose posts were never pushed. The service reads their cached newest post ids and merges by id.",
       "arch": { "active": ["posts", ["feed", "posts"]], "dim": ["post", "queue", "workers", "graph"], "notes": { "posts": "3 big accounts" } },
       "vars": { "page": 1, "ids": 20, "merged from": "1 + 3 lists" }
     },
     {
-      "caption": "It fetches the 20 post bodies by id from the post cache in one batch, drops any that were deleted, and builds the page.",
+      "caption": "It fetches the 20 post bodies from the post cache in one batch, drops deleted ones, and builds the page.",
       "arch": { "active": ["posts", ["feed", "posts"]], "dim": ["post", "queue", "workers", "graph"], "notes": { "posts": "multi-get 20" } },
       "vars": { "page": 1, "ids": 20, "cache hits": 20 }
     },
     {
-      "caption": "Leo gets 20 posts and a cursor pointing at the last one. A few cache reads, no database. That is how the read stays well under 200 ms.",
+      "caption": "Leo gets 20 posts and a cursor. A few cache reads, no database: well under 200 ms.",
       "arch": { "active": [["feed", "client"]], "mark": ["client"], "dim": ["post", "queue", "workers", "graph"] },
       "vars": { "page": 1, "returned": 20, "next_cursor": "after p_655" }
     },
     {
-      "caption": "Failure: the fan-out workers fall behind and the queue backs up. Reads still work; new posts just appear late. Posting still works too, because the queue absorbs the backlog.",
+      "caption": "Failure: the fan-out workers fall behind and the queue backs up. Reads and posting still work; new posts just appear late.",
       "arch": { "fail": ["workers"], "active": ["queue", "feed", ["client", "feed"], ["feed", "feeds"]], "notes": { "queue": "backlog", "workers": "behind" } }
     }
   ]
@@ -255,9 +254,12 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 
 <h3>Fan-out on write, on read, or both</h3>
 
-<p>This is the question interviewers care about most. <strong>Fan-out on write</strong> (push) copies each new post's id into every follower's feed when it is posted. <strong>Fan-out on read</strong> (pull) stores nothing per reader: when you open the app, it fetches the newest posts of everyone you follow and merges them.</p>
+<p>This is the question interviewers care about most. <strong>Fan-out on write</strong> (push) copies each new post's id into every follower's feed. <strong>Fan-out on read</strong> (pull) stores nothing per reader: opening the app fetches and merges the newest posts of everyone you follow. Put numbers on both:</p>
 
-<p>Put numbers on both. Pull for everyone means each feed open reads about 200 author lists: 36,000 × 200 = 7.2 million list reads a second at peak. Push for everyone means 69,000 inserts a second at peak, which is fine, until a 50-million-follower account posts. If the fan-out fleet can do 200,000 inserts a second, that one post takes 5 × 10<sup>7</sup> ÷ 2 × 10<sup>5</sup> = 250 seconds and delays every other post behind it.</p>
+<ul>
+<li><strong>Pull for everyone:</strong> each open reads about 200 author lists, so 36,000 × 200 = 7.2 million list reads a second at peak.</li>
+<li><strong>Push for everyone:</strong> 69,000 inserts a second at peak, fine until a 50-million-follower account posts. If the fan-out fleet does 200,000 inserts a second, that post takes 5 × 10<sup>7</sup> ÷ 2 × 10<sup>5</sup> = 250 seconds and delays every post behind it.</li>
+</ul>
 
 <x-tradeoffs caption="How posts get into feeds">
 <script type="application/json">
@@ -265,21 +267,21 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
   "options": [
     {
       "name": "Fan-out on write (push)",
-      "good": "Reads are one list lookup: fast and cheap. Most work happens once per post.",
-      "bad": "A huge account's post means tens of millions of writes. Wasted work for followers who never log in.",
+      "good": "Reads are one list lookup. Most work happens once per post.",
+      "bad": "A huge account's post means tens of millions of writes, many for followers who never log in.",
       "pick": "Follower counts are small and capped, like a private friends network."
     },
     {
       "name": "Fan-out on read (pull)",
-      "good": "Posting is one write. No wasted work for inactive users; huge accounts cost nothing extra.",
-      "bad": "Every feed open merges hundreds of lists. Slow, and read load is 100 times write load.",
-      "pick": "Reads are rare compared to posts, or users follow very few accounts."
+      "good": "Posting is one write. No work for inactive users or huge accounts.",
+      "bad": "Every feed open merges hundreds of lists, and reads are 100 times writes.",
+      "pick": "Reads are rare, or users follow very few accounts."
     },
     {
       "name": "Hybrid",
-      "good": "Push for normal accounts, pull for accounts above a follower threshold. Both costs stay bounded.",
-      "bad": "Two code paths, and a threshold to tune. Accounts that cross it need care.",
-      "pick": "Follower counts are heavily skewed. The usual answer here.",
+      "good": "Push for normal accounts, pull above a follower threshold. Both costs bounded.",
+      "bad": "Two code paths and a threshold to tune.",
+      "pick": "Follower counts are heavily skewed. The usual answer.",
       "default": true
     }
   ]
@@ -287,35 +289,35 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 </script>
 </x-tradeoffs>
 
-<p>Pick a threshold, say 100,000 followers, and say what decides it: below it, a post costs at most 100,000 inserts, half a second of the fleet. Above it, the account's posts are pulled at read time. If a typical user follows a handful of such accounts, a feed read merges one pushed list with a few pulled lists, all from cache. What would change my mind: if users followed hundreds of huge accounts each, the pulled side would dominate, and I would lower the threshold or precompute merged feeds for the most active readers.</p>
+<p>Pick a threshold, say 100,000 followers, and say why: below it, a post costs at most 100,000 inserts, half a second of the fleet. Above it, posts are pulled at read time. A typical user follows a handful of such accounts, so a read merges one pushed list with a few pulled ones, all from cache.</p>
 
-<p>Also skip inactive users when pushing. Someone who has not opened the app in 30 days gets no inserts; when they return, build their feed by pull once, then switch them back to push.</p>
+<p>Also skip inactive users when pushing. Someone away 30 days gets no inserts; when they return, build their feed by pull once, then push again.</p>
 
 <h3>Feed storage and pagination</h3>
 
-<p>Each feed holds up to 500 ids, kept as a set sorted by post id, not a list you prepend to. Fan-out for two authors can finish out of order, and a queue delivers an event again after a worker crash; a sorted set puts late posts in place and ignores repeats (see <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a>). Readers rarely scroll past a few pages; anyone who goes past 500 falls back to pulling from <code>author_posts</code>. Watch why page numbers break when posts keep arriving.</p>
+<p>Each feed holds up to 500 ids in a set sorted by post id, not a list you prepend to. Fan-out can finish out of order, and a queue redelivers events after a crash; a sorted set puts late posts in place and ignores repeats (see <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a>). Past 500, fall back to pulling from <code>author_posts</code>. Here is why page numbers break:</p>
 
 <x-tracer title="Page numbers versus a cursor">
 <script type="application/json">
 {
   "steps": [
     {
-      "caption": "Leo's feed, newest first. Page size 4 to keep it small. Page 1 is positions 0 to 3: posts 90, 88, 85, 81.",
+      "caption": "Leo's feed, newest first, page size 4. Page 1 is positions 0 to 3: posts 90, 88, 85, 81.",
       "array": { "label": "feed", "values": [90, 88, 85, 81, 77, 74, 70, 66], "highlight": [0, 1, 2, 3] },
       "vars": { "page": 1, "shown": "90 88 85 81" }
     },
     {
-      "caption": "While he reads, 2 new posts arrive at the top: 95 and 93. Everything else shifts down 2 places.",
+      "caption": "While he reads, posts 95 and 93 arrive at the top. Everything shifts down 2 places.",
       "array": { "label": "feed", "values": [95, 93, 90, 88, 85, 81, 77, 74, 70, 66], "mark": [0, 1], "highlight": [2, 3, 4, 5] },
       "vars": { "page": 1, "shown": "90 88 85 81" }
     },
     {
-      "caption": "With <code>?page=2</code> the server skips 4 and returns positions 4 to 7: 85, 81, 77, 74. Leo sees 85 and 81 twice.",
+      "caption": "<code>?page=2</code> skips 4 and returns positions 4 to 7: 85, 81, 77, 74. Leo sees 85 and 81 twice.",
       "array": { "label": "feed", "values": [95, 93, 90, 88, 85, 81, 77, 74, 70, 66], "highlight": [4, 5, 6, 7], "dim": [0, 1, 2, 3] },
       "vars": { "page": 2, "shown": "85 81 77 74", "duplicates": 2 }
     },
     {
-      "caption": "With a cursor, page 1 ended with \"after 81\". The server returns the next 4 ids smaller than 81: 77, 74, 70, 66. No duplicates, whatever arrived on top.",
+      "caption": "With a cursor, page 1 ended \"after 81\". The server returns the next 4 ids below 81: 77, 74, 70, 66. No duplicates.",
       "array": { "label": "feed", "values": [95, 93, 90, 88, 85, 81, 77, 74, 70, 66], "mark": [6, 7, 8, 9], "dim": [0, 1, 2, 3, 4, 5] },
       "vars": { "cursor": "after 81", "shown": "77 74 70 66", "duplicates": 0 }
     }
@@ -324,51 +326,49 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 </script>
 </x-tracer>
 
-<p>That works because ids sort by time. A ranked feed has no such order: scores change as posts get likes. So when ranking arrives, the feed service ranks once when the session starts, caches that ordered list for about 10 minutes, and the cursor becomes "snapshot id + position". If the snapshot has expired, the API returns 400 and the app starts from the top. That is why the cursor is opaque.</p>
+<p>That works because ids sort by time. Ranked scores change as posts get likes, so the feed service ranks once per session, caches the order for about 10 minutes, and the cursor becomes "snapshot id + position". An expired snapshot returns 400 and the app starts from the top.</p>
 
 <h3>Ranking, in outline</h3>
 
-<p>The interview needs ranking's shape, not its model: a stage the feed service calls, with a time budget.</p>
+<p>The interview needs ranking's shape, not its model: a stage with about 50 ms of the 200 ms budget.</p>
 
 <ol>
-<li><strong>Candidates:</strong> the ~500 ids from the pushed list plus the pulled lists.</li>
-<li><strong>Filter:</strong> drop deleted posts, blocked authors, posts already seen.</li>
-<li><strong>Score:</strong> a model predicts how likely the reader is to engage, from features like how often they interact with the author, the post's age and its early engagement.</li>
-<li><strong>Re-rank for variety:</strong> no more than 2 posts in a row from one author.</li>
+<li><strong>Candidates:</strong> the ~500 pushed ids plus the pulled lists.</li>
+<li><strong>Filter:</strong> deleted posts, blocked authors, posts already seen.</li>
+<li><strong>Score:</strong> a model predicts engagement from features like how often the reader interacts with the author, the post's age and its early engagement.</li>
+<li><strong>Re-rank for variety:</strong> at most 2 posts in a row from one author.</li>
 </ol>
 
-<p>Give ranking about 50 ms of the 200 ms budget. If the ranking service is slow or down, return the chronological feed instead: a worse feed is better than no feed.</p>
+<p>If ranking is slow or down, return the chronological feed: a worse feed beats no feed.</p>
 
 <h3>Cache strategy</h3>
 
-<p>Four caches do the work, each for a different reason:</p>
-
 <ul>
-<li><strong>Feed lists</strong> (800 GB): the pushed feeds, replicated. Losing a node means rebuilding those users' feeds by pull, so warm them gradually.</li>
-<li><strong>Post objects</strong>: hydration reads by id. Posts from the last two days are about 2 × 10 GB = 20 GB and take most reads, so they fit easily. Use <a href="/system-design/caching.html">cache-aside</a> and delete the entry on edit or delete.</li>
-<li><strong>Recent posts of huge accounts</strong>: read by millions of feeds. Copy these hot keys into each feed server's memory for a few seconds so one cache node does not take all those reads.</li>
-<li><strong>Follow lists</strong>, both directions: followers for the fan-out workers, following for the feed service, so neither hammers the graph store.</li>
+<li><strong>Feed lists</strong> (800 GB), replicated. A lost node means rebuilding feeds by pull, so warm them gradually.</li>
+<li><strong>Post objects</strong>. The last two days' posts, about 2 × 10 GB = 20 GB, take most reads. Use <a href="/system-design/caching.html">cache-aside</a>; delete the entry on edit or delete.</li>
+<li><strong>Recent posts of huge accounts</strong>, read by millions of feeds. Copy these hot keys into each feed server's memory for a few seconds so no single cache node takes every read.</li>
+<li><strong>Follow lists</strong>, both directions, to spare the graph store.</li>
 </ul>
 
-<p>Like counts change constantly; keep them out of the post object, in a separate counter that is cached briefly and updated in batches. Otherwise every like invalidates a hot post.</p>
+<p>Keep like counts in a separate counter, cached briefly and updated in batches, or every like invalidates a hot post.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x the traffic (360,000 feed reads and about 690,000 fan-out inserts a second at peak), the raw feed data grows to about 8 TB, which means a larger cluster partitioned by user id with <a href="/system-design/consistent-hashing.html">consistent hashing</a>. The fan-out queue is partitioned by author so workers scale out. The first things to hurt are the hot keys of huge accounts, which the local in-memory copies handle, and the fan-out fleet, which you can relieve by lowering the threshold.</p>
+<p>At 10x (360,000 feed reads and about 690,000 fan-out inserts a second at peak), raw feed data reaches about 8 TB: a larger cluster partitioned by user id with <a href="/system-design/consistent-hashing.html">consistent hashing</a>. Partition the fan-out queue by author so workers scale out. First to hurt: huge accounts' hot keys (local in-memory copies) and the fan-out fleet (lower the threshold).</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A feed cache node</td><td>Its users' feed lists are gone.</td><td>Replica takes over; if both are lost, rebuild those feeds by pull, slower for a while.</td></tr>
-<tr><td>Fan-out workers</td><td>New posts stop reaching feeds; the queue grows.</td><td>Reads and posting continue. Workers catch up from the queue, oldest first.</td></tr>
-<tr><td>The post store</td><td>New posts fail; hydration misses fail.</td><td>Most reads hit the post cache. Return what is cached rather than an error page.</td></tr>
+<tr><td>A feed cache node</td><td>Its feed lists are gone.</td><td>The replica takes over; if both are lost, rebuild by pull.</td></tr>
+<tr><td>Fan-out workers</td><td>New posts stop reaching feeds; the queue grows.</td><td>Reads and posting continue. Workers catch up, oldest first.</td></tr>
+<tr><td>The post store</td><td>New posts and cache misses fail.</td><td>Most reads hit the post cache; return what is cached, not an error.</td></tr>
 <tr><td>The ranking service</td><td>No scores.</td><td>Serve the chronological feed.</td></tr>
-<tr><td>The follow graph</td><td>Fan-out stalls; follows fail.</td><td>Cached follower lists keep fan-out running for a while; the queue holds the rest.</td></tr>
+<tr><td>The follow graph</td><td>Fan-out stalls; follows fail.</td><td>Cached follower lists keep fan-out going; the queue holds the rest.</td></tr>
 </tbody>
 </table>
 
 <x-callout type="mistake" title="Storing whole posts in every feed">
-<p>Copying the post body into 200 feeds multiplies storage by 200 and turns an edit into 200 writes, or 50 million for a huge account. Store ids in feeds and fetch the bodies once, from a cache.</p>
+<p>Copying the body into 200 feeds multiplies storage by 200 and turns an edit into 200 writes, or 50 million for a huge account. Store ids; fetch bodies from a cache.</p>
 </x-callout>
 
 <h2>What a strong answer sounds like</h2>
@@ -376,45 +376,45 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Builds the feed with a query over posts from followed users at read time. Works, but needs prompting to see the cost at 36,000 reads a second.</td></tr>
-<tr><td>Mid</td><td>Proposes fan-out on write with a feed cache, uses a queue so posting stays fast, and paginates with a cursor.</td></tr>
-<tr><td>Senior</td><td>Asks about the follower distribution up front, computes the cost of both fan-outs, picks a hybrid with a justified threshold, skips inactive users, stores ids not posts, plans for ranking with a fallback, and says what happens when each part fails.</td></tr>
+<tr><td>Junior</td><td>Queries posts from followed users at read time. Works, but needs prompting to see the cost at 36,000 reads a second.</td></tr>
+<tr><td>Mid</td><td>Fan-out on write with a feed cache, a queue so posting stays fast, cursor pagination.</td></tr>
+<tr><td>Senior</td><td>Asks about the follower distribution, costs both fan-outs, justifies a hybrid threshold, skips inactive users, stores ids, plans ranking with a fallback, and covers each failure.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="The celebrity question" tone="strong">
 <x-interviewer>An account with 50 million followers posts. Walk me through it.</x-interviewer>
-<x-you>With pure push that is 50 million inserts; at 200,000 a second, about 4 minutes during which other posts queue behind it. So accounts above 100,000 followers are not pushed. The post goes to that account's recent-posts list, which is cached and copied into each feed server's memory. Followers' feeds merge it at read time.</x-you>
+<x-you>Pure push means 50 million inserts: at 200,000 a second, about 4 minutes with other posts queued behind. So accounts above 100,000 followers are not pushed. The post goes to that account's cached recent-posts list, and followers' feeds merge it at read time.</x-you>
 <x-interviewer>What does that cost on reads?</x-interviewer>
-<x-you>A few extra cached list reads per feed open, if the user follows a few such accounts. If one user followed hundreds, I would cap how many pulled lists we merge and push for the rest.</x-you>
-<x-coach>Numbers first, then the design, then its cost, then the limit where it stops working. A weak answer says "use a queue" and stops there.</x-coach>
+<x-you>A few extra cached list reads per feed open. If a user followed hundreds of such accounts, I'd cap how many pulled lists we merge and push the rest.</x-you>
+<x-coach>Numbers, then the design, its cost, and where it stops working. A weak answer says "use a queue" and stops.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>What happens when I unfollow someone?</h3>
-<p>Remove that author's ids from your feed list; it holds at most 500 entries, so the scan is cheap. A fan-out already in flight may add one more post afterwards, so the read path also drops ids whose author is not in your following list, which it reads anyway.</p>
+<p>Remove that author's ids from your feed list; at 500 entries the scan is cheap. A fan-out in flight may still add one, so the read path also drops ids whose author you no longer follow.</p>
 
 <h3>How do you handle a deleted post?</h3>
-<p>Mark it deleted and delete its cache entry. Feed lists still hold the id, and hydration drops it. Nothing touches millions of feeds.</p>
+<p>Mark it deleted and delete its cache entry. Feed lists still hold the id; hydration drops it. Nothing touches millions of feeds.</p>
 
 <h3>How does the app show "5 new posts"?</h3>
-<p>Every minute or so, the app asks for the count of ids above its newest one. That is a cheap read of the feed list. Pushing over an open connection is possible but costs a connection per active user.</p>
+<p>Every minute or so, the app asks how many ids are above its newest one: a cheap feed-list read. Pushing over an open connection costs a connection per active user.</p>
 
 <h3>How would you run this in two regions?</h3>
-<p>Serve feeds from each region's caches and stores. Replicate posts and follows between regions asynchronously, and run fan-out in each region for the users it serves. A post may reach the other region's feeds a second or two later.</p>
+<p>Serve feeds from each region's caches and stores, replicate posts and follows asynchronously, and run fan-out per region. A post may reach the other region a second or two later.</p>
 
 <h3>An account crosses the 100,000 threshold. What changes?</h3>
-<p>New posts switch from push to pull. Its recent posts already sit in its followers' lists, so nothing has to move; the read path merges both and removes duplicates by id.</p>
+<p>New posts switch to pull. Older posts already sit in followers' lists, so nothing moves; the read path merges both and drops duplicate ids.</p>
 
 <x-checklist title="Self-review: news feed">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked what the feed contains and whether it is ranked", "I asked about the follower distribution, not just the average", "I said reads are the hot path and how stale a feed may be"] },
-    { "title": "Numbers and interfaces", "items": ["I computed feed reads and fan-out inserts per second, with peaks", "I sized the feed cache from ids, not posts", "I chose cursor pagination and showed why page numbers duplicate"] },
-    { "title": "Design and depth", "items": ["I separated posting from fan-out with a queue", "I compared push, pull and a hybrid with numbers and justified the threshold", "I skipped inactive users and explained how their feeds are rebuilt", "I kept ranking as a stage with a time budget and a chronological fallback", "I named the caches and what each one protects"] },
-    { "title": "Failure", "items": ["I said what breaks first at 10x", "I said what happens when the feed cache, the workers and the ranking service each fail"] }
+    { "title": "Before drawing", "items": ["I asked what the feed contains and if it is ranked", "I asked about the follower distribution", "I named the hot path and allowed staleness"] },
+    { "title": "Numbers and interfaces", "items": ["I computed reads and fan-out inserts per second, with peaks", "I sized the feed cache from ids", "I chose cursor pagination and said why"] },
+    { "title": "Design and depth", "items": ["I separated posting from fan-out with a queue", "I compared push, pull and hybrid with numbers", "I justified the hybrid threshold", "I skipped inactive users", "I gave ranking a time budget and a fallback", "I named the caches and what each protects"] },
+    { "title": "Failure", "items": ["I said what breaks first at 10x", "I covered feed cache, worker and ranking failures"] }
   ]
 }
 </script>
@@ -422,4 +422,4 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 
 <h2>What to practise next</h2>
 
-<p>The fan-out queue here is a stream with partitions and consumer groups; see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>. For a design where delivery must be instant rather than pulled, try <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>
+<p>The fan-out queue is a partitioned stream; see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>. For instant delivery, try <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>

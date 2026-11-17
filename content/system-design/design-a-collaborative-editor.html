@@ -2,36 +2,36 @@
 {
   "title": "Design a Collaborative Editor",
   "description": "Let many people edit one document at once: merging edits with OT or CRDTs, one server per document, an operation log with snapshots, and cursors.",
-  "minutes": 32,
+  "minutes": 28,
   "kind": "design",
   "tags": ["case study", "realtime", "websockets", "operational transformation", "crdt"]
 }
 -->
-<p>Three people have the same document open. Ana fixes a typo while Ben adds a sentence above it and Chen watches both cursors move. Each types into their own copy with no delay, and a moment later every copy shows the same text. Nobody presses Save and no edit is lost.</p>
+<p>Three people have one document open. Ana fixes a typo while Ben adds a sentence above it and Chen watches both cursors move. Each types into their own copy with no delay, and a moment later every copy matches. Nobody presses Save; no edit is lost.</p>
 
-<p>Interviewers ask this because the boxes are simple and the core problem is not: two edits made at the same moment against the same text must merge into one result, on every screen, whatever order the network delivers them in. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before you read on.</p>
+<p>The boxes are simple; the core problem is not: two edits made at once on the same text must merge into one result on every screen, whatever order they arrive in. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before you read on.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a collaborative document editor.</x-interviewer>
-<x-you>Plain text or rich text? And do we need comments and version history?</x-you>
+<x-you>Plain text or rich text? Do we need comments and version history?</x-you>
 <x-interviewer>Rich text, but reason about plain text. Version history, yes. Comments are out.</x-interviewer>
 <x-you>How many people edit one document at once, and how big is the whole thing?</x-you>
 <x-interviewer>Usually one to three, sometimes up to 100 in a meeting. About 20 million daily users; at peak 2 million have a document open.</x-interviewer>
-<x-you>Then the core requirement is convergence: everyone ends with the same text and no keystrokes vanish. I'll aim for zero delay when typing, other people's edits within about 200 ms in one region, and no acknowledged edit ever lost. I'll handle short offline periods.</x-you>
-<x-coach>"Converge, and never lose an acknowledged edit" names the hard part before any box is drawn.</x-coach>
+<x-you>Then the core is convergence: everyone ends with the same text and no acknowledged keystroke is lost. I'll also handle short offline periods.</x-you>
+<x-coach>It names the hard part before any box is drawn.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> open a document; type and see your change instantly; see other people's changes and cursors live; keep working offline and sync on reconnect; browse version history.</li>
-<li><strong>Non-functional:</strong> all copies converge; remote edits appear within about 200 ms in one region; an acknowledged edit is never lost; up to 100 editors per document; a document opens in under a second.</li>
+<li><strong>Functional:</strong> type instantly; see others' changes and cursors live; work offline; browse history.</li>
+<li><strong>Non-functional:</strong> copies converge; remote edits within 200 ms in one region; no acknowledged edit lost; up to 100 editors per document; opens in under a second.</li>
 <li><strong>Out of scope:</strong> comments, search, sharing screens, rich-text layout.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>Editors do not send a message per keystroke. The client batches the last 100 ms or so of typing into one <strong>operation</strong>, such as "insert <code>the </code> at position 4". Assume an open document sends one operation every 2 seconds on average, counting pauses.</p>
+<p>The client batches about 100 ms of typing into one <strong>operation</strong>, such as "insert <code>the </code> at position 4". Assume one operation every 2 seconds per open document, counting pauses.</p>
 
 <x-estimate title="Operations per second at peak">
 <script type="application/json">
@@ -42,16 +42,16 @@
   "answer": "1 million/s",
   "accept": ["300 thousand/s", "3 million/s"],
   "steps": ["2,000,000 ÷ 2 s = 1,000,000 operations a second"],
-  "note": "Each one must be ordered against the others on the same document, which is what the design is about."
+  "note": "Each must be ordered against the others on the same document. That is the whole design."
 }
 </script>
 </x-estimate>
 
 <ul>
-<li><strong>Daily volume:</strong> with a document open about an hour a day, 3,600 ÷ 2 ≈ 2,000 operations per user, so 20 million users × 2,000 = 40 billion, an average of 40 × 10<sup>9</sup> ÷ 86,400 ≈ 460,000 a second. The peak of 1 million is about twice that.</li>
-<li><strong>Fan-out:</strong> with 2 editors per open document, there are 1 million open documents. Each operation is acknowledged to its author and sent to one other person: 2 million outgoing messages a second.</li>
+<li><strong>Daily volume:</strong> open an hour a day, 3,600 ÷ 2 ≈ 2,000 operations per user; × 20 million users = 40 billion, averaging 40 × 10<sup>9</sup> ÷ 86,400 ≈ 460,000 a second, about half the peak.</li>
+<li><strong>Fan-out:</strong> 2 editors per document means 1 million open documents. Each operation is acked to its author and sent to one other: 2 million messages out a second.</li>
 <li><strong>Connections:</strong> 2 million WebSockets. At an assumed 50,000 per server (load test it), 40 servers.</li>
-<li><strong>Snapshots:</strong> assume 1 billion documents of about 50 KB: 50 TB for the latest copy of each.</li>
+<li><strong>Snapshots:</strong> 1 billion documents × 50 KB = 50 TB for the latest copies.</li>
 </ul>
 
 <x-estimate title="Operation log per day">
@@ -63,17 +63,17 @@
   "answer": "4 TB",
   "accept": ["1 TB", "15 TB"],
   "steps": ["40 × 10<sup>9</sup> × 100 B = 4 × 10<sup>12</sup> B = 4 TB a day", "Kept for 30 days: 120 TB, or 240 TB on a leader and its replica"],
-  "note": "The log grows far faster than the documents, so it must be folded into snapshots."
+  "note": "The log grows far faster than the documents, so fold it into snapshots."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the messages a client and server exchange while editing. What must each operation carry so the server knows what it was based on?</p>
+<p>Write the editing messages. What must an operation carry?</p>
 </x-task>
 <x-answer>
-<p>An HTTP call loads the document at a revision; then a WebSocket. Each operation carries the revision it was typed against and a client sequence number. The server acks with the operation's final revision and sends everyone else's operations with theirs.</p>
+<p>HTTP loads the document at a revision; then a WebSocket. Each operation carries its base revision and a client sequence number. The server acks with the final revision.</p>
 </x-answer>
 </x-tryit>
 
@@ -98,14 +98,14 @@ WSS /docs/{id}/live?since=1042
 </pre>
 </x-code>
 
-<p>The decision worth arguing: each client keeps <strong>at most one operation in flight</strong>. Until <code>seq 17</code> is acknowledged, new typing is buffered and sent as one operation after the ack. The server then only adjusts an incoming operation against what was committed since its <code>base_rev</code>. The pair <code>(client, seq)</code> makes a resend harmless: the server remembers the last <code>seq</code> applied per client and drops duplicates.</p>
+<p>The decision worth arguing: each client keeps <strong>at most one operation in flight</strong>. Until <code>seq 17</code> is acked, new typing is buffered. The server only adjusts it against what was committed since its <code>base_rev</code>. <code>(client, seq)</code> makes resends harmless: the server drops any <code>seq</code> it already applied.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>What do you store so a document opens quickly, can be replayed for history, and can be caught up after a reconnect?</p>
+<p>What do you store so a document opens fast, replays for history, and catches up after a reconnect?</p>
 </x-task>
 <x-answer>
-<p>An append-only log of operations keyed by document and revision; periodic snapshots of the full text so opening does not replay everything; and a small metadata record per document. Presence is not stored at all.</p>
+<p>An append-only operation log keyed by document and revision; periodic full-text snapshots; a metadata record per document. Presence is not stored.</p>
 </x-answer>
 </x-tryit>
 
@@ -134,24 +134,24 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 </pre>
 </x-code>
 
-<p>Access patterns: append the next revision of document 42, read its operations after revision 1000, fetch its newest snapshot. All stay inside one document, so <strong>partition everything by <code>doc_id</code></strong>.</p>
+<p>Every access (append the next revision, read operations after 1000, fetch the newest snapshot) stays inside one document, so <strong>partition by <code>doc_id</code></strong>.</p>
 
-<p>For <code>doc_ops</code>, use a store with one leader per shard and a unique primary key, such as a sharded relational database. "Insert revision 1043" then fails cheaply if 1043 exists, which the deep dives use to stop two servers writing the same revision. At 1 million inserts a second and an assumed 20,000 per shard, that is 50 shards, each with a synchronous replica so an acknowledged operation survives losing the leader. A leaderless store fits the range reads too, but there "insert if absent" costs a consensus round on every operation. Snapshots are write-once blobs, so they go to <a href="/system-design/blob-storage.html">blob storage</a>.</p>
+<p>Put <code>doc_ops</code> in a store with one leader per shard and a unique primary key, such as a sharded relational database. "Insert revision 1043" then fails cheaply if 1043 exists, which stops two servers writing the same revision. At 1 million inserts a second and an assumed 20,000 per shard: 50 shards, each with a synchronous replica so an acked operation survives losing the leader. Write-once snapshots go to <a href="/system-design/blob-storage.html">blob storage</a>.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes. Where do the WebSockets end, which server decides the order of operations for document 42, and how do all its editors reach that server?</p>
+<p>Sketch the boxes. Where do WebSockets end, and which server orders document 42's operations?</p>
 </x-task>
 <x-answer>
-<p>Gateways hold the sockets and forward each document's messages to the one document server that owns it, chosen by consistent hashing on the document id. That server orders, transforms, logs and broadcasts operations. A compactor folds old operations into snapshots.</p>
+<p>Gateways hold the sockets and forward to the document's one owning server, chosen by consistent hashing. It orders, transforms, logs and broadcasts. A compactor writes snapshots.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Every operation on a document must be put in one order, and the cheapest place to do that is the memory of one process. So each open document has exactly one <strong>owner</strong>: a document server holding its text, recent operations and the people in it.</p>
+<p>The cheapest place to order a document's operations is one process's memory. So each open document has one <strong>owner</strong>: a document server holding its text, recent operations and editors.</p>
 
-<x-arch caption="Gateways send every editor of a document to the same document server, picked by consistent hashing. That server orders operations and logs each one before acknowledging it.">
+<x-arch caption="Every editor of a document reaches the same document server, which orders operations and logs each before acknowledging it.">
 <script type="application/json">
 {
   "nodes": [
@@ -201,52 +201,52 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
   },
   "steps": [
     {
-      "caption": "Document 42 is at revision 1042 and hashes to server B, so the gateways send Ana's and Ben's messages there.",
+      "caption": "Document 42 is at revision 1042 and hashes to server B.",
       "arch": { "active": ["ana", "ben", "srvb", ["ana", "gw"], ["ben", "gw"], ["gw", "srvb"]], "dim": ["srvc"], "notes": { "srvb": "owns doc 42" } },
       "vars": { "server rev": 1042 }
     },
     {
-      "caption": "Ana and Ben type in the same 100 ms. Each sees their own change at once and sends it with <code>base_rev</code> 1042.",
+      "caption": "Ana and Ben type in the same 100 ms. Each sees their change at once and sends it with <code>base_rev</code> 1042.",
       "arch": { "active": ["ana", "ben", ["ana", "gw"], ["ben", "gw"], ["gw", "srvb"]], "dim": ["srvc"] },
       "vars": { "server rev": 1042, "Ana in flight": "seq 17", "Ben in flight": "seq 9" }
     },
     {
-      "caption": "Ben's arrives first. It is based on the latest revision, so B logs it unchanged as 1043, on the shard leader and its replica.",
+      "caption": "Ben's arrives first, based on the latest revision, so B logs it unchanged as 1043, on leader and replica.",
       "arch": { "active": ["srvb", "oplog", ["srvb", "oplog"]], "dim": ["srvc"], "notes": { "oplog": "rev 1043" } },
       "vars": { "server rev": 1043, "Ana in flight": "seq 17", "Ben in flight": "seq 9" }
     },
     {
-      "caption": "Only now does B ack Ben and send the operation to Ana. An ack means the edit is durable.",
+      "caption": "Only now does B ack Ben and send the operation to Ana. An ack means durable.",
       "arch": { "active": [["srvb", "gw"], ["gw", "ben"], ["gw", "ana"]], "mark": ["ben"], "dim": ["srvc"] },
       "vars": { "server rev": 1043, "Ana in flight": "seq 17", "Ben in flight": "none" }
     },
     {
-      "caption": "Ana's arrives, still based on 1042. B transforms it against 1043 (shown in the next section), logs it as 1044, acks Ana and sends it to Ben. All copies match.",
+      "caption": "Ana's arrives, based on 1042. B transforms it against 1043 (next section), logs it as 1044, acks Ana and sends it to Ben.",
       "arch": { "active": ["srvb", "oplog", ["srvb", "oplog"], ["gw", "ana"], ["gw", "ben"]], "mark": ["ana", "ben"], "dim": ["srvc"], "notes": { "oplog": "rev 1044" } },
       "vars": { "server rev": 1044, "Ana in flight": "none", "Ben in flight": "none" }
     },
     {
-      "caption": "Ben types again (seq 10). Server B's machine hangs. Ben has no ack, so his client keeps the operation.",
+      "caption": "Ben types again (seq 10). Server B hangs. With no ack, Ben's client keeps the operation.",
       "arch": { "fail": ["srvb", ["gw", "srvb"]], "active": ["ben", ["ben", "gw"]], "dim": ["srvc"] },
       "vars": { "server rev": 1044, "Ben in flight": "seq 10" }
     },
     {
-      "caption": "B's heartbeats stop, so the membership store drops it and the ring maps document 42 to C. Clients reconnect after a random wait with <code>since=1044</code>.",
+      "caption": "B's heartbeats stop, so the ring maps document 42 to C. Clients reconnect after a random wait with <code>since=1044</code>.",
       "arch": { "fail": ["srvb"], "active": ["srvc", ["ana", "gw"], ["ben", "gw"], ["gw", "srvc"]], "notes": { "srvc": "owns doc 42" } },
       "vars": { "server rev": 1044, "Ben in flight": "seq 10" }
     },
     {
-      "caption": "C loads the snapshot at 1000 plus the 44 operations after it, which also tell it each client's last seq. Ben resends seq 10; it is new, so C logs it as 1045.",
+      "caption": "C loads the snapshot at 1000 plus the 44 operations after it, which give each client's last seq. Ben's resent seq 10 is new: C logs it as 1045.",
       "arch": { "fail": ["srvb"], "active": ["srvc", "oplog", ["srvc", "oplog"], ["gw", "srvc"]], "notes": { "oplog": "rev 1045 (C)" } },
       "vars": { "server rev": 1045, "Ben in flight": "seq 10" }
     },
     {
-      "caption": "B was only paused. It wakes, still thinks it owns document 42, and tries to log a late operation as 1045. The insert fails: 1045 exists.",
+      "caption": "B was only paused. It wakes, still thinking it owns document 42, and tries to log a late operation as 1045. The insert fails.",
       "arch": { "fail": [["srvb", "oplog"]], "active": ["srvb", "oplog"], "mark": ["srvc"], "notes": { "srvb": "stale owner", "oplog": "1045 exists" } },
       "vars": { "server rev": 1045 }
     },
     {
-      "caption": "The failure means another server wrote 1045. B checks the ring, sees C owns document 42, drops it and closes its sockets; those clients retry on C. The log never forks.",
+      "caption": "B checks the ring, sees C owns document 42 and closes its sockets; those clients retry on C. The log never forks.",
       "arch": { "dim": ["srvb"], "active": ["srvc", ["gw", "srvc"], ["gw", "ben"]], "mark": ["ana", "ben", "oplog"] },
       "vars": { "server rev": 1045, "Ben in flight": "none" }
     }
@@ -259,9 +259,9 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 
 <h3>Merging concurrent edits: OT or CRDT</h3>
 
-<p>The document is <code>dog</code>. Ana adds <code>s</code> at the end: insert at 3. At the same moment Ben adds <code>my </code> at the start: insert at 0. If each side applies the other's operation as sent, Ana gets <code>my dogs</code>, but Ben applies "insert <code>s</code> at 3" to <code>my dog</code> and gets <code>my sdog</code>. The copies have diverged.</p>
+<p>The document is <code>dog</code>. Ana inserts <code>s</code> at 3; at the same moment Ben inserts <code>my </code> at 0. Applied as sent, Ana gets <code>my dogs</code>, but Ben applies "insert <code>s</code> at 3" to <code>my dog</code> and gets <code>my sdog</code>. The copies have diverged.</p>
 
-<p><strong>Operational transformation (OT)</strong> fixes the position before applying. For two inserts: if the other insert landed before yours, shift yours right by its length; at the same position, the one the server committed first goes left. Deletes need matching rules (overlapping deletes shrink each other), and that is where implementations get subtle.</p>
+<p><strong>Operational transformation (OT)</strong> fixes the position before applying. For two inserts: if the other landed before yours, shift yours right by its length; at the same position, the one committed first goes left. Deletes need matching rules (overlapping deletes shrink each other), which is where implementations get subtle.</p>
 
 <x-tracer title="OT with a central server: dog, two edits">
 <script type="application/json">
@@ -284,7 +284,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
       "vars": { "rev": 7 }
     },
     {
-      "caption": "Both type at once. Each sends an insert based on revision 7.",
+      "caption": "Both type at once, each based on revision 7.",
       "arrays": [
         { "label": "Ana", "values": ["d", "o", "g", "s"], "highlight": [3] },
         { "label": "server", "values": ["d", "o", "g"] },
@@ -293,7 +293,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
       "vars": { "rev": 7, "Ana sends": "ins 's' at 3", "Ben sends": "ins 'my ' at 0" }
     },
     {
-      "caption": "Ben's arrives first and is based on the latest revision, so it is stored unchanged as revision 8.",
+      "caption": "Ben's arrives first, based on the latest revision, so it is stored unchanged as revision 8.",
       "line": 1,
       "arrays": [
         { "label": "Ana", "values": ["d", "o", "g", "s"], "highlight": [3] },
@@ -303,7 +303,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
       "vars": { "rev": 8 }
     },
     {
-      "caption": "Ana's arrives, based on 7. Revision 8 inserted 3 characters at 0, before 3, so the server shifts Ana's insert to 3 + 3 = 6.",
+      "caption": "Ana's arrives, based on 7. Revision 8 inserted 3 characters before position 3, so the server shifts Ana's insert to 3 + 3 = 6.",
       "line": 2,
       "arrays": [
         { "label": "Ana", "values": ["d", "o", "g", "s"] },
@@ -313,7 +313,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
       "vars": { "rev": 9, "stored as rev 9": "ins 's' at 6" }
     },
     {
-      "caption": "Ana's client gets revision 8 while her insert is unacknowledged. Her pending insert at 3 is after 0, so Ben's op applies as sent, and her pending op moves to 6.",
+      "caption": "Ana's client gets revision 8 while hers is unacked. Ben's op at 0 applies as sent; her pending insert moves to 6.",
       "line": 2,
       "arrays": [
         { "label": "Ana", "values": ["m", "y", " ", "d", "o", "g", "s"], "highlight": [0, 1, 2] },
@@ -323,7 +323,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
       "vars": { "rev": 9, "Ana's pending": "now at 6" }
     },
     {
-      "caption": "Ben receives revision 9, already transformed: insert at 6. Ana gets her ack. Three copies, one text: <code>my dogs</code>.",
+      "caption": "Ben receives revision 9, already transformed: insert at 6. Ana gets her ack. All show <code>my dogs</code>.",
       "arrays": [
         { "label": "Ana", "values": ["m", "y", " ", "d", "o", "g", "s"], "mark": [0, 1, 2, 3, 4, 5, 6] },
         { "label": "server", "values": ["m", "y", " ", "d", "o", "g", "s"], "mark": [0, 1, 2, 3, 4, 5, 6] },
@@ -336,9 +336,9 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 </script>
 </x-tracer>
 
-<p>The central server is what keeps OT manageable. Because it picks one order, the transform only has to guarantee that A then B-transformed gives the same text as B then A-transformed. Without a server, peers see operations in different orders and the transform must meet a much harder second condition, which several published peer-to-peer OT algorithms were later shown to break.</p>
+<p>The central server keeps OT manageable: with one order, the transform only has to make A then B-transformed equal B then A-transformed. Peer-to-peer OT must meet a much harder second condition, which several published algorithms were later shown to break.</p>
 
-<p>A <strong>CRDT</strong> (conflict-free replicated data type) avoids positions. Every character gets a permanent unique id, such as <code>(ben, 1)</code>, and an insert says "after the character with id X". Ana's <code>s</code> goes after the id of <code>g</code>; Ben's <code>m</code> goes at the start. Ids never shift, so concurrent operations can be applied in either order, a repeated one changes nothing, and every copy ends at <code>my dogs</code>. Two inserts after the same character are ordered by comparing their ids. A deleted character stays as a hidden <strong>tombstone</strong>, because a later insert may point at it.</p>
+<p>A <strong>CRDT</strong> (conflict-free replicated data type) avoids positions. Every character gets a permanent unique id, such as <code>(ben, 1)</code>, and an insert says "after the character with id X": Ana's <code>s</code> goes after the id of <code>g</code>. Ids never shift, so operations apply in any order, repeats change nothing, and every copy ends at <code>my dogs</code>; ties are ordered by id. A deleted character stays as a hidden <strong>tombstone</strong>, since a later insert may point at it.</p>
 
 <x-tradeoffs caption="Merging concurrent edits">
 <script type="application/json">
@@ -346,15 +346,15 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
   "options": [
     {
       "name": "OT with a central server",
-      "good": "Small operations and a plain-text document. One place for order, access checks and history.",
-      "bad": "Needs an owner online per document. Rich-text transforms are hard to get right; long offline sessions transform against many operations.",
-      "pick": "A hosted product where every document already has a server. My choice here.",
+      "good": "Small operations, plain-text document, one place for order, access checks and history.",
+      "bad": "Needs an owner online per document. Rich-text transforms are hard; long offline sessions transform against many operations.",
+      "pick": "A hosted product with a server per document. My choice here.",
       "default": true
     },
     {
       "name": "CRDT",
-      "good": "No ordering server: edits merge in any order, so peer-to-peer and long offline work come naturally.",
-      "bad": "Ids on every character and tombstones add metadata until compacted. Concurrent inserts can interleave in surprising ways.",
+      "good": "No ordering server: edits merge in any order, so peer-to-peer and long offline work are natural.",
+      "bad": "Per-character ids and tombstones add metadata until compacted. Concurrent inserts can interleave oddly.",
       "pick": "Offline-first or peer-to-peer apps, or several regions writing one document."
     }
   ]
@@ -362,11 +362,11 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 </script>
 </x-tradeoffs>
 
-<p>My pick is OT with a central server: the design needs one owner per document anyway, for order, presence and access checks, so OT's main cost is already paid. "Offline for days" or "no server in the middle" would flip it to a CRDT, with a server kept only to store and relay operations.</p>
+<p>Pick OT: the design needs one owner per document anyway, so OT's main cost is already paid.</p>
 
 <h3>One server per document</h3>
 
-<p>The gateways hash the document id onto a <a href="/system-design/consistent-hashing.html">consistent-hash ring</a> of document servers. Ring membership lives in a small strongly consistent store that every gateway caches and watches. With <code>hash mod N</code>, adding a 41st server would remap almost every document. With a ring, about 1/41 move: 1,000,000 ÷ 41 ≈ 24,000 documents, each reloaded from its snapshot.</p>
+<p>The gateways hash the document id onto a <a href="/system-design/consistent-hashing.html">consistent-hash ring</a> of document servers. Membership lives in a small strongly consistent store that gateways cache and watch. Adding a 41st server moves about 1/41 of documents (1,000,000 ÷ 41 ≈ 24,000), where <code>hash mod N</code> would remap almost all.</p>
 
 <x-tradeoffs caption="Getting every editor of a document to one place">
 <script type="application/json">
@@ -374,20 +374,20 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
   "options": [
     {
       "name": "Any server, order in the database",
-      "good": "No ownership; any server takes any edit and relays it through pub/sub.",
-      "bad": "Every operation needs a database round trip to claim a revision, and racing claims retry.",
+      "good": "Any server takes any edit and relays it through pub/sub.",
+      "bad": "A database round trip per operation to claim a revision; racing claims retry.",
       "pick": "Low edit rates, such as a shared to-do list."
     },
     {
       "name": "Owner by consistent hashing",
-      "good": "Ordering happens in one process's memory, with no lookup per connection.",
-      "bad": "Membership changes move documents; you cannot move one hot document on purpose.",
+      "good": "Ordering in one process's memory, no lookup per connection.",
+      "bad": "Membership changes move documents; you cannot move a hot one on purpose.",
       "pick": "Many small documents. The usual answer.",
       "default": true
     },
     {
       "name": "Owner directory",
-      "good": "You can place a busy document on a quiet server.",
+      "good": "Place a busy document on a quiet server.",
       "bad": "A lookup per open, and the directory must stay highly available.",
       "pick": "Very uneven load."
     }
@@ -396,41 +396,46 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 </script>
 </x-tradeoffs>
 
-<p>Ownership can briefly overlap: a server paused by a long garbage-collection run may wake still believing it owns a document. A <strong>lease</strong> makes this rare: an owner stops serving when its lease lapses, before the store reassigns the document. The <strong>log as a fence</strong> makes it harmless. An owner only inserts the revision after the last one it has seen, and each revision can be written once, so two servers can never both commit 1045. The loser of that race re-reads the log, and steps down if the ring names another owner. A new owner learns each client's last <code>seq</code> from the logged operations, so resends stay harmless. <a href="/system-design/consensus-and-leader-election.html">Consensus and leader election</a> explains why a lease alone is not enough.</p>
+<p>A server paused by garbage collection may wake still believing it owns a document.</p>
+<ul>
+<li>A <strong>lease</strong> makes this rare: an owner stops serving when its lease lapses, before reassignment.</li>
+<li>The <strong>log as a fence</strong> makes it harmless: each revision is written once, so two servers cannot both commit 1045. The loser checks the ring and steps down.</li>
+</ul>
+<p><a href="/system-design/consensus-and-leader-election.html">Consensus and leader election</a> explains why a lease alone is not enough.</p>
 
 <h3>Storing operations and compacting them</h3>
 
-<p>The compactor writes a snapshot every 1,000 operations, so nobody replays a busy document from revision 1. Opening a document reads one 50 KB snapshot and at most 999 operations, about 150 KB. Keep fine-grained operations for 30 days (120 TB) for catch-up and recent history, then delete them. Do not keep every snapshot: that would be 40 million a day, 2 TB. Keep the newest, plus one per editing session for version history. A snapshot is a cache of the log, so a bad one is rebuilt from the previous snapshot and the operations.</p>
+<p>The compactor writes a snapshot every 1,000 operations, so opening reads one 50 KB snapshot and at most 999 operations, about 150 KB. Keep operations 30 days (120 TB). Keep the newest snapshot plus one per editing session, not all of them (40 million a day, 2 TB). A snapshot is a cache of the log: a bad one is rebuilt from the previous snapshot and the operations.</p>
 
 <h3>Cursors, reconnects and offline work</h3>
 
-<p><strong>Cursors are not operations.</strong> Nobody needs their history and losing one is harmless, so they stay in the owner's memory and are never logged. A cursor is sent with its revision; when Ben inserts 3 characters before Ana's cursor, it shifts right by 3 with the same transform used for text. Cursor traffic is what hurts big documents: 100 editors sending their cursor 10 times a second to 99 others is 100 × 10 × 99 = 99,000 messages a second. Instead the owner sends each client one combined update every 500 ms: 100 × 2 = 200 messages a second.</p>
+<p><strong>Cursors are not operations.</strong> They live in the owner's memory, never logged. A cursor carries its revision, so when Ben inserts 3 characters before Ana's cursor, the same transform shifts it right by 3. Cursors hurt big documents: 100 editors sending 10 a second to 99 others is 100 × 10 × 99 = 99,000 messages a second. Instead the owner sends each client one combined update every 500 ms: 100 × 2 = 200 a second.</p>
 
-<p><strong>Reconnecting</strong> reuses the edit path. The client keeps its last acknowledged revision and its unacknowledged operations, reconnects with <code>since=1044</code>, transforms its pending operations against what it receives, and resends them with their original <code>(client, seq)</code>, so nothing is applied twice.</p>
+<p><strong>Reconnecting</strong> reuses the edit path: send <code>since=1044</code>, transform unacked operations against what arrives, and resend them with their original <code>(client, seq)</code>.</p>
 
-<p><strong>Offline editing</strong> is a long reconnect: the offline edits are sent as one operation with the old <code>base_rev</code> and transformed against everything since. If that revision is older than the 30-day log, the server answers <code>reload</code>; the client fetches a snapshot and does a three-way text merge, or saves its version as a copy.</p>
+<p><strong>Offline editing</strong> is a long reconnect: the edits go as one operation with the old <code>base_rev</code>. If that revision is older than the 30-day log, the server answers <code>reload</code>; the client fetches a snapshot and does a three-way merge, or saves a copy.</p>
 
 <x-callout type="mistake" title="Sending the whole document on every save">
-<p>"Each client uploads the full text and the last write wins" loses every concurrent edit but one and sends 50 KB per batch instead of 100 bytes. Send operations and merge them.</p>
+<p>"Upload the full text; last write wins" loses every concurrent edit but one and sends 50 KB per batch instead of 100 bytes. Send operations and merge them.</p>
 </x-callout>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (10 million operations a second), gateways and document servers scale by adding machines, and the ring moves a small share of documents each time. The log grows to about 500 shards. The real limit is one document, since one owner serves all its editors. At 100 editors, 100 × 0.5 = 50 operations a second sent to 99 others is about 5,000 messages a second: easy. A document read by 10,000 people needs a read-only stream for viewers through a separate fan-out tier.</p>
+<p>At 10x (10 million operations a second), add gateways and document servers; the log grows to about 500 shards. The real limit is one document's owner. At 100 editors, 100 × 0.5 = 50 operations a second to 99 others is about 5,000 messages a second: easy. 10,000 readers need a read-only stream through a separate fan-out tier.</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A document server</td><td>With 40 servers, its 1,000,000 ÷ 40 = 25,000 documents lose their owner. Typing continues locally.</td><td>The ring reassigns them; their 50,000 editors reconnect with jitter (over 10 seconds, 5,000 a second) and resend.</td></tr>
-<tr><td>A gateway</td><td>Its sockets drop.</td><td>Clients reconnect through another gateway and catch up; owners are unchanged.</td></tr>
-<tr><td>A log shard leader</td><td>Its documents cannot commit; edits wait unacknowledged.</td><td>The synchronous replica takes over with every acked operation; clients resend the rest.</td></tr>
-<tr><td>The membership store</td><td>No ownership changes.</td><td>Gateways route on their cached ring; run it on 3 or 5 nodes.</td></tr>
-<tr><td>The compactor</td><td>No new snapshots; opening gets slowly slower.</td><td>Nothing is lost; restart it.</td></tr>
+<tr><td>A document server</td><td>Its 1,000,000 ÷ 40 = 25,000 documents lose their owner. Typing continues locally.</td><td>The ring reassigns them; 50,000 editors reconnect with jitter (5,000 a second over 10 seconds) and resend.</td></tr>
+<tr><td>A gateway</td><td>Its sockets drop.</td><td>Clients reconnect elsewhere and catch up.</td></tr>
+<tr><td>A log shard leader</td><td>Its documents cannot commit; edits wait unacked.</td><td>The synchronous replica takes over; clients resend the rest.</td></tr>
+<tr><td>The membership store</td><td>No ownership changes.</td><td>Gateways use their cached ring; run 3 or 5 nodes.</td></tr>
+<tr><td>The compactor</td><td>Opening slowly gets slower.</td><td>Nothing is lost; restart it.</td></tr>
 </tbody>
 </table>
 
 <x-callout type="mistake" title="Acknowledging before the operation is logged">
-<p>If the owner acks and dies before logging, the author's client discards the operation and the new owner never saw it. Log first, on two machines, then ack.</p>
+<p>If the owner acks then dies before logging, the client drops the operation and the new owner never sees it. Log on two machines, then ack.</p>
 </x-callout>
 
 <h2>What a strong answer sounds like</h2>
@@ -438,43 +443,43 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Uses WebSockets and saves the document, notices that concurrent saves overwrite each other, and with prompting suggests locking or merging.</td></tr>
-<tr><td>Mid</td><td>Sends operations, explains OT or CRDTs with an example, and keeps an operation log with snapshots.</td></tr>
-<tr><td>Senior</td><td>Ties the merge choice to the architecture, routes editors with consistent hashing, fences stale owners, keeps cursors out of the log, and says what offline work and 100-editor documents cost.</td></tr>
+<tr><td>Junior</td><td>Saves the whole document; with prompting, sees saves overwrite and suggests locking or merging.</td></tr>
+<tr><td>Mid</td><td>Sends operations, explains OT or CRDTs with an example, keeps a log with snapshots.</td></tr>
+<tr><td>Senior</td><td>Ties the merge choice to the architecture, fences stale owners, keeps cursors out of the log, prices offline and 100-editor documents.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Defending OT" tone="strong">
 <x-interviewer>Everyone says CRDTs are the modern answer. Why OT?</x-interviewer>
-<x-you>I already have one owner per document for ordering, presence and access checks. With one server picking the order, OT only has to make pairs of operations agree, and the stored document stays plain text. A CRDT would remove that server, but I'd pay for ids on every character and tombstones. If offline for days or peer-to-peer were requirements, I'd switch.</x-you>
-<x-coach>It names what each option costs here and what would flip the choice.</x-coach>
+<x-you>I already need one owner per document for ordering, presence and access. With one order, OT only has to make pairs of operations agree, and the document stays plain text. A CRDT drops that server but costs per-character ids and tombstones. If offline for days or peer-to-peer were required, I'd switch.</x-you>
+<x-coach>It prices each option and says what would flip the choice.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How does undo work with several editors?</h3>
-<p>Undo only undoes your own edits. The client keeps the inverse of each of its operations, transforms it against everything committed since, and sends it as a new operation.</p>
+<p>Undo only your own edits: keep each operation's inverse, transform it against everything since, and send it as a new operation.</p>
 
 <h3>How do you add formatting such as bold?</h3>
-<p>Add operations over ranges, such as "bold from 10 to 18". The same transform shifts the range ends when text is inserted or deleted before or inside them.</p>
+<p>Add range operations, such as "bold from 10 to 18". The transform shifts the range ends when text changes before or inside them.</p>
 
 <h3>Someone loses access while editing. What happens?</h3>
-<p>The metadata service tells the owner, which drops that user's socket and rejects their pending operations. Every operation passes through the owner, so there is one place to enforce it.</p>
+<p>The metadata service tells the owner, which drops that user's socket and rejects their pending operations. Every operation passes the owner, so that is enough.</p>
 
 <h3>How would you run this in several regions?</h3>
-<p>Each document's owner lives in one region. Distant editors still type with zero delay, but see others' edits one cross-region round trip later. If two regions must accept writes for one document, that is the case for a CRDT.</p>
+<p>Each document's owner lives in one region. Distant editors type with zero delay but see others' edits a cross-region round trip later. If two regions must accept writes for one document, use a CRDT.</p>
 
 <h3>How do you show last Tuesday's version?</h3>
-<p>Take the nearest snapshot before that time and, within 30 days, apply operations up to the chosen moment. Older versions are limited to the kept snapshots.</p>
+<p>Take the nearest earlier snapshot and, within 30 days, apply operations up to that moment. Older versions are limited to kept snapshots.</p>
 
 <x-checklist title="Self-review: collaborative editor">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked how many people edit one document and whether offline matters", "I named convergence and no lost acknowledged edits as the core"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated operations per second from open documents", "I sent operations with a base revision and a client sequence number"] },
-    { "title": "Design and depth", "items": ["I traced two concurrent inserts and showed the naive result diverging", "I compared OT and CRDTs and tied my choice to one owner per document", "I routed a document's editors to one server with consistent hashing", "I logged before acknowledging and compacted into snapshots", "I kept cursors out of the log and batched them"] },
-    { "title": "Failure", "items": ["I explained recovery without duplicates when the owner dies", "I fenced a stale owner so the log cannot fork", "I said what limits one document"] }
+    { "title": "Before drawing", "items": ["I asked editors per document and whether offline matters", "I named convergence and no lost acked edits"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated operations per second", "Operations carry a base revision and client sequence number"] },
+    { "title": "Design and depth", "items": ["I showed two concurrent inserts diverging", "I tied OT vs CRDT to one owner per document", "I routed each document to one server", "I logged before acking and compacted", "I kept cursors out of the log, batched"] },
+    { "title": "Failure", "items": ["I recovered from owner death without duplicates", "I fenced a stale owner", "I said what limits one document"] }
   ]
 }
 </script>

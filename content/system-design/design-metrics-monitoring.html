@@ -2,14 +2,14 @@
 {
   "title": "Design Metrics Monitoring",
   "description": "Collect metrics from 100,000 servers, store them compactly, serve dashboards and fire alerts that still work when the monitored systems are failing.",
-  "minutes": 34,
+  "minutes": 30,
   "kind": "design",
   "tags": ["case study", "time series", "monitoring", "alerting", "compression"]
 }
 -->
-<p>Every server in a company reports numbers every few seconds: CPU, memory, requests served, errors, latency. Engineers look at them on dashboards, and rules watch them around the clock and page someone when error rates climb. When production is on fire, this is the system everyone opens at once, so it must be at its best exactly when everything else is at its worst.</p>
+<p>Every server reports numbers every few seconds: CPU, memory, requests, errors, latency. Engineers watch dashboards, and rules page someone when error rates climb. When production is on fire, everyone opens this system at once, so it must work best when everything else is failing.</p>
 
-<p>Think of an in-house version of a hosted product such as Datadog. Interviewers ask it because it looks like "store numbers, draw graphs" and hides a write-heavy store that must compress well, a cardinality problem that can take it down, and a design rule most candidates miss: the monitor must not fail along with what it monitors. The <a href="/system-design/observability.html">observability</a> lesson covers what to measure and how to alert well; this one builds the machine. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>Think of an in-house Datadog. It hides a write-heavy store that must compress well, a cardinality problem that can take it down, and a rule most candidates miss: the monitor must not fail with what it monitors. <a href="/system-design/observability.html">Observability</a> covers what to measure; this lesson builds the machine, following <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -21,23 +21,23 @@
 <x-interviewer>100,000 servers, about 500 series each, every 10 seconds.</x-interviewer>
 <x-you>How long do we keep data, and at what detail?</x-you>
 <x-interviewer>Full detail for a week, coarser data for two years.</x-interviewer>
-<x-you>Then writes dominate and are steady, and reads spike during incidents. My priorities: alerts must fire even when parts of production are down, a dashboard over the last hour loads in about a second, and losing a few seconds of samples is acceptable. Losing alerting is not.</x-you>
-<x-coach>Ranking alerting above data completeness is the judgement that drives the failure design later.</x-coach>
+<x-you>So writes are steady and dominant, and reads spike during incidents. Priorities: alerts fire even when parts of production are down, a 1-hour dashboard loads in about a second, and losing a few seconds of samples is fine. Losing alerting is not.</x-you>
+<x-coach>Ranking alerting above data completeness drives the failure design later.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> collect metrics with labels (<code>service</code>, <code>host</code>, <code>status</code>) from every server; query them for dashboards by time range and labels, with sums, rates and percentiles; evaluate alert rules and notify on-call.</li>
-<li><strong>Non-functional:</strong> ingest 5 million samples a second; a sample is queryable within 30 seconds; a 1-hour dashboard panel loads in about 1 second; alerts fire within a minute once a rule's condition has held for its set duration, and keep working during partial outages; raw data for 7 days, rollups for 2 years.</li>
-<li><strong>Out of scope:</strong> logs, traces, anomaly detection, the agent's install and upgrade tooling.</li>
+<li><strong>Functional:</strong> collect labelled metrics (<code>service</code>, <code>host</code>, <code>status</code>) from every server; query by time range and labels, with sums, rates and percentiles; evaluate alert rules and notify on-call.</li>
+<li><strong>Non-functional:</strong> ingest 5 million samples a second; queryable within 30 seconds; a 1-hour panel loads in about 1 second; alerts fire within a minute of their hold duration and survive partial outages; raw data for 7 days, rollups for 2 years.</li>
+<li><strong>Out of scope:</strong> logs, traces, anomaly detection, agent install tooling.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
 <li><strong>Series:</strong> 100,000 × 500 = 50 million active time series.</li>
-<li><strong>Samples:</strong> 50 million ÷ 10 s = 5 million samples a second, nearly constant all day. At about 20 bytes per sample on the wire, that is 100 MB/s into the system.</li>
-<li><strong>Raw storage:</strong> a sample is a timestamp and a value, 16 bytes uncompressed. 5 × 10<sup>6</sup> × 86,400 = 432 billion samples a day, 6.9 TB a day uncompressed. Time-series compression (next section) typically gets a sample down to one or two bytes; assume 2: 864 GB a day.</li>
-<li><strong>Queries:</strong> in an incident, say 2,000 dashboards open with 20 panels refreshing every 30 seconds: 2,000 × 20 ÷ 30 ≈ 1,300 queries a second. 100,000 alert rules every 30 seconds add a steady 3,300 a second.</li>
+<li><strong>Samples:</strong> 50 million ÷ 10 s = 5 million samples a second, nearly constant. At about 20 bytes each on the wire: 100 MB/s in.</li>
+<li><strong>Raw storage:</strong> a sample (timestamp and value) is 16 bytes uncompressed. 5 × 10<sup>6</sup> × 86,400 = 432 billion samples a day, 6.9 TB a day uncompressed. Time-series compression gets a sample to one or two bytes; assume 2: 864 GB a day.</li>
+<li><strong>Queries:</strong> in an incident, 2,000 dashboards × 20 panels refreshing every 30 seconds ≈ 1,300 queries a second. 100,000 alert rules every 30 seconds add a steady 3,300 a second.</li>
 </ul>
 
 <x-estimate title="Storage with retention tiers">
@@ -74,7 +74,7 @@
 <p>Write the write endpoint the agents call, the query endpoint dashboards call, and how an alert rule is defined.</p>
 </x-task>
 <x-answer>
-<p>Agents send compressed batches of samples, many series per request. Dashboards send a query expression with a time range and a step. Rules are a query, a threshold and a duration the condition must hold, plus who to notify. The step parameter is the one to argue about: it sets how many points come back.</p>
+<p>Agents send compressed batches, many series per request. Dashboards send a query, a time range and a step. A rule is a query, a threshold, a hold duration and who to notify.</p>
 </x-answer>
 </x-tryit>
 
@@ -101,14 +101,14 @@ Alert rule
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <code>step</code>. A panel 1,000 pixels wide cannot show more than about 1,000 points, so the query service picks the coarsest data that still fills it. Asking for a week at a 10-second step returns 60,480 points per series that the browser throws away. Making step part of the API lets the server pick a rollup tier and refuse queries that would touch too many series.</p>
+<p>The decision worth arguing is <code>step</code>. A panel 1,000 pixels wide shows about 1,000 points, yet a week at a 10-second step returns 60,480 per series. With step in the API, the server picks the coarsest rollup tier that fills the panel and refuses queries that touch too many series.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
 <p>What identifies a series, how are samples stored, and how does a query find the series matching <code>service="checkout"</code>?</p>
 </x-task>
 <x-answer>
-<p>A series is its metric name plus its full label set, hashed to an id. Samples are stored per series in compressed chunks covering a time range. An inverted index maps each label pair to the list of series ids that have it, and a query intersects those lists.</p>
+<p>A series is its metric name plus labels, hashed to an id. Samples sit per series in compressed time-range chunks. An inverted index maps each label pair to its series ids; a query intersects those lists.</p>
 </x-answer>
 </x-tryit>
 
@@ -131,14 +131,14 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 </pre>
 </x-code>
 
-<p>The access pattern is unusual. Writes are append-only, always at "now", and arrive for every series at once. Reads ask for a range of time for a set of series, and data is almost never updated. A general database would spend its effort on things this workload does not need. A <strong>time-series database</strong> (such as Prometheus, M3 or VictoriaMetrics) keeps each series' open chunk in memory and the rest of the last two hours on local disk, then writes immutable, compressed blocks that are cheap to keep in <a href="/system-design/blob-storage.html">object storage</a>.</p>
+<p>Writes are append-only, always at "now", for every series at once. Reads ask for a time range over a set of series. Nothing is updated. A <strong>time-series database</strong> (such as Prometheus, M3 or VictoriaMetrics) keeps each open chunk in memory and the last two hours on local disk, then writes immutable, compressed blocks to cheap <a href="/system-design/blob-storage.html">object storage</a>.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes from a server's counters to an engineer's dashboard and to a page on someone's phone. Which parts must keep working during an outage?</p>
+<p>Sketch the path from a server's counters to a dashboard and to a page on someone's phone. Which parts must survive an outage?</p>
 </x-task>
 <x-answer>
-<p>An agent per host sends batches to a stateless ingest tier, which writes to a log; ingesters build series in memory and flush blocks. A query service reads them. An alert evaluator runs rules through the query service and hands firing alerts to a notifier, which pages through an outside provider. The alerting path must keep working, so it runs apart from what it watches.</p>
+<p>Host agents, ingest, a log, a time-series store, a query service, and an alert evaluator feeding a notifier that pages through an outside provider. Alerting must run apart from what it watches.</p>
 </x-answer>
 </x-tryit>
 
@@ -200,52 +200,52 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
   },
   "steps": [
     {
-      "caption": "The agent on web-17 reads the counters of the processes on its own host, 500 series, and sends one compressed batch to the ingest service. Collecting locally means a dead process shows up as a failed read, not as silence.",
+      "caption": "The agent on web-17 reads its host's 500 series and sends one compressed batch to ingest. Collecting locally means a dead process shows up as a failed read, not as silence.",
       "arch": { "active": ["agent", "ingest", ["agent", "ingest"]], "dim": ["eng", "query", "alert", "notify", "pager"] },
       "vars": { "series in batch": 500 }
     },
     {
-      "caption": "Ingest checks the tenant's sample rate, then appends the batch to the log, partitioned by series id. The log is the durable copy until the store flushes a block.",
+      "caption": "Ingest checks the tenant's sample rate and appends the batch to the log, partitioned by series id. The log is the durable copy until the store flushes a block.",
       "arch": { "active": ["ingest", "log", ["ingest", "log"]], "dim": ["eng", "query", "alert", "notify", "pager"], "notes": { "ingest": "rate ok" } },
       "vars": { "series in batch": 500 }
     },
     {
-      "caption": "The store's ingester for that partition appends each sample to the series' open chunk in memory, compressed as it goes. The sample is queryable now, a few seconds after it was measured.",
+      "caption": "That partition's ingester appends each sample to the series' open in-memory chunk, compressed. It is queryable seconds after it was measured.",
       "arch": { "active": ["tsdb", ["log", "tsdb"]], "dim": ["eng", "query", "alert", "notify", "pager"], "notes": { "tsdb": "2 B per sample" } },
       "vars": { "lag": "about 5 s" }
     },
     {
-      "caption": "Checkout's error ratio climbs past 5%. The alert evaluator runs the rule every 30 seconds through the query service; the first time it is true, the alert becomes <em>pending</em>.",
+      "caption": "Checkout's error ratio climbs past 5%. The evaluator runs the rule every 30 seconds; the first time it is true, the alert becomes <em>pending</em>.",
       "arch": { "active": ["alert", "query", "tsdb", ["alert", "query"], ["query", "tsdb"]], "dim": ["eng", "notify", "pager", "agent"], "notes": { "alert": "pending" } },
       "vars": { "error ratio": "7%", "held for": "0 min" }
     },
     {
-      "caption": "Ten evaluations later the condition has held for 5 minutes, so the alert fires. A short spike would have cleared before this and paged nobody.",
+      "caption": "After 5 minutes of holding, the alert fires. A short spike would have cleared and paged nobody.",
       "arch": { "active": ["alert", "notify", ["alert", "notify"]], "dim": ["eng", "pager", "agent", "ingest", "log"], "notes": { "alert": "firing" } },
       "vars": { "error ratio": "7%", "held for": "5 min" }
     },
     {
-      "caption": "Two evaluator replicas run the same rules, so the notifier receives the alert twice. It deduplicates by rule and labels, groups it with related alerts, and sends one page.",
+      "caption": "Two evaluator replicas run the same rules, so the notifier gets the alert twice. It deduplicates by rule and labels, groups related alerts, and sends one page.",
       "arch": { "active": ["notify", "pager", ["notify", "pager"]], "mark": ["pager"], "dim": ["eng", "agent", "ingest", "log", "tsdb", "query"], "notes": { "notify": "2 in, 1 out" } },
       "vars": { "pages sent": 1 }
     },
     {
-      "caption": "The on-call engineer opens the checkout dashboard for the last 7 days. The query service picks the 1-minute tier: 10,080 points per series instead of 60,480 raw ones.",
+      "caption": "On-call opens the checkout dashboard for the last 7 days. The query service picks the 1-minute tier: 10,080 points per series instead of 60,480 raw ones.",
       "arch": { "active": ["eng", "query", "tsdb", ["eng", "query"], ["query", "tsdb"]], "mark": ["eng"], "dim": ["alert", "notify", "pager", "agent", "ingest", "log"], "notes": { "query": "1-min tier" } },
       "vars": { "points per series": "10,080" }
     },
     {
-      "caption": "A deploy adds a <code>user_id</code> label to a request counter. Within a minute checkout tries to create 5 million new series. The ingesters, which hold every active series, refuse new ones past checkout's limit and alert the team; existing series keep flowing.",
+      "caption": "A deploy adds a <code>user_id</code> label, and checkout tries to create 5 million new series. Ingesters refuse those past checkout's limit and alert the team; existing series keep flowing.",
       "arch": { "active": ["agent", "ingest", "log", "tsdb", ["agent", "ingest"], ["ingest", "log"], ["log", "tsdb"]], "dim": ["eng", "query", "alert", "notify", "pager"], "notes": { "tsdb": "series limit" } },
       "vars": { "new series refused": "5 million" }
     },
     {
-      "caption": "A network failure cuts off the store. Rule queries now fail or come back empty, which the evaluator treats as a problem, not as all clear: it fires a \"monitoring has no data\" alert.",
+      "caption": "A network failure cuts off the store. Rule queries fail or come back empty, which the evaluator treats as a problem, not all clear: it fires a \"monitoring has no data\" alert.",
       "arch": { "fail": ["tsdb", ["query", "tsdb"]], "active": ["alert", "notify", ["alert", "notify"]], "dim": ["eng", "agent", "ingest", "log"], "notes": { "alert": "no data" } },
       "vars": { "rules with data": 0 }
     },
     {
-      "caption": "Worse, the notifier itself goes down. The notifier normally sends the paging provider a heartbeat every minute; when it stops, the provider pages on its own. Silence is never mistaken for health.",
+      "caption": "Worse, the notifier goes down. It normally sends the paging provider a heartbeat every minute; when that stops, the provider pages on its own. Silence is never mistaken for health.",
       "arch": { "fail": ["notify", "tsdb"], "active": ["pager"], "dim": ["eng", "agent", "ingest", "log", "query", "alert"], "notes": { "pager": "no heartbeat" } },
       "vars": { "pages sent": 2 }
     }
@@ -258,16 +258,14 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 
 <h3>Push or pull</h3>
 
-<p>Something has to move numbers from 100,000 hosts to the system. Either the system pulls (scrapes an endpoint on each target) or the targets push.</p>
-
 <x-tradeoffs caption="How metrics get collected">
 <script type="application/json">
 {
   "options": [
     {
       "name": "Central pull (scrape)",
-      "good": "The system sets the pace and cannot be flooded; a failed scrape tells you the target is down.",
-      "bad": "Needs service discovery and network reach to every target; short jobs can finish between scrapes.",
+      "good": "The system sets the pace and cannot be flooded; a failed scrape means the target is down.",
+      "bad": "Needs service discovery and network reach to every target; short jobs can end between scrapes.",
       "pick": "One cluster or data center you control."
     },
     {
@@ -278,8 +276,8 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
     },
     {
       "name": "Local agent: pull locally, push batches",
-      "good": "Local scraping detects dead processes; batched, compressed pushes cross the network once per host per 10 s; works anywhere.",
-      "bad": "An agent to run on every host; a dead agent must be detected by its own heartbeat.",
+      "good": "Local scraping detects dead processes; one compressed push per host per 10 s; works anywhere.",
+      "bad": "An agent on every host; a dead agent is detected by its own heartbeat.",
       "pick": "Many hosts across regions and networks. Our choice.",
       "default": true
     }
@@ -288,65 +286,63 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 </script>
 </x-tradeoffs>
 
-<p>The agent buffers a few minutes of samples on local disk when ingest is slow or returns 429, and backs off with jitter so 100,000 agents do not retry in lockstep. Every agent also sends an <code>up</code> series; an alert on that series going absent is how you tell a dead host from a quiet one.</p>
+<p>When ingest is slow or returns 429, the agent buffers a few minutes on disk and backs off with jitter, so 100,000 agents do not retry in lockstep. Each agent also sends an <code>up</code> series; alerting on it going absent tells a dead host from a quiet one.</p>
 
 <h3>Storing time series</h3>
 
-<p><strong>Compression</strong> works because neighbouring samples look alike. Timestamps arrive every 10 seconds: 1000, 1010, 1020, 1031. Store the first, then the difference of differences: 10 − 10 = 0, 11 − 10 = 1. Mostly zeros, which take a single bit. Values change slowly, so store each one XOR-ed with the previous one: an unchanged value becomes a single 0 bit, and a small change leaves only a few meaningful bits. That is how 16 bytes becomes one or two, and why samples are compressed per series in time order.</p>
+<p><strong>Compression</strong> works because neighbouring samples look alike. Timestamps arrive every 10 seconds: 1000, 1010, 1020, 1031. Store the first, then the difference of differences: 10 − 10 = 0, 11 − 10 = 1. Mostly zeros, one bit each. Values change slowly, so store each XOR-ed with the previous one: an unchanged value is a single 0 bit. That is how 16 bytes becomes one or two, and why samples are compressed per series in time order.</p>
 
-<p><strong>Downsampling and retention tiers.</strong> Old data is looked at in coarse views, so compaction rewrites it: raw for 7 days, 1-minute rollups for 30 days, 1-hour rollups for 2 years. Each rollup point keeps min, max, sum and count, not just an average, so a rollup can still answer "the highest CPU in that hour" and averages over any longer span stay correct (total sum ÷ total count). The tiers cut storage from about 630 TB to 30 TB. Percentiles cannot be rebuilt from those four values, so latency should be recorded as a histogram (counts per bucket), whose buckets roll up by adding.</p>
+<p><strong>Downsampling.</strong> Old data is viewed coarsely, so compaction rewrites it into the tiers above. Each rollup point keeps min, max, sum and count, not just an average, so it still answers "the highest CPU in that hour" and longer averages stay correct (total sum ÷ total count). Percentiles cannot be rebuilt from those four values, so record latency as a histogram (counts per bucket), whose buckets roll up by adding.</p>
 
-<p><strong>The cardinality problem.</strong> A series is a unique combination of label values, so labels multiply. <code>http_requests_total</code> with 200 services × 50 endpoints × 10 status codes is 100,000 series, fine. Add <code>user_id</code> and every active user becomes new series: 1 million users each hitting 5 endpoint and status combinations is 5 million series, 5 GB of ingester memory at 1 KB each, from one line of code. Memory, index size and query cost all scale with series, so this is the usual way such systems fall over.</p>
+<p><strong>The cardinality problem.</strong> Each unique combination of label values is a series, so labels multiply. 200 services × 50 endpoints × 10 status codes is 100,000 series, fine. Add <code>user_id</code> and 1 million users × 5 endpoint and status combinations is 5 million series, 5 GB of ingester memory, from one line of code. Memory, index size and query cost all scale with series; this is how such systems usually fall over.</p>
 
 <ul>
-<li><strong>Limit per tenant:</strong> cap active series per team and refuse new ones beyond it, as in the tracer. Existing series keep working.</li>
-<li><strong>Make it visible:</strong> show each team its series count and the labels with the most values.</li>
-<li><strong>Send unbounded values elsewhere:</strong> user ids, request ids and URLs with ids belong in logs and traces, not labels.</li>
+<li><strong>Limit per tenant:</strong> cap active series per team and refuse new ones beyond it; existing series keep working.</li>
+<li><strong>Make it visible:</strong> show each team its series count and its biggest labels.</li>
+<li><strong>Send unbounded values elsewhere:</strong> user ids, request ids and URLs belong in logs and traces, not labels.</li>
 </ul>
 
 <x-callout type="mistake" title="Treating series like rows">
-<p>Sizing the store by samples per second and ignoring series count is the classic miss. Many samples over a fixed set of series is a capacity question you can plan for; a stream of brand-new series is not, because every new series costs index entries and memory that stay taken until the series goes stale.</p>
+<p>Sizing by samples per second and ignoring series count. More samples over fixed series is plannable; a stream of new series is not, since each holds index entries and memory until it goes stale.</p>
 </x-callout>
 
 <h3>The query path</h3>
 
-<p>A dashboard query such as "error rate by status for checkout over the last hour" runs in four steps:</p>
+<p>A query such as "checkout error rate by status, last hour" runs in four steps:</p>
 
 <ol>
-<li><strong>Find series:</strong> intersect the index's sorted id lists for <code>__name__=http_requests_total</code> and <code>service=checkout</code>. Refuse with 422 if more than 100,000 series match, before reading any data.</li>
-<li><strong>Pick a tier:</strong> use the coarsest tier that is still finer than the step. A 7-day panel 1,000 points wide has a step of about 10 minutes, so over 1,000 series it reads 10 million 1-minute points instead of 60 million raw ones.</li>
-<li><strong>Fan out:</strong> series are sharded across ingesters by id, so the query service asks every shard holding matches for recent data, and object storage for older blocks, in parallel.</li>
-<li><strong>Aggregate early:</strong> each shard computes partial sums by <code>status</code> and returns a few series, not thousands; the query service adds them up.</li>
+<li><strong>Find series:</strong> intersect the index lists for <code>__name__=http_requests_total</code> and <code>service=checkout</code>. If more than 100,000 match, refuse with 422 before reading data.</li>
+<li><strong>Pick a tier:</strong> the coarsest tier still finer than the step. A 7-day panel 1,000 points wide has a step of about 10 minutes, so over 1,000 series it reads 10 million 1-minute points, not 60 million raw ones.</li>
+<li><strong>Fan out:</strong> series are sharded across ingesters by id, so ask every shard holding matches for recent data, and object storage for older blocks, in parallel.</li>
+<li><strong>Aggregate early:</strong> each shard returns partial sums by <code>status</code>, a few series instead of thousands; the query service adds them.</li>
 </ol>
 
-<p>During an incident hundreds of engineers open the same dashboards. Align each query's start and end to multiples of the step and cache results by (query, step, time range): the older part of the range never changes, so a refresh only computes the newest few points.</p>
+<p>In an incident, hundreds of engineers open the same dashboards. Align start and end to the step and cache by (query, step, time range): older points never change, so a refresh computes only the newest few.</p>
 
 <h3>Alerts that survive the outage</h3>
 
-<p>Evaluate each rule on a fixed schedule through the same query path, and require the condition to hold for a duration before firing, which filters out brief spikes. Run two evaluator replicas so one can die, and deduplicate in the notifier by rule and labels, so redundancy never means double pages. The <a href="/system-design/observability.html">observability</a> lesson covers which conditions deserve a page.</p>
-
-<p>The harder problem is shared fate. If monitoring runs on the same cluster, network and service discovery as production, the outage that needs an alert can take out the alerting too. Then the system is silent at the worst moment, and silence reads as "all fine".</p>
+<p>The hard problem is shared fate. If monitoring shares production's cluster, network and service discovery, the outage that needs an alert takes out alerting too, and silence reads as "all fine".</p>
 
 <ul>
-<li><strong>Separate failure domain:</strong> run monitoring on its own machines and network path, with no dependency on the services it watches (not their database, not their auth service, not their deploy system).</li>
-<li><strong>No data is a signal:</strong> a rule whose series vanish fires a "no data" alert instead of quietly resolving.</li>
-<li><strong>Watch the watcher:</strong> a small second monitoring stack in another region checks that the main one is scraping, storing and evaluating.</li>
-<li><strong>Dead man's switch:</strong> an alert that is always firing sends a heartbeat to the outside paging provider every minute. If heartbeats stop, the provider pages, as in the last tracer step.</li>
+<li><strong>Separate failure domain:</strong> run monitoring on its own machines and network path, depending on nothing it watches (not their database, auth or deploy system).</li>
+<li><strong>No data is a signal:</strong> a rule whose series vanish fires instead of quietly resolving.</li>
+<li><strong>Watch the watcher:</strong> a small second stack in another region checks the main one is scraping, storing and evaluating.</li>
+<li><strong>Dead man's switch:</strong> an always-firing alert sends a heartbeat to the outside paging provider every minute. If heartbeats stop, the provider pages.</li>
 </ul>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, 50 million samples a second over 500 million series, ingest and the log scale out by adding nodes, and ingesters need 500 GB of memory for active series before replication. The index and query fan-out are next: split tenants onto separate shard groups so one team's huge query cannot slow everyone, and add more rollup tiers. Storage grows to about 300 TB, cheap in object storage.</p>
+<p>At 10x (500 million series), ingest and the log scale by adding nodes, and ingesters need 500 GB of memory before replication. Index and query fan-out break next: put large tenants on separate shard groups so one team's huge query cannot slow everyone. Storage grows to about 300 TB, cheap in object storage.</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>An ingest node</td><td>Agents' requests to it fail.</td><td>Agents retry another node; their disk buffer covers the gap.</td></tr>
-<tr><td>An ingester</td><td>Recent data for its series is briefly unreadable.</td><td>A replacement replays the log, which keeps a day, from its last flushed block; run 2 replicas per series for reads.</td></tr>
-<tr><td>Object storage</td><td>Data older than about 2 hours is unreadable.</td><td>Recent dashboards and alerts still work from ingesters' memory.</td></tr>
-<tr><td>The query service</td><td>Dashboards fail; alert evaluation fails.</td><td>Run it as a stateless fleet; give alerting its own query replicas so dashboard load cannot starve it.</td></tr>
+<tr><td>An ingest node</td><td>Requests to it fail.</td><td>Agents retry another node; their disk buffer covers the gap.</td></tr>
+<tr><td>An ingester</td><td>Its recent data is briefly unreadable.</td><td>A replacement replays the log (kept for a day) from its last flushed block; run 2 replicas per series for reads.</td></tr>
+<tr><td>Object storage</td><td>Data older than about 2 hours is unreadable.</td><td>Recent dashboards and alerts still work from ingesters.</td></tr>
+<tr><td>The query service</td><td>Dashboards fail; alert evaluation fails.</td><td>Run a stateless fleet; give alerting its own query replicas so dashboards cannot starve it.</td></tr>
 <tr><td>An evaluator replica</td><td>Nothing visible.</td><td>The other replica keeps evaluating.</td></tr>
-<tr><td>The notifier</td><td>No pages go out.</td><td>Run 2 or 3 that share dedup state. If all die, heartbeats stop and the outside provider pages anyway.</td></tr>
+<tr><td>The notifier</td><td>No pages go out.</td><td>Run 2 or 3 sharing dedup state. If all die, heartbeats stop and the provider pages anyway.</td></tr>
 </tbody>
 </table>
 
@@ -355,43 +351,37 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Servers write samples into a database table; a cron job checks thresholds and sends email.</td></tr>
-<tr><td>Mid</td><td>Uses a time-series database, picks push or pull with a reason, estimates samples per second and storage, and adds downsampling.</td></tr>
-<tr><td>Senior</td><td>Sizes by series as well as samples, plans for cardinality explosions, explains compression and rollups, designs the query path around step and fan-out, and keeps alerting alive when production and the monitor itself fail.</td></tr>
+<tr><td>Junior</td><td>Samples go into a database table; a cron job checks thresholds and sends email.</td></tr>
+<tr><td>Mid</td><td>A time-series database, push or pull with a reason, estimates of samples and storage, downsampling.</td></tr>
+<tr><td>Senior</td><td>Sizes by series too, plans for cardinality explosions, explains compression and rollups, builds the query path around step and fan-out, and keeps alerting alive when production and the monitor fail.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Who watches the monitor" tone="strong">
-<x-interviewer>Your monitoring runs in the same data center as production, and the data center loses its network. What happens?</x-interviewer>
-<x-you>As described, nothing pages, which is the worst outcome. So I'd run alerting outside production's failure domain, treat "no data" as an alert, and have the notifier send a heartbeat to an outside paging provider every minute. If the whole monitoring stack goes dark, the heartbeat stops and the provider pages on-call. The cost is a second small stack and an outside dependency.</x-you>
+<x-interviewer>Monitoring runs in production's data center, and the data center loses its network. What happens?</x-interviewer>
+<x-you>As described, nothing pages. So I'd run alerting outside production's failure domain, treat "no data" as an alert, and send a heartbeat to an outside paging provider every minute; if the stack goes dark, the provider pages on-call. The cost is a second small stack and an outside dependency.</x-you>
 <x-interviewer>Why not just run two copies of everything?</x-interviewer>
-<x-you>Two copies in the same failure domain fail together. What matters is that the thing that pages depends on nothing that the outage can take down.</x-you>
+<x-you>Two copies in one failure domain fail together. What pages must depend on nothing the outage can take down.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How do you compute p99 latency across 1,000 servers?</h3>
-<p>Not by averaging each server's p99, which is meaningless. Each server records a histogram of request counts per latency bucket; add the buckets across servers, then read the 99th percentile from the summed histogram.</p>
-
-<h3>Can you lose samples?</h3>
-<p>A few seconds' worth, yes, if an agent's disk buffer fills. That is acceptable for metrics; the guarantee to protect is that alerts keep firing.</p>
+<p>Never average each server's p99. Add every server's latency histogram buckets and read the 99th percentile from the sum.</p>
 
 <h3>How do you support many teams fairly?</h3>
-<p>Per-tenant limits on samples per second, active series and query cost, separate shard groups for the largest tenants, and showing each team its usage.</p>
-
-<h3>How would you detect anomalies, not just thresholds?</h3>
-<p>Compare the current value with the same hour in previous weeks, or with a moving baseline, as an extra rule type. It runs on the same evaluator and query path.</p>
+<p>Per-tenant limits on sample rate, active series and query cost, plus separate shard groups for the largest tenants.</p>
 
 <h3>What about very short-lived jobs?</h3>
-<p>A batch job that runs for 3 seconds can finish between collections. It pushes its final values to the local agent before exiting, and the agent sends them on with its next batch.</p>
+<p>A 3-second job can finish between collections, so it pushes its final values to the local agent before exiting.</p>
 
 <x-checklist title="Self-review: metrics monitoring">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked for servers, series per server, interval and retention", "I said alerting matters more than every sample"] },
-    { "title": "Numbers and interfaces", "items": ["I computed samples per second and active series", "I estimated storage with compression and retention tiers", "I put a step parameter in the query API and limited query cost"] },
-    { "title": "Design and depth", "items": ["I chose push, pull or a local agent and gave the cost", "I explained how time-series compression works", "I kept min, max, sum and count in rollups and used histograms for percentiles", "I named cardinality as the main risk and limited series per tenant", "I described the query path: index, tier, fan-out, early aggregation"] },
+    { "title": "Before drawing", "items": ["I asked for servers, series per server, interval and retention", "I ranked alerting above every sample"] },
+    { "title": "Numbers and interfaces", "items": ["I computed samples per second and active series", "I estimated storage with compression and tiers", "I put step in the query API and capped query cost"] },
+    { "title": "Design and depth", "items": ["I chose push, pull or a local agent and gave the cost", "I explained time-series compression", "I kept min, max, sum and count in rollups and used histograms for percentiles", "I named cardinality as the main risk and capped series per tenant", "I walked the query path: index, tier, fan-out, early aggregation"] },
     { "title": "Failure", "items": ["I kept alerting out of production's failure domain", "I treated no data as a signal and added a dead man's switch"] }
   ]
 }
