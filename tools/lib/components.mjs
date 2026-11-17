@@ -909,9 +909,13 @@ export function processLessonBody(body, { lineOffset = 1, resolveLink, track } =
     let k = 2;
     while (ids.has(id)) id = `${id}-${k++}`;
     ids.add(id);
-    if (lvl === '2') toc.push({ id, text: stripTags(inner) });
+    // "Define the API" is an optional step of the design framework: mark it on every case study.
+    const optional = lvl === '2' && stripTags(inner).trim() === 'Define the API';
+    if (lvl === '2') toc.push({ id, text: stripTags(inner) + (optional ? ' (optional)' : '') });
     const rest = attrStr.replace(/\sid\s*=\s*"[^"]*"/, '');
-    return `<h${lvl} id="${id}"${rest}><a class="anchor" href="#${id}" aria-hidden="true" tabindex="-1">#</a>${inner}</h${lvl}>`;
+    const badge = optional ? ' <span class="badge-optional">Optional</span>' : '';
+    const note = optional ? '\n<p class="optional-note">Optional in the interview. Sketch the API only if the interviewer asks, if an API choice shapes the design, or if time permits. Otherwise say "I\'ll skip the detailed API unless you want it" and go to the data model.</p>' : '';
+    return `<h${lvl} id="${id}"${rest}><a class="anchor" href="#${id}" aria-hidden="true" tabindex="-1">#</a>${inner}${badge}</h${lvl}>${note}`;
   });
   if (toc.length < 2) rep.warn('Use at least two <h2> sections so the page gets a table of contents.', 0);
 
