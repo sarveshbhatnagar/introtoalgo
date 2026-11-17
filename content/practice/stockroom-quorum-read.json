@@ -7,12 +7,12 @@
   "aka": "Quorum Read",
   "order": 4,
   "story": [
-    "<p>A hardware shop keeps the stock count for each item on 3 replicas. Every write carries a version number one higher than the last, and a write counts as done once 2 replicas have stored it (W = 2). A read asks all 3 and waits for the first 2 answers (R = 2). Because 2 + 2 &gt; 3, the replicas that answer a read always include at least one that stored the latest completed write, so the newest version among the answers is at least that fresh. A replica that is slow or down simply never answers.</p>",
-    "<p>This is the quorum read used by leaderless key-value stores (see <a href=\"/system-design/replication.html\">Replication</a> and <a href=\"/system-design/design-a-key-value-store.html\">Design a Key-Value Store</a>). It only works if the read picks the <em>newest</em> answer, not the first one.</p>"
+    "<p>A hardware shop keeps each item's stock count on 3 replicas. Every write carries a version number one higher than the last, and counts as done once 2 replicas store it (W = 2). A read asks all 3 and waits for the first 2 answers (R = 2). Since 2 + 2 &gt; 3, those answers always include a replica holding the latest completed write. A slow or down replica never answers.</p>",
+    "<p>This is the quorum read of leaderless key-value stores (see <a href=\"/system-design/replication.html\">Replication</a> and <a href=\"/system-design/design-a-key-value-store.html\">Design a Key-Value Store</a>). It only works if the read picks the <em>newest</em> answer, not the first.</p>"
   ],
   "task": [
-    "<p>Write <code>quorumRead(replies, r)</code>. <code>replies</code> lists what each replica sent, in the order the replies arrive. Each entry is <code>[version, value]</code>, or <code>null</code> for a replica that timed out.</p>",
-    "<p>The coordinator takes the first <code>r</code> entries that are not <code>null</code>, and ignores everything after them, even a newer version, because it has already answered. Return <code>[version, value]</code> for the highest version among those <code>r</code> replies. If fewer than <code>r</code> replicas answered, the read fails: return an empty list.</p>",
+    "<p>Write <code>quorumRead(replies, r)</code>. <code>replies</code> lists what each replica sent, in arrival order. Each entry is <code>[version, value]</code>, or <code>null</code> for a replica that timed out.</p>",
+    "<p>The coordinator takes the first <code>r</code> entries that are not <code>null</code> and ignores everything after them, even a newer version, because it has already answered. Return <code>[version, value]</code> for the highest version among those <code>r</code> replies. If fewer than <code>r</code> replicas answered, the read fails: return an empty list.</p>",
     "<p>Two replies with the same version always carry the same value.</p>"
   ],
   "constraints": [
@@ -39,14 +39,14 @@
     }
   ],
   "hints": [
-    "Which replies does the coordinator actually look at? What happens to a reply that arrives after it already has <code>r</code> answers?",
-    "Walk the replies in order, skip the <code>null</code>s, and stop as soon as you have counted <code>r</code> real replies.",
-    "While you walk, remember the reply with the highest version so far. Do not sort the whole list: the order of arrival is part of the input.",
-    "If the walk ends with fewer than <code>r</code> replies counted, return <code>[]</code>. Otherwise return the remembered <code>[version, value]</code>."
+    "Which replies does the coordinator look at? What happens to one that arrives after it has <code>r</code> answers?",
+    "Walk the replies in order, skip the <code>null</code>s, and stop once you have counted <code>r</code> real replies.",
+    "While walking, remember the reply with the highest version so far. Do not sort: arrival order is part of the input.",
+    "If the walk ends with fewer than <code>r</code> replies, return <code>[]</code>. Otherwise return the remembered <code>[version, value]</code>."
   ],
   "bruteForce": [
-    "<p>A tempting shortcut is to return the highest version in the whole list. That is wrong, not slow: the coordinator answers as soon as it has <code>r</code> replies, so replies after that never reach it (the second example).</p>",
-    "<p>Another is to return the first reply that is not <code>null</code>. That is a read with R = 1, and with W = 2 on 3 replicas it can miss the latest write entirely (the first example).</p>"
+    "<p>Returning the highest version in the whole list is wrong, not slow: the coordinator answers once it has <code>r</code> replies, so later ones never reach it (the second example).</p>",
+    "<p>Returning the first non-<code>null</code> reply is a read with R = 1, and with W = 2 on 3 replicas it can miss the latest write (the first example).</p>"
   ],
   "signature": {
     "function": "quorumRead",
@@ -122,14 +122,14 @@
       "    return []  # fewer than r replicas answered"
     ],
     "walkthrough": [
-      "<p>Simulate the coordinator: read replies in arrival order, skip timeouts, keep the newest so far, and answer the moment the count reaches <code>r</code>.</p>",
+      "<p>Simulate the coordinator: in arrival order, skip timeouts, keep the newest, and answer when the count reaches <code>r</code>.</p>",
       "<p>Trace the first example, r = 2:</p>",
       "<ol>",
       "<li><code>[4, 12]</code>: best is version 4, counted 1.</li>",
       "<li><code>null</code>: skipped, still 1.</li>",
       "<li><code>[5, 9]</code>: 5 &gt; 4, so best is version 5. Counted 2 = r: return <code>[5, 9]</code>.</li>",
       "</ol>",
-      "<p>Know what this does not give you. R + W &gt; N makes a read see the latest <em>completed</em> write, as long as both quorums are drawn from the same N replicas. It does not order concurrent writes, and a read that overlaps an unfinished write may see it while a later read does not. Real stores narrow that gap with read repair: the coordinator sends the newest value back to the stale replicas it heard from.</p>"
+      "<p>The limits: R + W &gt; N guarantees the latest <em>completed</em> write, if both quorums come from the same N replicas. It does not order concurrent writes, and a read overlapping an unfinished write may see it while a later read does not. Read repair narrows that gap: the coordinator sends the newest value back to stale replicas it heard from.</p>"
     ],
     "time": "O(n)",
     "timeWhy": "One pass over at most n replies, stopping early at the quorum.",
