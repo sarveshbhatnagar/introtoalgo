@@ -44,6 +44,7 @@ These apply to every word a learner reads: lesson text, captions, quiz options, 
 - One idea per paragraph. If a sentence does not help the learner do or understand something, cut it.
 - Use small concrete examples with real numbers the reader can trace by hand. Show the trace.
 - Say why, not just what. Name the common mistake and how to avoid it.
+- Be crisp. Say each thing once, in the fewest plain words that keep it clear. No warm-up sentences, no restating what a figure, table or code block already shows, no second example that teaches what the first already did, no "as we saw" recaps. Prefer a short list or table to a long paragraph when items are parallel. If a paragraph runs past four sentences, look for the one to cut.
 - Be direct: "Use a hash map." not "One might consider utilising a hash map."
 - Banned: "delve", "dive in/into", "let's explore", "in today's world", "in the realm of", "it's important to note", "crucial", "leverage", "unlock", "harness", "game-changer", "navigate the landscape", "tapestry", "robust", "seamless", "In conclusion", "buckle up", rhetorical question openers, emoji, exclamation-mark hype, "not just X but Y" constructions, and summaries that only repeat the lesson.
 - No filler intros ("In this lesson we will...") and no filler outros. End when the content ends.
@@ -415,7 +416,7 @@ Structure, in this order (headings are yours to word):
 
 Requirements:
 
-- 900 to 1,600 words (the validator counts prose, captions and quiz text, not code).
+- 600 to 1,250 words (the validator counts prose, captions and quiz text, not code).
 - At least one `<x-tracer>` or `<x-figure>` (AI lessons may use `<x-prompt>` instead). Algorithms lessons should usually have both a tracer and a figure.
 - AI lessons: include an `<x-tryit>`. Prefer `<x-prompt>` examples over describing prompts in prose. For ML lessons, code can be small NumPy-free Python/JS that shows the idea (a gradient step, a dot product).
 - Every number in a trace, table, quiz and figure is correct. Check them by hand or with a quick script.
@@ -693,8 +694,8 @@ The track teaches people preparing for system design interviews. Every lesson an
 
 | Kind | Which lessons | Front matter | Length (validator) |
 |---|---|---|---|
-| Concept | modules 1 to 4 and 7: building blocks and ideas | no `kind` | 900 to 1,600 words |
-| Case study | modules 5 and 6: every `design-a-…` slug | `"kind": "design"` | 1,800 to 3,200 words |
+| Concept | modules 1 to 4 and 7: building blocks and ideas | no `kind` | 600 to 1,250 words |
+| Case study | modules 5 and 6: every `design-a-…` slug | `"kind": "design"` | 1,300 to 2,500 words |
 
 - Code is optional in this track. If you show code, the normal `<x-code>` rules apply (JavaScript and Python tabs, or `single` for HTTP, SQL, JSON or pseudocode, which is the usual case here).
 - `minutes` is still words ÷ 150 + 3, plus time for exercises. Case studies are usually 25 to 35.

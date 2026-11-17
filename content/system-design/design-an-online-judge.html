@@ -2,42 +2,42 @@
 {
   "title": "Design an Online Judge",
   "description": "Design a coding practice and contest site: sandboxing untrusted code, a submission queue with polling, a live leaderboard and the spike at contest start.",
-  "minutes": 30,
+  "minutes": 28,
   "kind": "design",
   "tags": ["case study", "sandboxing", "queues", "leaderboard", "traffic spikes"]
 }
 -->
-<p>You read a problem, write a solution and press Submit. A few seconds later the site says "Accepted, 48 ms", or "Wrong Answer on test 12". During a weekly contest, tens of thousands of people do this at once while a live leaderboard reorders itself. LeetCode is the kind of product this question means.</p>
+<p>You write a solution and press Submit. Seconds later the site says "Accepted, 48 ms" or "Wrong Answer on test 12". In a weekly contest, tens of thousands do this at once while a live leaderboard reorders. Think LeetCode.</p>
 
-<p>Interviewers like it because the core action is alarming: strangers send you programs and you run them on your machines. A good answer treats every submission as hostile, keeps the slow judging work off the request path, and plans for a spike whose start time is known to the second. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The core action is alarming: strangers send you programs and you run them. A good answer treats every submission as hostile, keeps slow judging off the request path, and plans for a spike whose start is known to the second. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design an online judge for coding problems, with contests.</x-interviewer>
-<x-you>Users browse problems, submit code in several languages, and get a verdict from hidden tests. Contests have a fixed start and end and a live leaderboard. Do we need a "run on my own input" button, discussions or plagiarism checks?</x-you>
-<x-interviewer>"Run" on the sample tests, yes. Leave out discussions and plagiarism.</x-interviewer>
+<x-you>Users submit code in several languages and get a verdict from hidden tests. Contests have a fixed start and end and a live leaderboard. Do we need a "run" button, discussions or plagiarism checks?</x-you>
+<x-interviewer>"Run" on sample tests, yes. No discussions or plagiarism.</x-interviewer>
 <x-you>Scale on a normal day, and for the biggest contest?</x-you>
 <x-interviewer>About a million submissions a day. The biggest contest has 50,000 people, 4 problems, 90 minutes.</x-interviewer>
-<x-you>Then the contest is the design problem. My priorities: no submission can harm the system or see other users' data, verdicts are correct and repeatable, a verdict arrives within about 10 seconds normally and 30 at worst in a contest, and the leaderboard can be a few seconds behind. A submission must never be lost once accepted by the API.</x-you>
-<x-coach>The candidate names security first and turns "fast" into numbers for both normal days and contests.</x-coach>
+<x-you>Then the contest is the design problem. No submission can harm the system or see others' data, verdicts are repeatable, and they arrive within 10 seconds normally and 30 in a contest. The leaderboard can lag a few seconds; an accepted submission is never lost.</x-you>
+<x-coach>Security first, and "fast" turned into numbers for normal days and contests.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> list and view problems; submit code in several languages; run against sample tests; get a verdict (accepted, wrong answer, time or memory limit exceeded, runtime or compile error); contests with a start, an end and a live leaderboard.</li>
-<li><strong>Non-functional:</strong> untrusted code is fully isolated (no network, no access to other data); verdicts are deterministic; verdict in 10 s at p95 normally, 30 s during contests; no accepted submission is lost; leaderboard at most a few seconds stale; problem pages load instantly at contest start.</li>
+<li><strong>Functional:</strong> view problems; submit code in several languages; run sample tests; get a verdict (accepted, wrong answer, time or memory limit, runtime or compile error); contests with a live leaderboard.</li>
+<li><strong>Non-functional:</strong> untrusted code fully isolated; deterministic verdicts; verdict in 10 s at p95, 30 s in contests; no accepted submission lost; leaderboard a few seconds stale at most; problem pages load instantly at contest start.</li>
 <li><strong>Out of scope:</strong> discussions, plagiarism detection, problem authoring tools, payments.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>A day has 86,400 seconds. Assume a submission needs about 2 seconds of CPU in total: compiling plus running about 50 hidden tests.</p>
+<p>A day has 86,400 seconds. A submission needs about 2 seconds of CPU: compiling plus about 50 hidden tests.</p>
 
 <ul>
-<li><strong>Normal day:</strong> 1 million ÷ 86,400 ≈ 12 submissions a second, so 12 × 2 = 24 cores busy judging.</li>
-<li><strong>Contest:</strong> 50,000 people × 8 submissions or runs each = 400,000 in 90 minutes (5,400 s): about 74 a second on average. Bursts after each easy problem are about 3x that: 220 a second.</li>
-<li><strong>Problem pages at the start:</strong> if 50,000 people load them within 10 seconds of the start, that is 5,000 page loads a second for content that is identical for everyone.</li>
-<li><strong>Storage:</strong> 1 million × 2 KB of code = 2 GB a day, about 730 GB a year. Test data: 3,000 problems × 10 MB = 30 GB, small enough to cache on every judge machine.</li>
+<li><strong>Normal day:</strong> 1 million ÷ 86,400 ≈ 12 submissions a second: 12 × 2 = 24 busy cores.</li>
+<li><strong>Contest:</strong> 50,000 people × 8 submissions or runs = 400,000 in 90 minutes (5,400 s): about 74 a second, with bursts of 3x: 220 a second.</li>
+<li><strong>Problem pages:</strong> 50,000 loads in the first 10 seconds is 5,000 a second, identical for everyone.</li>
+<li><strong>Storage:</strong> 1 million × 2 KB of code = 2 GB a day, about 730 GB a year. Test data: 3,000 problems × 10 MB = 30 GB, small enough to cache on every judge.</li>
 </ul>
 
 <x-estimate title="Judge capacity at the contest peak">
@@ -48,8 +48,8 @@
   "unit": "count",
   "answer": "440",
   "accept": ["150", "1500"],
-  "steps": ["Each second brings 220 × 2 = 440 core-seconds of work", "440 core-seconds a second needs 440 busy cores; plan about 600 for headroom"],
-  "note": "The normal day needs 24. An 18-fold jump that starts at a known minute is a reason to scale up before the contest, not to react to it."
+  "steps": ["Each second brings 220 × 2 = 440 core-seconds of work", "That needs 440 busy cores; plan about 600 for headroom"],
+  "note": "The normal day needs 24. An 18-fold jump at a known minute means scaling up before the contest, not reacting."
 }
 </script>
 </x-estimate>
@@ -57,24 +57,24 @@
 <x-estimate title="Status polls while waiting">
 <script type="application/json">
 {
-  "question": "At the contest peak, each submission takes about 10 seconds from submit to verdict, and its browser polls for the result once a second. How many status polls a second is that?",
+  "question": "At the contest peak, each waiting browser polls once a second for its verdict. How many polls a second is that?",
   "givens": ["220 submissions a second", "About 10 seconds from submit to verdict", "One poll per second per waiting submission"],
   "unit": "count/s",
   "answer": "2.2 thousand/s",
   "accept": ["700/s", "7 thousand/s"],
   "choices": ["22/s", "220/s", "2.2 thousand/s", "22 thousand/s"],
-  "steps": ["Submissions waiting at any moment (Little's law): 220 a second × 10 s = 2,200", "Each polls once a second: 2,200 polls a second"],
-  "note": "Only waiting submissions poll, not all 50,000 users, so polling is cheap here."
+  "steps": ["Waiting at any moment (Little's law): 220 a second × 10 s = 2,200", "Each polls once a second: 2,200 polls a second"],
+  "note": "Only waiting submissions poll, not all 50,000 users."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the endpoints for submitting code and getting the verdict, and for the contest leaderboard. Does submit wait for the verdict?</p>
+<p>Write endpoints for submitting, getting the verdict, and the leaderboard. Does submit wait for the verdict?</p>
 </x-task>
 <x-answer>
-<p>Submit returns <code>202 Accepted</code> with a submission id at once; judging takes seconds, so no HTTP request should hang on it. The client polls the submission until it has a verdict. The leaderboard is a paged read plus "my rank".</p>
+<p>No. Submit returns <code>202 Accepted</code> with an id at once, and the client polls for the verdict. The leaderboard is a paged read plus "my rank".</p>
 </x-answer>
 </x-tryit>
 
@@ -100,14 +100,14 @@ GET  /v1/contests/{id}/standings/me         { "rank": 812, "solved": 2, "penalty
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>polling against pushing</strong> the verdict. Polling is a plain read that works through any proxy, retries trivially, and the estimate shows only 2,200 polls a second at the peak. Pushing over a WebSocket or server-sent events (see <a href="/system-design/realtime-communication.html">Realtime Communication</a>) saves those reads but needs 50,000 open connections and a way to route each verdict to the right one. Start with polling, one request a second with <code>Retry-After</code> so the server can slow clients down under load.</p>
+<p>The decision worth arguing is <strong>polling against pushing</strong> the verdict. Polling is a plain read that works through any proxy and retries trivially, and it is only 2,200 reads a second at peak. Pushing (see <a href="/system-design/realtime-communication.html">Realtime Communication</a>) saves those reads but needs 50,000 open connections and routing for each verdict. Start with polling; <code>Retry-After</code> lets the server slow clients under load.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records for problems, submissions and contest standings. Which is the source of truth for the leaderboard?</p>
+<p>Sketch records for problems, submissions and standings. What is the leaderboard's source of truth?</p>
 </x-task>
 <x-answer>
-<p>Problems with their test data stored as versioned files; one row per submission with its status and verdict; per-user, per-problem contest results. The submissions table is the source of truth; the live leaderboard is a derived, rebuildable copy.</p>
+<p>Problems with versioned test files; one row per submission; per-user, per-problem contest results. Submissions are the source of truth; the leaderboard is derived and rebuildable.</p>
 </x-answer>
 </x-tryit>
 
@@ -130,20 +130,20 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 </pre>
 </x-code>
 
-<p>The volumes are modest (12 rows a second normally, a few hundred in a contest), and contest scoring needs a small transaction: "record this accept only if it is the first one". A <strong>relational database</strong> fits, partitioned by user if it ever outgrows one primary. Code and test files go in <a href="/system-design/blob-storage.html">object storage</a>, referenced by key. Recording <code>tests_version</code> on each submission makes a verdict repeatable: a rejudge after tests change uses the new version on purpose, not by accident.</p>
+<p>Volumes are modest (12 rows a second, a few hundred in a contest), and scoring needs a small transaction: "record this accept only if it is the first". A <strong>relational database</strong> fits, partitioned by user if it outgrows one primary. Code and tests go in <a href="/system-design/blob-storage.html">object storage</a>. Recording <code>tests_version</code> makes a verdict repeatable: a rejudge uses new tests on purpose, not by accident.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes: where does a submission wait, where does code run, how does the verdict get back to the user and onto the leaderboard?</p>
+<p>Where does a submission wait, where does code run, and how does the verdict reach the user and the leaderboard?</p>
 </x-task>
 <x-answer>
-<p>The API stores the submission and puts its id on a queue. Judge workers take jobs, run the code in sandboxes with cached test data, and write the verdict. The client polls the API. An accepted contest verdict updates an in-memory leaderboard built from the submissions table.</p>
+<p>The API stores the submission and enqueues its id. Sandboxed judge workers run it against cached tests and write the verdict, which the client polls for. A contest accept updates an in-memory leaderboard.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="Submitting is a quick write and an enqueue. Judge workers do the slow, dangerous part in sandboxes, away from the request path, and feed the leaderboard.">
+<x-arch caption="Submitting is a quick write and enqueue. Sandboxed judge workers do the slow, dangerous part off the request path and feed the leaderboard.">
 <script type="application/json">
 {
   "nodes": [
@@ -199,42 +199,42 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
   },
   "steps": [
     {
-      "caption": "10:00:00. The contest's problem pages, built in advance, become visible on the CDN. 50,000 people load them in about 10 seconds; the API servers barely notice.",
+      "caption": "10:00:00. Pre-built problem pages go live on the CDN. 50,000 people load them in about 10 seconds; the API barely notices.",
       "arch": { "active": ["user", "cdn", ["user", "cdn"]], "dim": ["queue", "judge", "tests", "board", "db"], "notes": { "cdn": "5,000 loads/s" } }
     },
     {
-      "caption": "Zoe submits C++ for problem A. The API saves the code and a <code>queued</code> row, puts <code>s88123</code> on the queue, and answers 202 in milliseconds.",
+      "caption": "Zoe submits C++ for problem A. The API saves a <code>queued</code> row, enqueues <code>s88123</code>, and answers 202 in milliseconds.",
       "arch": { "active": ["api", "db", "queue", ["user", "api"], ["api", "db"], ["api", "queue"]], "dim": ["cdn", "judge", "tests", "board"], "notes": { "db": "s88123 queued" } }
     },
     {
-      "caption": "A judge worker takes the job with a 15-second lease, renewed every 5 seconds while it works, and marks it <code>judging</code>. The test files for this <code>tests_version</code> are already on its local disk.",
+      "caption": "A worker takes the job with a 15-second lease, renewed every 5 seconds, and marks it <code>judging</code>. The tests are already on its disk.",
       "arch": { "active": ["judge", "tests", "db", ["queue", "judge"], ["judge", "tests"], ["judge", "db"]], "dim": ["cdn", "board", "user"], "notes": { "judge": "lease 15 s" } }
     },
     {
-      "caption": "The machine dies after 31 of 50 tests. Nobody renews the lease, so after 15 seconds the queue hands <code>s88123</code> to another worker. Zoe's poll still says <code>judging</code>.",
+      "caption": "The machine dies after 31 of 50 tests. The lease expires, and after 15 seconds another worker gets <code>s88123</code>. Zoe's poll still says <code>judging</code>.",
       "arch": { "fail": ["judge"], "active": ["queue", "api", ["user", "api"], ["api", "db"]], "dim": ["cdn", "tests", "board"], "notes": { "queue": "redeliver" } },
       "vars": { "attempt": 2 }
     },
     {
-      "caption": "The new worker compiles and runs all 50 tests in a fresh sandbox: no network, 256 MB, 2 s of CPU per test. The program passes; slowest test 48 ms.",
+      "caption": "The new worker runs all 50 tests in a fresh sandbox: no network, 256 MB, 2 s of CPU per test. All pass; slowest 48 ms.",
       "arch": { "active": ["judge", "tests", ["queue", "judge"], ["judge", "tests"]], "dim": ["cdn", "board", "user"], "notes": { "judge": "50 / 50 passed" } },
       "vars": { "attempt": 2 }
     },
     {
-      "caption": "In one transaction it writes the verdict, only if the row is not <code>done</code> yet, and recomputes Zoe's result for problem A. A late write from the first worker would change nothing.",
+      "caption": "In one transaction it writes the verdict, only if the row is not <code>done</code>, and recomputes Zoe's result for A. A late write from the first worker changes nothing.",
       "arch": { "active": ["db", ["judge", "db"]], "dim": ["cdn", "board", "tests", "user"], "notes": { "db": "accepted" } },
       "vars": { "attempt": 2 }
     },
     {
-      "caption": "It is Zoe's first accept on A. The worker sets her whole score on the leaderboard (1 solved, 760 s of penalty), then acknowledges the job. She moves to rank 812.",
+      "caption": "Her first accept on A: the worker sets her score (1 solved, 760 s penalty) on the leaderboard, then acknowledges the job. Rank 812.",
       "arch": { "active": ["board", ["judge", "board"]], "mark": ["db"], "dim": ["cdn", "tests", "user"], "notes": { "board": "Zoe: 812" } }
     },
     {
-      "caption": "Her next poll returns Accepted, 48 ms. About 2,200 such polls a second at the peak are cheap reads of one row by key.",
+      "caption": "Her next poll returns Accepted, 48 ms: a cheap read of one row by key.",
       "arch": { "active": ["api", "db", ["user", "api"], ["api", "db"], ["api", "user"]], "mark": ["user"], "dim": ["cdn", "queue", "judge", "tests"] }
     },
     {
-      "caption": "Another user submits a program that opens a network socket, then forks in a loop. The sandbox has no network and a limit of 64 processes; the run ends with Runtime Error and the host never sees it.",
+      "caption": "Another program opens a socket, then forks in a loop. No network and a 64-process cap: Runtime Error, and the host never sees it.",
       "arch": { "active": ["judge"], "dim": ["cdn", "board", "user", "api", "tests"], "notes": { "judge": "runtime error" } }
     }
   ]
@@ -244,18 +244,16 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 
 <h2>Deep dives</h2>
 
-<p>Interviewers push on running hostile code safely, on the queue and how results get back, on the leaderboard, and on the minute the contest starts.</p>
-
 <h3>Running untrusted code</h3>
 
-<p>Assume every submission is an attack. It may loop forever, allocate all memory, fork until the process table is full, write gigabytes of output, read the expected outputs, open a connection to send them out, or try a kernel exploit to escape. Each needs its own defence:</p>
+<p>Assume every submission is an attack. Each threat needs its own defence:</p>
 
 <ul>
-<li><strong>Time:</strong> a CPU-time limit per test, counted by the kernel, plus a wall-clock limit (say twice the CPU limit) for programs that sleep or block.</li>
-<li><strong>Memory, processes, output:</strong> a memory cap (256 MB), a process cap (64), an output cap (a few MB), all enforced by the kernel's resource controls, such as cgroups on Linux.</li>
-<li><strong>Files:</strong> a read-only system image, a small writable temp directory, and the test input on standard input. Expected outputs never enter the sandbox; the judge compares outside it.</li>
-<li><strong>Network:</strong> none. The sandbox gets an empty network namespace.</li>
-<li><strong>System calls:</strong> a filter that allows only what normal programs need, and a non-root user.</li>
+<li><strong>Infinite loops:</strong> a CPU-time limit per test, plus a wall-clock limit (say twice the CPU limit) for programs that sleep or block.</li>
+<li><strong>Eating memory, forking, huge output:</strong> caps of 256 MB, 64 processes and a few MB of output, enforced by kernel resource controls such as cgroups on Linux.</li>
+<li><strong>Reading the answers:</strong> a read-only system image, a small temp directory, and only the input on standard input. The judge compares outputs outside.</li>
+<li><strong>Sending data out:</strong> an empty network namespace.</li>
+<li><strong>Kernel exploits:</strong> a system-call filter and a non-root user.</li>
 </ul>
 
 <x-tradeoffs caption="Isolation for untrusted submissions">
@@ -270,75 +268,75 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
     },
     {
       "name": "Container per submission",
-      "good": "Own file system, process and network view, with resource limits. Starts quickly and is well understood.",
-      "bad": "Every container shares the host kernel, so one kernel bug can let a submission escape.",
-      "pick": "Code from trusted users, or as the inner layer of a stronger sandbox."
+      "good": "Own file system, process and network view, with limits. Starts quickly.",
+      "bad": "Containers share the host kernel, so one kernel bug can let a submission escape.",
+      "pick": "Trusted users, or the inner layer of a stronger sandbox."
     },
     {
       "name": "Container inside a micro-VM",
-      "good": "Each sandbox has its own small kernel behind a hardware virtualisation boundary; an escape lands in a throwaway VM.",
-      "bad": "More memory per sandbox and a slower start, so you keep a pool of pre-started ones.",
+      "good": "Each sandbox has its own small kernel behind a hardware boundary; an escape lands in a throwaway VM.",
+      "bad": "More memory and a slower start, so keep a pool of pre-started ones.",
       "pick": "Running code from anyone on the internet, as here.",
       "default": true
     },
     {
       "name": "Full virtual machine",
       "good": "Strongest separation.",
-      "bad": "Seconds to tens of seconds to boot, and heavy per submission.",
-      "pick": "Long jobs, or a whole judge host per tenant."
+      "bad": "Slow to boot and heavy per submission.",
+      "pick": "Long jobs, or a host per tenant."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>I would run each submission in a fresh container inside a micro-VM (Firecracker is one example), taken from a pool of pre-started ones and destroyed afterwards, so nothing one program leaves behind can affect the next. The cost is memory and a pool to manage. Pin each sandbox to its own CPU core: if two submissions share a core, one slows the other, and the same program could pass on Monday and time out on Tuesday.</p>
+<p>Run each submission in a fresh container inside a micro-VM (Firecracker is one example) from a warm pool, destroyed afterwards so nothing carries over to the next. Pin each sandbox to its own CPU core: two submissions sharing a core slow each other, and the same program could pass on Monday and time out on Tuesday.</p>
 
 <x-callout type="mistake" title="Putting the expected output inside the sandbox">
-<p>If the program can read the expected output file, it can print it and pass every test. Feed only the input in; read the program's output from outside and compare there.</p>
+<p>If the program can read the expected output, it prints it and passes every test. Feed only the input in; compare outside.</p>
 </x-callout>
 
 <h3>The queue and getting results back</h3>
 
-<p>Judging takes seconds and may need retries, so it must not happen inside the HTTP request. The API writes the submission, then enqueues its id. Writing the row first matters: if the enqueue fails, a sweeper finds rows still <code>queued</code> after a minute and enqueues them again, so an accepted submission is never lost.</p>
+<p>Keep slow, retryable judging out of the HTTP request. The API writes the row first, then enqueues its id. If the enqueue fails, a sweeper re-enqueues rows still <code>queued</code> after a minute, so nothing accepted is lost.</p>
 
-<p>The queue (see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>) delivers <strong>at least once</strong>. A worker holds a 15-second lease, renews it every 5 seconds, and acknowledges only after writing the verdict and the score. If it dies, another worker judges again within 15 seconds; a 60-second lease alone would break the 30-second target. Judging twice is harmless as long as the effects are idempotent: the verdict write is conditional on the row not being <code>done</code>, and the leaderboard counts only the first accept per user and problem. That gives the effect of exactly-once without needing it from the queue, the same pattern as in <a href="/system-design/design-a-job-scheduler.html">Design a Job Scheduler</a>.</p>
+<p>The queue (see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>) delivers <strong>at least once</strong>. A worker holds a 15-second lease, renews it every 5 seconds, and acknowledges only after writing the verdict and score. If it dies, another worker rejudges within 15 seconds; a 60-second lease would break the 30-second target. Judging twice is harmless because the effects are idempotent: the verdict write requires the row not be <code>done</code>, and the leaderboard counts only the first accept per user and problem. That is exactly-once in effect, as in <a href="/system-design/design-a-job-scheduler.html">Design a Job Scheduler</a>.</p>
 
-<p>Use separate queues: contest submissions, practice submissions, and "Run" on sample tests. Workers prefer the contest queue, so a flood of practice traffic can never delay a contest verdict. Rate limit each user to one submission every 5 seconds; at 50,000 users that caps the theoretical worst case at 10,000 a second, and in practice it stops scripts from flooding the queue.</p>
+<p>Use separate queues for contest, practice and "Run". Workers prefer the contest queue, so practice traffic never delays a contest verdict. Limit each user to one submission every 5 seconds: at 50,000 users that caps the worst case at 10,000 a second and stops scripts flooding the queue.</p>
 
 <h3>The live leaderboard</h3>
 
-<p>Rank by problems solved (more is better), then by penalty (less is better). Penalty is the sum, over solved problems, of the seconds from the start to the accept, plus 300 seconds for each wrong submission before it. Zoe solved A at 460 seconds after one wrong try: 460 + 300 = 760.</p>
+<p>Rank by problems solved (more is better), then penalty (less is better). Penalty sums, over solved problems, the seconds from start to accept plus 300 for each earlier wrong submission. Zoe solved A at 460 seconds after one wrong try: 460 + 300 = 760.</p>
 
-<p>Turn that into one number that sorts the right way: <code>score = solved × 10,000,000 − penalty</code>. A penalty can never reach 10 million seconds (about 115 days), so more solved always wins. Keep scores in an in-memory sorted set such as a Redis sorted set: an update and "what is my rank" are both O(log n), and a page of the top 50 is a range read. 50,000 entries of about 100 bytes is 5 MB, so one node holds it.</p>
+<p>Make it one sortable number: <code>score = solved × 10,000,000 − penalty</code>. A penalty never reaches 10 million seconds (about 115 days), so more solved always wins. Keep scores in an in-memory sorted set such as Redis's: updates and "my rank" are O(log n), the top 50 is a range read, and 50,000 entries × 100 bytes is 5 MB.</p>
 
-<p>Submissions finish out of order: a wrong answer sent at 400 s can be judged after the accept sent at 460 s. So the verdict transaction recomputes the user's row in <code>contest_results</code> from their submissions in submit order, not judge order. The worker then sets the score on the sorted set (a set, not an increment), so a redelivered job writes the same value again.</p>
+<p>Submissions finish out of order: a wrong answer sent at 400 s can be judged after the accept sent at 460 s. So the verdict transaction recomputes the user's <code>contest_results</code> row in submit order, not judge order. The worker then sets the score (not an increment), so a redelivered job writes the same value.</p>
 
-<p>The load is in reads, not writes. If each person solves 3 of the 4 problems on average, that is 150,000 accepts ÷ 5,400 s ≈ 28 a second. But if every participant refreshes standings every 30 seconds, that is 50,000 ÷ 30 ≈ 1,700 reads a second, more with spectators. Render each standings page once every 5 seconds and serve it from a cache or CDN; only "my rank" goes to the sorted set, at O(log n) each. The sorted set is derived data: if it is lost, rebuild it from <code>contest_results</code>, about 50,000 rows, in seconds. The <a href="/system-design/design-a-leaderboard.html">leaderboard case study</a> covers rankings at much larger scale.</p>
+<p>The load is reads. 3 of 4 problems solved on average is 150,000 accepts ÷ 5,400 s ≈ 28 writes a second; everyone refreshing every 30 seconds is 50,000 ÷ 30 ≈ 1,700 reads a second. Render each standings page every 5 seconds and serve it from a cache or CDN; only "my rank" hits the sorted set. If the set is lost, rebuild it from about 50,000 <code>contest_results</code> rows in seconds. The <a href="/system-design/design-a-leaderboard.html">leaderboard case study</a> covers much larger scale.</p>
 
 <h3>The spike at contest start</h3>
 
-<p>Unlike most spikes, this one is on the calendar. Use that.</p>
+<p>This spike is on the calendar. Use that.</p>
 
 <ul>
-<li><strong>Pages:</strong> render problem pages ahead of time and publish them to the CDN at the start time, so 5,000 loads a second never reach the API. The API returns <code>403</code> for the problem before the start, using the server's clock, not the browser's.</li>
-<li><strong>Judges:</strong> scale the worker fleet from 24 busy cores to about 600 fifteen minutes before the start, warm the sandbox pool, and copy the contest's test data to every worker.</li>
-<li><strong>Queue:</strong> the queue absorbs bursts above capacity. If the contest queue holds 3,000 jobs and workers finish 300 a second, the newest job waits about 10 seconds: inside the 30-second target. Watch queue age, not just length.</li>
+<li><strong>Pages:</strong> render problem pages ahead and publish them to the CDN at the start, so 5,000 loads a second never reach the API. Before the start the API returns <code>403</code>, by the server's clock, not the browser's.</li>
+<li><strong>Judges:</strong> scale from 24 busy cores to about 600 fifteen minutes early, warm the sandbox pool, and copy test data to every worker.</li>
+<li><strong>Queue:</strong> it absorbs bursts. With 3,000 jobs queued and 300 finished a second, the newest waits about 10 seconds, inside the target. Watch queue age, not just length.</li>
 <li><strong>Sign-in:</strong> warm session caches so 50,000 logins at 10:00 do not all hit the user database.</li>
 </ul>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (a 500,000-person contest), judging needs about 4,400 busy cores at the peak, which is a capacity and cost question: reserve it for contest hours and release it after. The CDN takes 50,000 page loads a second without change. The leaderboard sorted set holds 500,000 entries, about 50 MB, still one node; the cached standings pages do the rest. The submissions database sees about 2,200 new rows a second at the peak plus as many verdict updates, so partition it by user.</p>
+<p>At 10x (a 500,000-person contest), judging needs about 4,400 busy cores at peak, reserved for contest hours. The CDN and the 50 MB sorted set cope unchanged. The submissions database sees about 2,200 new rows a second plus as many verdict updates, so partition it by user.</p>
 
 <table>
 <thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A judge worker</td><td>Its jobs stop mid-run.</td><td>Leases expire and jobs are rejudged; conditional writes make the second verdict harmless.</td></tr>
-<tr><td>The queue</td><td>New submissions are saved but not judged.</td><td>The sweeper re-enqueues <code>queued</code> rows when the queue returns; extend the contest if the outage was long.</td></tr>
-<tr><td>The submissions DB primary</td><td>Submit fails; judging cannot record verdicts.</td><td>Fail over to a synchronous replica; clients retry with the same idempotency key.</td></tr>
+<tr><td>A judge worker</td><td>Its jobs stop mid-run.</td><td>Leases expire and jobs are rejudged; conditional writes make it harmless.</td></tr>
+<tr><td>The queue</td><td>New submissions are saved but not judged.</td><td>The sweeper re-enqueues <code>queued</code> rows; extend the contest after a long outage.</td></tr>
+<tr><td>The submissions DB primary</td><td>Submits and verdict writes fail.</td><td>Fail over to a synchronous replica; clients retry with the same idempotency key.</td></tr>
 <tr><td>The leaderboard node</td><td>Standings freeze.</td><td>Rebuild from <code>contest_results</code> in seconds; verdicts are unaffected.</td></tr>
-<tr><td>A sandbox escape</td><td>One micro-VM is compromised.</td><td>It is destroyed after the run; the host and other submissions sit behind the VM boundary.</td></tr>
+<tr><td>A sandbox escape</td><td>One micro-VM is compromised.</td><td>It is destroyed after the run; the VM boundary protects the host.</td></tr>
 </tbody>
 </table>
 
@@ -347,43 +345,41 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Runs code on a server with a timeout, stores results in a database, and adds a queue when asked about load.</td></tr>
-<tr><td>Mid</td><td>Uses containers with limits and no network, an async queue with polling, and a sorted set for the leaderboard.</td></tr>
-<tr><td>Senior</td><td>Lists the attacks and a defence for each, argues for a VM boundary, makes retries safe with leases and conditional writes, separates contest traffic, scales ahead of a known start, and caches standings because reads dominate.</td></tr>
+<tr><td>Junior</td><td>Runs code with a timeout, stores results, adds a queue when asked about load.</td></tr>
+<tr><td>Mid</td><td>Uses limited containers with no network, an async queue with polling, and a sorted set leaderboard.</td></tr>
+<tr><td>Senior</td><td>Lists attacks and defences, argues for a VM boundary, makes retries safe with leases and conditional writes, scales ahead of a known start, and caches standings because reads dominate.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Running the code" tone="strong">
 <x-interviewer>How do you run users' code safely?</x-interviewer>
-<x-you>I treat every submission as an attack. Each runs in a fresh container with no network, a read-only file system, 256 MB, a process cap and CPU and wall-clock limits, and only the input goes in; I compare the output outside. Containers share a kernel, so I put each one inside a micro-VM from a warm pool and throw it away after the run. It costs memory and a pool to manage, but an escape lands in a VM that is about to be deleted.</x-you>
-<x-interviewer>Why pin each sandbox to a core?</x-interviewer>
-<x-you>So timing is repeatable. If two programs share a core, the same code can pass once and time out the next time.</x-you>
+<x-you>Every submission is an attack. Each runs in a fresh container with no network, a read-only file system, memory, process and time limits, and only the input goes in; I compare output outside. Containers share a kernel, so each goes inside a micro-VM from a warm pool, thrown away after the run. It costs memory, but an escape lands in a VM about to be deleted.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>A test case was wrong. How do you rejudge a contest?</h3>
-<p>Publish a new <code>tests_version</code>, enqueue every affected submission on a low-priority queue, and recompute <code>contest_results</code> and the leaderboard from the new verdicts. The leaderboard is derived, so rebuilding it is routine.</p>
+<p>Publish a new <code>tests_version</code>, enqueue affected submissions on a low-priority queue, and recompute <code>contest_results</code> and the leaderboard from the new verdicts.</p>
 
 <h3>How do you support "interactive" problems?</h3>
-<p>Run a trusted interactor program next to the submission, connected only by pipes. It sits outside the sandbox and decides the verdict.</p>
+<p>A trusted interactor outside the sandbox talks to the submission over pipes and decides the verdict.</p>
 
 <h3>How do you make time limits fair across languages?</h3>
-<p>Measure each problem's reference solutions per language on the judge hardware and set limits per language, or multiply a base limit by a factor per language.</p>
+<p>Time reference solutions per language on the judge hardware and set per-language limits, or multiply a base limit by a per-language factor.</p>
 
 <h3>How would you freeze the leaderboard for the last 15 minutes?</h3>
-<p>Keep updating the sorted set but serve a snapshot taken at the freeze; each user still sees their own verdicts. Unfreeze by publishing the live set.</p>
+<p>Keep updating the sorted set but serve a snapshot from the freeze; users still see their own verdicts. Unfreeze by publishing the live set.</p>
 
 <h3>How would you push verdicts instead of polling?</h3>
-<p>Each API server holds the WebSockets of its users; a worker publishes verdicts to a channel keyed by user, and the server holding that user's socket forwards it. Keep polling as the fallback.</p>
+<p>Each API server holds its users' WebSockets; workers publish verdicts to a channel keyed by user, and the server holding that socket forwards it. Keep polling as the fallback.</p>
 
 <x-checklist title="Self-review: online judge">
 <script type="application/json">
 {
   "groups": [
     { "title": "Before drawing", "items": ["I asked about the biggest contest, not only the average day", "I named isolation and repeatable verdicts as requirements"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated judge cores from submissions a second and CPU per submission", "I used Little's law to size the polling load", "I made submit return 202 and the client poll with Retry-After", "I rate limited submissions per user"] },
-    { "title": "Design and depth", "items": ["I listed the attacks and a defence for each", "I chose an isolation boundary and named its cost", "I kept expected outputs outside the sandbox", "I made retries safe with leases and conditional writes", "I encoded the ranking as one sortable score and cached standings pages", "I scaled judges and published pages ahead of the known start"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated judge cores for the peak", "I used Little's law to size polling", "I returned 202 and polled with Retry-After", "I rate limited submissions per user"] },
+    { "title": "Design and depth", "items": ["I listed attacks and defences", "I chose an isolation boundary and named its cost", "I kept expected outputs outside the sandbox", "I made retries safe with leases and conditional writes", "I used one sortable score and cached standings", "I scaled ahead of the known start"] },
     { "title": "Failure", "items": ["I said what happens when a worker, the queue and the leaderboard die", "I explained how to rejudge after a test fix"] }
   ]
 }

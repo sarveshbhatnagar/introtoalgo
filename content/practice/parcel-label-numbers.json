@@ -7,8 +7,8 @@
   "aka": "Snowflake ID Generator",
   "order": 8,
   "story": [
-    "<p>A courier prints a barcode number on every parcel at up to 16 depots. The numbers must never repeat, the depots cannot call a central server for each label (the warehouse network drops out), and sorting labels by number should roughly sort them by time. So each depot builds the number itself from three parts: the time in milliseconds, its own machine number, and a counter for labels printed in the same millisecond.</p>",
-    "<p>This is the Snowflake-style generator from <a href=\"/system-design/unique-ids.html\">Unique IDs</a>. Real layouts use 64 bits; this one is squeezed into 53 bits so every ID is an exact JavaScript number and survives a trip through JSON in a browser.</p>"
+    "<p>A courier prints a barcode number on every parcel at up to 16 depots. Numbers must never repeat, depots cannot call a central server per label (the warehouse network drops out), and sorting by number should roughly sort by time. So each depot builds the number from three parts: the time in milliseconds, its machine number, and a counter for labels printed in the same millisecond.</p>",
+    "<p>This is the Snowflake-style generator from <a href=\"/system-design/unique-ids.html\">Unique IDs</a>. Real layouts use 64 bits; this one fits in 53 bits so every ID is an exact JavaScript number and survives JSON in a browser.</p>"
   ],
   "task": [
     "<p>An ID is <code>t × 4096 + machine × 256 + seq</code>, which is the bit layout:</p>",
@@ -20,7 +20,7 @@
     "<p>Write a class <code>LabelIds</code>:</p>",
     "<ul>",
     "<li><code>constructor(machine)</code>.</li>",
-    "<li><code>next(t)</code>: return a new ID for time <code>t</code>. If <code>t</code> is later than the time of the last ID issued (or nothing was issued yet), use <code>seq = 0</code>. If <code>t</code> equals it, use the last seq plus 1. Return <code>-1</code> and change nothing in two cases: the seq would reach 256 (this millisecond is used up), or <code>t</code> is earlier than the last ID's time (the clock moved backwards).</li>",
+    "<li><code>next(t)</code>: return a new ID for time <code>t</code>. If <code>t</code> is later than the last ID's time (or nothing was issued yet), use <code>seq = 0</code>. If <code>t</code> equals it, use the last seq plus 1. Return <code>-1</code> and change nothing if the seq would reach 256 (this millisecond is used up) or <code>t</code> is earlier than the last ID's time (the clock moved backwards).</li>",
     "<li><code>parts(id)</code>: split any valid ID into <code>[t, machine, seq]</code>.</li>",
     "</ul>",
     "<p>JavaScript's bit operators (<code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>&amp;</code>) work on 32 bits only, so they cannot handle a 53-bit ID. Use multiplication, division and remainder.</p>"
@@ -36,24 +36,24 @@
       "ops": ["LabelIds", "next", "next", "next", "parts"],
       "args": [[5], [1000], [1000], [1001], [4097281]],
       "expected": [null, 4097280, 4097281, 4101376, [1000, 5, 1]],
-      "explanation": "1000 × 4096 = 4,096,000 and 5 × 256 = 1,280, so the first ID at t = 1000 is 4,097,280 (seq 0). A second label in the same millisecond gets seq 1: 4,097,281. At t = 1001 the seq starts again at 0: 4,100,096 + 1,280 = 4,101,376. Splitting 4,097,281 back: 4,097,281 ÷ 4096 rounds down to 1000, the remainder is 1,281, and 1,281 ÷ 256 = 5 remainder 1."
+      "explanation": "Machine 5 adds 5 × 256 = 1,280. The first ID at t = 1000 is 4,096,000 + 1,280 = 4,097,280 (seq 0); the second in that millisecond is 4,097,281 (seq 1). At t = 1001 the seq restarts at 0: 4,100,096 + 1,280 = 4,101,376. Splitting 4,097,281: ÷ 4096 rounds down to 1000, remainder 1,281, and 1,281 ÷ 256 = 5 remainder 1."
     },
     {
       "ops": ["LabelIds", "next", "next", "next", "next"],
       "args": [[0], [2000], [1999], [2000], [2001]],
       "expected": [null, 8192000, -1, 8192001, 8196096],
-      "explanation": "After an ID at t = 2000, the clock reports 1999. Issuing an ID at 1999 could repeat one already given out in that millisecond, so the generator refuses with -1 and keeps its state. Back at 2000 it continues the sequence with seq 1, and at 2001 it starts again from 0."
+      "explanation": "After an ID at t = 2000, the clock reports 1999. An ID at 1999 could repeat one already issued, so the generator returns -1 and keeps its state. Back at 2000 it continues with seq 1; at 2001 it restarts from 0."
     }
   ],
   "hints": [
-    "If two depots print a label in the same millisecond, what keeps their IDs apart? And if one depot prints two labels in the same millisecond?",
-    "The machine number separates depots, and the seq separates labels from one depot within a millisecond. So the generator only has to remember two things: the time of the last ID and the seq it used.",
-    "Multiplying by 4096 (2<sup>12</sup>) shifts the time left by 12 bits, and multiplying the machine by 256 (2<sup>8</sup>) shifts it left by 8. Splitting reverses it: divide by 4096 and round down for <code>t</code>; the remainder holds the rest.",
-    "In <code>next</code>: if <code>t &lt; last</code> return -1; if <code>t === last</code> and the seq is already 255 return -1; otherwise set the seq (0 or last + 1), store <code>t</code>, and build the ID. Do not store anything before both checks pass."
+    "If two depots print a label in the same millisecond, what keeps their IDs apart? And if one depot prints two?",
+    "The machine number separates depots; the seq separates one depot's labels within a millisecond. So the generator only remembers the last ID's time and its seq.",
+    "Multiplying by 4096 (2<sup>12</sup>) shifts the time left 12 bits; multiplying the machine by 256 (2<sup>8</sup>) shifts it left 8. To split, divide by 4096 and round down for <code>t</code>; the remainder holds the rest.",
+    "In <code>next</code>: if <code>t &lt; last</code> return -1; if <code>t === last</code> and the seq is already 255 return -1; otherwise set the seq (0 or last + 1), store <code>t</code>, and build the ID. Store nothing before both checks pass."
   ],
   "bruteForce": [
-    "<p>The simplest unique number is a shared counter in one database: every depot asks it for the next value. That needs a network call per label and stops every depot when the counter is unreachable, which is what the courier cannot accept.</p>",
-    "<p>Random 53-bit numbers need no coordination, but they do not sort by time, and with many labels two will eventually collide. Building the ID from time, machine and sequence gives uniqueness and rough time order with no network call at all.</p>"
+    "<p>The simplest unique number is a shared counter in one database. That needs a network call per label and stops every depot when the counter is unreachable, which the courier cannot accept.</p>",
+    "<p>Random 53-bit numbers need no coordination, but they do not sort by time, and with enough labels two will collide. Time, machine and sequence give uniqueness and rough time order with no network call.</p>"
   ],
   "signature": {
     "class": "LabelIds",
@@ -187,7 +187,7 @@
       "        return [t, rest // MACHINE_SHIFT, rest % MACHINE_SHIFT]"
     ],
     "walkthrough": [
-      "<p>Each field gets its own range of bits, so IDs from different times, depots or sequence numbers can never be equal. Multiplying by a power of two is a left shift, and dividing and taking the remainder undoes it.</p>",
+      "<p>Each field gets its own range of bits, so IDs that differ in time, depot or seq can never be equal. Multiplying by a power of two is a left shift; division and remainder undo it.</p>",
       "<p>Trace the first example, machine 5:</p>",
       "<ol>",
       "<li><code>next(1000)</code>: nothing issued yet, so seq 0. ID = 1000 × 4096 + 5 × 256 + 0 = 4,097,280.</li>",
@@ -195,7 +195,7 @@
       "<li><code>next(1001)</code>: later millisecond, seq back to 0. ID = 4,100,096 + 1,280 = 4,101,376.</li>",
       "<li><code>parts(4097281)</code>: 4,097,281 ÷ 4096 = 1000 remainder 1,281; 1,281 ÷ 256 = 5 remainder 1. Answer <code>[1000, 5, 1]</code>.</li>",
       "</ol>",
-      "<p>Two details matter in practice. Both refusals must leave the state untouched, or a refused call would burn a seq or move the clock. And IDs sort by time only roughly: two depots' clocks differ by a few milliseconds, so order across depots within that skew is arbitrary. Real generators also wait for the next millisecond instead of failing; here the caller decides.</p>"
+      "<p>Both refusals must leave the state untouched, or a refused call would burn a seq or move the clock. Also, IDs sort by time only roughly: depot clocks differ by a few milliseconds, so order across depots within that skew is arbitrary. Real generators wait for the next millisecond instead of failing; here the caller decides.</p>"
     ],
     "time": "O(1)",
     "timeWhy": "Each call is a few comparisons and arithmetic operations.",

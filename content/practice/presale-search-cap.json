@@ -7,8 +7,8 @@
   "aka": "Fixed Window Rate Limiter",
   "order": 3,
   "story": [
-    "<p>When concert presale opens, fans hammer the seat search, and a few scripts refresh it hundreds of times a minute. The ticket site caps each fan at a few searches per clock minute: the counter for 10:04 starts at zero at 10:04:00 and is thrown away at 10:05:00. Over the cap, the fan gets an HTTP 429 \"Too Many Requests\" instead of results.</p>",
-    "<p>This is the fixed-window counter from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a>: one small counter per user per window, cheap enough to keep for millions of users in a shared in-memory store. Its known flaw shows up at the window edge, which the examples below make visible.</p>"
+    "<p>When concert presale opens, fans hammer the seat search, and some scripts refresh it hundreds of times a minute. The ticket site caps each fan at a few searches per clock minute: the 10:04 counter starts at zero at 10:04:00 and is dropped at 10:05:00. Over the cap, the fan gets HTTP 429 \"Too Many Requests\".</p>",
+    "<p>This is the fixed-window counter from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a>: one small counter per user per window, cheap enough to keep for millions of users in a shared in-memory store. Its known flaw is at the window edge, as the examples show.</p>"
   ],
   "task": [
     "<p>Write a class <code>WindowLimiter</code>:</p>",
@@ -30,24 +30,24 @@
       "ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"],
       "args": [[3, 60], ["ana", 10], ["ana", 20], ["ana", 30], ["ana", 59], ["ana", 60]],
       "expected": [null, true, true, true, false, true],
-      "explanation": "Times 10, 20, 30 and 59 are all in window 0 (0 to 59). The first three are allowed, which uses up the limit of 3, so the request at 59 is rejected. Time 60 starts window 1 with a fresh count, so it is allowed."
+      "explanation": "Times 10, 20, 30 and 59 are in window 0 (0 to 59). The first three use up the limit of 3, so 59 is rejected. Time 60 starts window 1 with a fresh count."
     },
     {
       "ops": ["WindowLimiter", "allow", "allow", "allow", "allow", "allow"],
       "args": [[2, 60], ["ben", 58], ["ben", 59], ["cy", 59], ["ben", 60], ["ben", 61]],
       "expected": [null, true, true, true, true, true],
-      "explanation": "Ben gets 2 requests at 58 and 59 in window 0, then 2 more at 60 and 61 in window 1: 4 requests in 4 seconds, although the limit is 2 per minute. That burst at the edge is the price of fixed windows. Cy has her own count, so her request at 59 is allowed even though Ben used up his."
+      "explanation": "Ben gets 2 requests at 58 and 59 in window 0, then 2 more at 60 and 61 in window 1: 4 requests in 4 seconds, despite a limit of 2 per minute. That edge burst is the price of fixed windows. Cy has her own count, so her request at 59 is allowed."
     }
   ],
   "hints": [
-    "For one fan, which earlier requests can affect whether the request at time <code>t</code> is allowed? Do requests from an earlier window matter at all?",
-    "Only the current window matters. So for each fan you need just two numbers: which window you are counting, and how many allowed requests are in it.",
-    "Keep a hash map from fan to <code>[window, count]</code>. When a request arrives in a different window than the stored one, the old count is useless: reset it to 0 for the new window.",
+    "For one fan, which earlier requests can affect whether the request at time <code>t</code> is allowed? Do requests from an earlier window matter?",
+    "Only the current window matters. So each fan needs two numbers: which window you are counting, and how many allowed requests it holds.",
+    "Keep a hash map from fan to <code>[window, count]</code>. When a request arrives in a different window than the stored one, reset the count to 0 for the new window.",
     "Compute <code>w = floor(t / windowSec)</code>. If the fan's stored window is not <code>w</code>, store <code>[w, 0]</code>. Then if the count is below the limit, add 1 and return true; otherwise return false without counting."
   ],
   "bruteForce": [
-    "<p>Store every allowed request time for each fan, and on each new request count how many stored times fall in the same window. With 2,000 calls that is up to 2,000 × 2,000 = 4 million checks, and the stored history grows forever.</p>",
-    "<p>Since only the current window can matter, a single counter per fan is enough, and both time and memory per fan become constant.</p>"
+    "<p>Store every allowed request time per fan, and count the stored times in the same window on each request. With 2,000 calls that is up to 4 million checks, and the history grows forever.</p>",
+    "<p>Only the current window matters, so one counter per fan makes time and memory per fan constant.</p>"
   ],
   "signature": {
     "class": "WindowLimiter",
@@ -161,7 +161,7 @@
       "        return True"
     ],
     "walkthrough": [
-      "<p>Only the current window decides anything, so keep one counter per fan, tagged with the window it belongs to. A request in a new window resets the counter.</p>",
+      "<p>Keep one counter per fan, tagged with its window. A request in a new window resets the counter.</p>",
       "<p>Trace the first example, limit 3, window 60:</p>",
       "<ol>",
       "<li>t = 10: window 0. Ana has nothing stored, so start <code>[0, 0]</code>. 0 &lt; 3: count 1, allowed.</li>",
@@ -169,7 +169,7 @@
       "<li>t = 59: window 0, count 3 is not below 3. Rejected, and the count stays 3.</li>",
       "<li>t = 60: window 1 differs from the stored 0, so reset to <code>[1, 0]</code>. Count 1, allowed.</li>",
       "</ol>",
-      "<p>The second example shows the weakness: two windows meet at t = 60, so a fan can fit two full windows of requests into a few seconds. If that burst matters, use a sliding window, as in <a href=\"/practice/password-reset-throttle.html\">Password Reset Throttle</a>.</p>"
+      "<p>The weakness: two windows meet at t = 60, so a fan can fit two full windows of requests into a few seconds. If that burst matters, use a sliding window, as in <a href=\"/practice/password-reset-throttle.html\">Password Reset Throttle</a>.</p>"
     ],
     "time": "O(1)",
     "timeWhy": "Each call does one map lookup and a few comparisons.",

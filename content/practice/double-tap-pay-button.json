@@ -7,7 +7,7 @@
   "aka": "Idempotency Key Store",
   "order": 10,
   "story": [
-    "<p>A food delivery app has a \"Pay\" button. People double-tap it, and on a weak connection the app retries a request whose reply was lost, even though the charge went through. To stop double charges, the app sends a random idempotency key with each payment attempt and reuses the same key for every retry of that attempt. The payment service remembers each key: the first request runs, a repeat gets the saved reply, and a repeat that arrives while the first is still running is told to wait.</p>",
+    "<p>People double-tap a food app's \"Pay\" button, and on a weak connection the app retries requests whose reply was lost, even though the charge went through. To stop double charges, each payment attempt carries a random idempotency key, reused for every retry. The payment service remembers each key: the first request runs, a repeat gets the saved reply, and a repeat that arrives while the first is still running is told to wait.</p>",
     "<p>This is the idempotency-key store from <a href=\"/system-design/idempotency-and-retries.html\">Idempotency and Retries</a>, used in front of any write that must not happen twice (see <a href=\"/system-design/design-a-payment-system.html\">Design a Payment System</a>).</p>"
   ],
   "task": [
@@ -38,24 +38,24 @@
       "ops": ["IdempotencyStore", "begin", "begin", "finish", "begin", "begin"],
       "args": [[60000], ["k1", "pay 45 card 4242", 0], ["k1", "pay 45 card 4242", 100], ["k1", "201 paid #7", 250], ["k1", "pay 45 card 4242", 300], ["k1", "pay 99 card 4242", 400]],
       "expected": [null, "run", "wait", null, "201 paid #7", "conflict"],
-      "explanation": "The first tap creates the record and runs the payment. The second tap, 100 ms later, finds it still in progress: \"wait\", so the card is not charged twice. At 250 the payment finishes and the reply is saved. A retry at 300 gets that exact reply back without charging again. At 400 the same key arrives with a different amount, which is a bug in the client, so it is refused."
+      "explanation": "The first tap creates the record and runs the payment. The second tap, 100 ms later, finds it in progress: \"wait\", so no double charge. At 250 the reply is saved, and a retry at 300 gets it back without charging again. At 400 the same key comes with a different amount, a client bug, so it is refused."
     },
     {
       "ops": ["IdempotencyStore", "begin", "finish", "begin", "begin", "begin", "release", "begin"],
       "args": [[1000], ["a", "x", 0], ["a", "201 ok", 10], ["a", "x", 999], ["a", "x", 1000], ["b", "y", 1000], ["b", 1005], ["b", "y", 1006]],
       "expected": [null, "run", null, "201 ok", "run", "run", null, "run"],
-      "explanation": "Key \"a\" was made at 0 with a TTL of 1,000, so at 999 it still replays \"201 ok\", and at 1,000 it is gone and the request runs again. That is why the TTL must be longer than any client keeps retrying. Key \"b\" fails safely and is released, so the retry at 1,006 runs."
+      "explanation": "Key \"a\" was made at 0 with a TTL of 1,000: at 999 it still replays \"201 ok\", at 1,000 it is gone and the request runs again. So the TTL must outlast any client's retries. Key \"b\" fails safely and is released, so the retry at 1,006 runs."
     }
   ],
   "hints": [
-    "For one key, list the states a record can be in, and what each kind of repeat request should get back in each state.",
-    "A live record is either in progress or finished, and it carries a fingerprint, a creation time and, once finished, a response. A missing or expired record behaves the same way: as if the key were new.",
-    "Keep a map from key to record. Write one helper, <code>live(key, t)</code>, that returns the record only if <code>t &lt; created + ttlMs</code>, and deletes it otherwise. Use it at the start of all three methods.",
+    "For one key, list the states a record can be in, and what a repeat request should get back in each.",
+    "A live record is in progress or finished, and holds a fingerprint, a creation time and, once finished, a response. A missing record and an expired one behave the same: as if the key were new.",
+    "Keep a map from key to record. Write one helper, <code>live(key, t)</code>, that returns the record only if <code>t &lt; created + ttlMs</code> and deletes it otherwise. Call it at the start of all three methods.",
     "In <code>begin</code>, check in this order: no live record → create it and return \"run\"; different fingerprint → \"conflict\"; in progress → \"wait\"; otherwise return the saved response."
   ],
   "bruteForce": [
-    "<p>Without a store, the server could look for an existing payment with the same amount and card in the last minute. That blocks legitimate repeat orders and still double-charges when the two requests arrive at the same moment, because neither finds the other's payment yet.</p>",
-    "<p>The key says exactly which requests are the same attempt, and the in-progress record closes the gap between \"started\" and \"finished\". In a real system, <code>begin</code> must be one atomic insert-if-absent in the shared store, or two servers can both see \"no record\" for the same double-tap.</p>"
+    "<p>Without a store, the server could look for a payment with the same amount and card in the last minute. That blocks legitimate repeat orders, and still double-charges when two requests arrive together, because neither sees the other's payment yet.</p>",
+    "<p>The key says exactly which requests are the same attempt, and the in-progress record covers the gap between \"started\" and \"finished\". In a real system, <code>begin</code> must be one atomic insert-if-absent in the shared store, or two servers can both see \"no record\" for the same double-tap.</p>"
   ],
   "signature": {
     "class": "IdempotencyStore",
@@ -241,7 +241,7 @@
       "            del self.records[key]"
     ],
     "walkthrough": [
-      "<p>Each key maps to one record: fingerprint, creation time, and the response once there is one. An empty response means \"in progress\". Every method first drops the record if it has expired, so an expired key behaves exactly like a new one.</p>",
+      "<p>Each key maps to one record: fingerprint, creation time, and the response once there is one (empty means in progress). Every method first drops an expired record, so an expired key behaves exactly like a new one.</p>",
       "<p>Trace the first example, TTL 60,000:</p>",
       "<ol>",
       "<li><code>begin(k1, …, 0)</code>: no record. Store <code>{fp, 0, null}</code> and return \"run\".</li>",
@@ -250,7 +250,7 @@
       "<li><code>begin(k1, same, 300)</code>: live, same fingerprint, finished: return \"201 paid #7\".</li>",
       "<li><code>begin(k1, \"pay 99 …\", 400)</code>: live, fingerprint differs: \"conflict\".</li>",
       "</ol>",
-      "<p>Be precise about what this buys. It does not make the network deliver a request exactly once; it makes repeats harmless, so the charge takes effect once. One gap remains: if the server charges the card and crashes before <code>finish</code>, the record expires and a later retry runs again. Real systems close it by saving the result in the same transaction as the side effect, or by passing the key on to a payment provider that is itself idempotent. Real stores also give in-progress records a shorter lease than finished ones; this problem uses one TTL for both.</p>"
+      "<p>This does not make the network deliver a request exactly once; it makes repeats harmless, so the charge takes effect once. One gap remains: if the server charges the card and crashes before <code>finish</code>, the record expires and a later retry runs again. Real systems close it by saving the result in the same transaction as the side effect, or by passing the key to a payment provider that is itself idempotent. They also give in-progress records a shorter lease than finished ones; here one TTL covers both.</p>"
     ],
     "time": "O(1)",
     "timeWhy": "Each call is one map lookup plus constant work (string comparisons are bounded by 40 characters).",

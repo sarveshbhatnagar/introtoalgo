@@ -7,7 +7,7 @@
   "aka": "LRU Cache with TTL",
   "order": 12,
   "story": [
-    "<p>A travel site shows fares that come from slow airline APIs, so it caches each quote in memory. Two rules fight over the cache. A fare goes stale after a few minutes, so every entry has a time to live and must not be served after it runs out. And memory is limited, so when the cache is full the entry nobody has used for the longest goes first. An entry that has already expired should never push out one that is still good.</p>",
+    "<p>A travel site caches fares from slow airline APIs in memory, under two rules. Each fare has a time to live and must not be served after it runs out. And when the cache is full, the entry unused for longest goes first. An expired entry should never push out one that is still good.</p>",
     "<p>This is the in-memory cache from <a href=\"/system-design/caching.html\">Caching</a>, with TTL expiry and least-recently-used eviction, the same pair of rules an in-memory cache server such as Redis can be configured to apply (real servers approximate LRU to save memory).</p>"
   ],
   "task": [
@@ -32,24 +32,23 @@
       "ops": ["FareCache", "put", "put", "get", "put", "get", "get", "size"],
       "args": [[2], ["LHR-JFK", 420, 5000, 0], ["CDG-NRT", 880, 5000, 100], ["LHR-JFK", 200], ["SFO-SYD", 1100, 5000, 300], ["CDG-NRT", 400], ["SFO-SYD", 400], [400]],
       "expected": [null, null, null, 420, null, -1, 1100, 2],
-      "explanation": "Nothing expires before 5,000 here, so this is plain LRU. Reading LHR-JFK at 200 makes it the most recently used, which leaves CDG-NRT as the least recently used. The cache is full when SFO-SYD arrives, so CDG-NRT is evicted. The cache now holds LHR-JFK and SFO-SYD."
+      "explanation": "Nothing expires before 5,000, so this is plain LRU. Reading LHR-JFK at 200 leaves CDG-NRT as least recently used, so it is evicted when SFO-SYD arrives at a full cache."
     },
     {
       "ops": ["FareCache", "put", "put", "get", "put", "get", "get", "size"],
       "args": [[2], ["A", 1, 100, 0], ["B", 2, 1000, 10], ["A", 50], ["C", 3, 1000, 150], ["B", 160], ["A", 160], [160]],
       "expected": [null, null, null, 1, null, 2, -1, 2],
-      "explanation": "After the read at 50, B is the least recently used. But A expired at 0 + 100 = 100, so at 150 the cache holds only B, and C fits without evicting anything. A cache that let A keep its slot until something pushed it out would have evicted B, the one fare still worth keeping."
+      "explanation": "After the read at 50, B is least recently used. But A expired at 0 + 100 = 100, so at 150 the cache holds only B and C fits without evicting. Letting A keep its slot would have evicted B, the one fare still worth keeping."
     }
   ],
   "hints": [
-    "Ignore expiry for a moment. Which operations does plain LRU need to be O(1): find an entry by key, mark it as just used, and find the least recently used one? Which structure keeps entries in order of use?",
+    "Ignore expiry for now. Plain LRU needs three O(1) operations: find an entry by key, mark it as just used, and find the least recently used. Which structure keeps entries in order of use?",
     "An insertion-ordered map does all three: <code>Map</code> in JavaScript or <code>OrderedDict</code> in Python. Delete and re-insert (or <code>move_to_end</code>) to mark a use; the first key is the least recently used.",
-    "Now expiry. If you remove every expired entry at the start of each call, then <code>get</code>, <code>put</code> and <code>size</code> only ever see unexpired entries, and the LRU logic does not change. How do you find the expired ones without scanning the whole cache?",
-    "Keep a min-heap of <code>(expiresAt, route)</code>. At the start of each call, pop while the top's <code>expiresAt ≤ t</code>, and delete the route only if its current entry still has that same expiry; an older heap item for a route that was put again is just skipped."
+    "Now expiry. If you remove every expired entry at the start of each call, <code>get</code>, <code>put</code> and <code>size</code> only see unexpired entries and the LRU logic is unchanged. How do you find expired ones without scanning the whole cache?",
+    "Keep a min-heap of <code>(expiresAt, route)</code>. At the start of each call, pop while the top's <code>expiresAt ≤ t</code>, and delete the route only if its current entry still has that expiry; an older heap item for a route that was put again is skipped."
   ],
   "bruteForce": [
-    "<p>Store entries in a plain list with a \"last used\" time, and on every call scan the list to drop expired entries, find a route, or find the least recently used. Each call is O(n), so 3,000 calls on a cache of 1,000 entries is about 3 million steps here, and a real cache with a million entries serving thousands of reads a second cannot afford a full scan per read.</p>",
-    "<p>The ordered map makes the LRU part O(1), and the heap finds expired entries in order of expiry, so each entry is removed once, in O(log n).</p>"
+    "<p>Keep entries in a plain list with a \"last used\" time, and scan it on every call to drop expired entries, find a route, or find the least recently used. Each call is O(n): about 3 million steps for 3,000 calls on 1,000 entries, and far too slow for a real cache with a million entries and thousands of reads a second. The ordered map makes LRU O(1), and the heap yields expired entries in expiry order, so each is removed once, in O(log n).</p>"
   ],
   "signature": {
     "class": "FareCache",
@@ -277,16 +276,16 @@
       "        return len(self.entries)"
     ],
     "walkthrough": [
-      "<p>Split the problem in two. An insertion-ordered map handles LRU: each use moves a route to the end, so the front is always the least recently used. A min-heap of expiry times handles TTL: at the start of every call, pop everything that has expired. After that purge, the map holds only unexpired entries, so \"full\" and \"least recently used\" mean exactly what the task says.</p>",
+      "<p>Split the problem. An insertion-ordered map handles LRU: each use moves a route to the end, so the front is the least recently used. A min-heap of expiry times handles TTL: at the start of every call, pop everything expired. After that purge the map holds only unexpired entries, so \"full\" and \"least recently used\" mean exactly what the task says.</p>",
       "<p>Trace the second example, capacity 2:</p>",
       "<ol>",
       "<li><code>put(A, 1, 100, 0)</code>: map [A], heap [(100, A)].</li>",
       "<li><code>put(B, 2, 1000, 10)</code>: map [A, B], heap [(100, A), (1010, B)].</li>",
-      "<li><code>get(A, 50)</code>: nothing has expired (100 &gt; 50). A moves to the end: map [B, A]. Return 1.</li>",
-      "<li><code>put(C, 3, 1000, 150)</code>: purge pops (100, A), and A's entry still expires at 100, so it is deleted: map [B]. One entry, capacity 2, so C goes in without evicting: map [B, C].</li>",
+      "<li><code>get(A, 50)</code>: nothing expired (100 &gt; 50). A moves to the end: map [B, A]. Return 1.</li>",
+      "<li><code>put(C, 3, 1000, 150)</code>: purge pops (100, A); A's entry still expires at 100, so delete it: map [B]. Below capacity, so C goes in without evicting: map [B, C].</li>",
       "<li><code>get(B, 160)</code> returns 2, <code>get(A, 160)</code> returns -1, <code>size(160)</code> is 2.</li>",
       "</ol>",
-      "<p>The check <code>expiresAt === at</code> is what makes the lazy heap safe. When a route is put again, its old heap item stays behind; when that item reaches the top, the route's current entry has a different expiry, so it is not deleted. Many cache servers make a similar trade: they expire keys lazily when touched, plus a background sweep, rather than running a timer per key.</p>"
+      "<p>The check <code>expiresAt === at</code> makes the lazy heap safe. When a route is put again, its old heap item stays behind; when it reaches the top, the current entry has a different expiry, so nothing is deleted. Many cache servers make a similar trade: lazy expiry on touch plus a background sweep, not a timer per key.</p>"
     ],
     "time": "O(log n)",
     "timeWhy": "Amortized per call: map operations are O(1), and each heap item is pushed once and popped at most once, at O(log n) each, where n is the number of heap items.",

@@ -7,8 +7,8 @@
   "aka": "Exponential Backoff with a Cap",
   "order": 2,
   "story": [
-    "<p>Two hundred weather stations on a hillside upload a reading every few minutes. When the upload server restarts, every station fails at once. If each one retries every 100 ms, the server comes back to a wall of retries and falls over again. So each station waits longer after every failure: 100 ms, then 200, then 400, doubling up to a ceiling. A reading is useless after a while, so a station also gives up when its total waiting would pass a time budget.</p>",
-    "<p>Every client that calls a network service needs this schedule (see <a href=\"/system-design/idempotency-and-retries.html\">Idempotency and Retries</a> and <a href=\"/system-design/reliability-and-failure.html\">Reliability and Failure</a>). Real clients also add random jitter, for example picking a random wait between 0 and the scheduled value, so stations do not retry in lockstep. Here you compute the schedule that the jitter draws from.</p>"
+    "<p>Two hundred hillside weather stations upload a reading every few minutes. When the upload server restarts, every station fails at once, and retrying every 100 ms would knock it over again. So each station waits longer after every failure: 100 ms, 200, 400, doubling up to a ceiling. Old readings are useless, so a station gives up when its total waiting would pass a time budget.</p>",
+    "<p>Every network client needs this schedule (see <a href=\"/system-design/idempotency-and-retries.html\">Idempotency and Retries</a> and <a href=\"/system-design/reliability-and-failure.html\">Reliability and Failure</a>). Real clients add random jitter, such as a random wait between 0 and the scheduled value, so they do not retry in lockstep. You compute the schedule the jitter draws from.</p>"
   ],
   "task": [
     "<p>Write <code>retryDelays(baseMs, capMs, maxRetries, budgetMs)</code>. Return the list of waits, in milliseconds, before retry 1, retry 2, and so on.</p>",
@@ -37,14 +37,14 @@
     }
   ],
   "hints": [
-    "Write out the first few waits for base 100 and cap 1,000. After which retry does the cap start to matter, and what happens to every wait after that?",
+    "Write out the first few waits for base 100 and cap 1,000. When does the cap start to matter, and what happens after that?",
     "Keep the current wait in a variable. After each retry it doubles, but never past the cap: <code>wait = min(wait × 2, cap)</code>.",
-    "Keep a running total. Before adding a wait, check whether <code>total + wait</code> would exceed the budget. If it would, stop: every later wait is at least as long, so none of them can fit either.",
-    "Loop at most <code>maxRetries</code> times; the loop can end early on the budget check. Do not compute <code>2<sup>k</sup></code> for large k when you can double a capped value instead."
+    "Keep a running total. If <code>total + wait</code> would exceed the budget, stop: every later wait is at least as long, so none can fit.",
+    "Loop at most <code>maxRetries</code> times, ending early on the budget check. Double a capped value instead of computing <code>2<sup>k</sup></code> for large k."
   ],
   "bruteForce": [
-    "<p>A first version computes <code>baseMs × 2<sup>k−1</sup></code> with a power function for every retry and then applies the cap. JavaScript and Python give the right answer, but the number in the middle is huge: for retry 60 with a base of 1,000 ms it is about 5.8 × 10<sup>20</sup> ms. In a language with 64-bit integers that overflows (the limit is about 9.2 × 10<sup>18</sup>) and can come out negative, and a negative wait means retrying instantly, in a tight loop, which is the exact storm backoff exists to prevent.</p>",
-    "<p>Doubling a value that is already capped never leaves the range of the constraints, so it avoids the problem with no extra work.</p>"
+    "<p>A first version computes <code>baseMs × 2<sup>k−1</sup></code> with a power function, then applies the cap. JavaScript and Python get it right, but the middle value is huge: for retry 60 with a 1,000 ms base, about 5.8 × 10<sup>20</sup> ms. With 64-bit integers (limit about 9.2 × 10<sup>18</sup>) that overflows and can go negative, and a negative wait means retrying instantly in a tight loop: the exact storm backoff exists to prevent.</p>",
+    "<p>Doubling an already capped value stays within the constraints, avoiding the problem for free.</p>"
   ],
   "signature": {
     "function": "retryDelays",
@@ -130,7 +130,7 @@
       "    return waits"
     ],
     "walkthrough": [
-      "<p>Track two numbers: the next wait and the total waited so far. Each round, check the budget, record the wait, then double it and clamp it to the cap.</p>",
+      "<p>Track the next wait and the total so far. Each round, check the budget, record the wait, then double it and clamp to the cap.</p>",
       "<p>Trace the second example, base 500, cap 4,000, budget 6,000:</p>",
       "<ol>",
       "<li>wait 500, total 0: 0 + 500 ≤ 6,000. Record 500, total 500, next wait 1,000.</li>",
@@ -138,7 +138,7 @@
       "<li>1,500 + 2,000 = 3,500 ≤ 6,000. Record 2,000, total 3,500, next wait 4,000.</li>",
       "<li>3,500 + 4,000 = 7,500 &gt; 6,000. Stop. Answer <code>[500, 1000, 2000]</code>.</li>",
       "</ol>",
-      "<p>Stopping at the first wait that does not fit is safe because waits never shrink. The cap is what keeps one unlucky client from sleeping for an hour; the budget is what stops it from retrying long after the caller stopped caring.</p>"
+      "<p>Stopping at the first wait that does not fit is safe because waits never shrink. The cap keeps an unlucky client from sleeping for an hour; the budget stops it retrying long after the caller stopped caring.</p>"
     ],
     "time": "O(r)",
     "timeWhy": "One loop step per retry, and r = maxRetries ≤ 60.",

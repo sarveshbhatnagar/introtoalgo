@@ -2,39 +2,39 @@
 {
   "title": "Bellman-Ford and Floyd-Warshall",
   "description": "Find cheapest routes when some costs are negative, catch negative cycles, and build a table of costs between every pair of places, in JS and Python.",
-  "minutes": 18,
+  "minutes": 14,
   "tags": ["graphs", "shortest path", "dynamic programming"]
 }
 -->
-<p>A courier drives one-way legs between four depots: S, A, B and C. Each leg costs fuel. One leg is different: whoever drives from B to A carries a paid parcel, and the pay is 4 more than the fuel. So that leg's cost is −4. The courier starts at S and wants the cheapest way to reach each depot.</p>
+<p>A courier drives one-way legs between four depots: S, A, B and C. Each leg costs fuel, except B to A: it carries a paid parcel that pays 4 more than the fuel, so its cost is −4. Starting at S, what is the cheapest way to reach each depot?</p>
 
-<p>Try <a href="/algorithms/dijkstra.html">Dijkstra</a>'s rule, "settle the closest place first". S→A costs 1 and S→B costs 2, so A is settled first, at 1, and C gets 1 + 3 = 4. Next B reveals S→B→A, which costs 2 − 4 = −2. But A was already "final", so C ends at 4 when it should be 1. With a negative cost, a place that looks far away can lead somewhere cheaper, so settling the closest first is no longer safe.</p>
+<p>Try <a href="/algorithms/dijkstra.html">Dijkstra</a>'s rule, "settle the closest place first". S→A costs 1 and S→B costs 2, so A settles at 1 and C gets 1 + 3 = 4. Then B reveals S→B→A at 2 − 4 = −2. But A was already "final", so C ends at 4 instead of 1. With negative costs, settling the closest first is no longer safe.</p>
 
-<p>The heap code in the Dijkstra lesson never marks a place as settled, so here it would push A again and patch C. On other graphs that patching can snowball into an exponential amount of work, and a negative loop makes it run forever.</p>
+<p>The Dijkstra lesson's heap code would push A again and patch C, but on other graphs that patching can snowball into exponential work, and a negative loop never ends.</p>
 
 <h2>Bellman-Ford: relax every edge, every round</h2>
 
-<p>Bellman-Ford gives up on choosing a clever order. Each round, it relaxes <em>every</em> edge, in any fixed order: if <code>dist[u] + cost</code> beats <code>dist[v]</code>, lower <code>dist[v]</code>. Then it does that again.</p>
+<p>Bellman-Ford drops the clever order. Each round, it relaxes <em>every</em> edge in a fixed order: if <code>dist[u] + cost</code> beats <code>dist[v]</code>, lower <code>dist[v]</code>. Then it repeats.</p>
 
-<p>Here is why that is enough. After round 1, every cheapest route of one edge is counted. A cheapest route of 2 edges is a 1-edge route plus one more edge, and round 2 relaxes that edge. So after round <code>k</code>, every cheapest route with up to <code>k</code> edges is counted. Without a loop of negative total cost, a cheapest route never visits a place twice, so it has at most V − 1 edges. V − 1 rounds always finish the job.</p>
+<p>Why that is enough: each round extends every cheapest route by one edge, so after round <code>k</code>, every cheapest route of up to <code>k</code> edges is counted. Without a negative loop, a cheapest route never revisits a place, so it has at most V − 1 edges, and V − 1 rounds finish the job.</p>
 
 <x-tracer title="Bellman-Ford from S">
 <script type="application/json">
 {"code": ["dist[start] = 0, all others ∞", "repeat V − 1 times:", "  for each edge (u, v, cost):", "    if dist[u] + cost < dist[v]:", "      dist[v] = dist[u] + cost", "for each edge: if it still improves → negative cycle"], "codeLang": "text", "steps": [
-    {"caption": "Start: S costs 0, every other depot is ∞. The edges are checked in the fixed order shown below, every round.", "line": 1, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "∞", "B": "∞", "C": "∞"}, "highlight": ["S"]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"]}, "vars": {"round": 0}}, 
-    {"caption": "Round 1. A→C, C→S and B→A all start at a depot that is still ∞. There is no route to extend, so nothing changes.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "∞", "B": "∞", "C": "∞"}, "highlightEdges": [["A", "C"], ["C", "S"], ["B", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [0, 1, 2]}, "vars": {"round": 1}}, 
-    {"caption": "S→A: 0 + 1 = 1, better than ∞. A = 1.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "1", "B": "∞", "C": "∞"}, "highlight": ["A"], "highlightEdges": [["S", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [3]}, "vars": {"round": 1}}, 
-    {"caption": "S→B: 0 + 2 = 2. B = 2. Round 1 is over: every route of one edge is now counted.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "1", "B": "2", "C": "∞"}, "highlight": ["B"], "highlightEdges": [["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [4]}, "vars": {"round": 1}}, 
+    {"caption": "S costs 0, every other depot ∞. Every round checks the edges in the order shown below.", "line": 1, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "∞", "B": "∞", "C": "∞"}, "highlight": ["S"]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"]}, "vars": {"round": 0}}, 
+    {"caption": "Round 1. A→C, C→S and B→A start at ∞ depots: no change.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "∞", "B": "∞", "C": "∞"}, "highlightEdges": [["A", "C"], ["C", "S"], ["B", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [0, 1, 2]}, "vars": {"round": 1}}, 
+    {"caption": "S→A: 0 + 1 = 1. A = 1.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "1", "B": "∞", "C": "∞"}, "highlight": ["A"], "highlightEdges": [["S", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [3]}, "vars": {"round": 1}}, 
+    {"caption": "S→B: 0 + 2 = 2. B = 2. Round 1 done: every 1-edge route is counted.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "1", "B": "2", "C": "∞"}, "highlight": ["B"], "highlightEdges": [["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [4]}, "vars": {"round": 1}}, 
     {"caption": "Round 2. A→C: 1 + 3 = 4. C = 4. Then C→S gives 4 + 1 = 5, no better than 0.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "1", "B": "2", "C": "4"}, "highlight": ["C"], "highlightEdges": [["A", "C"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [0]}, "vars": {"round": 2}}, 
-    {"caption": "B→A: 2 + (−4) = −2, better than 1. A drops to −2: the paid leg makes the longer route cheaper.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "4"}, "highlight": ["A"], "highlightEdges": [["B", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [2]}, "vars": {"round": 2}}, 
-    {"caption": "S→A gives 1 and S→B gives 2. Neither beats what we have. Round 2 is over, but C still says 4: it was computed from A's old value.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "4"}, "highlightEdges": [["S", "A"], ["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [3, 4]}, "vars": {"round": 2}}, 
-    {"caption": "Round 3. A→C: −2 + 3 = 1, better than 4. C = 1. The improvement to A has now flowed one edge further.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "highlight": ["C"], "highlightEdges": [["A", "C"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [0]}, "vars": {"round": 3}}, 
-    {"caption": "The other four edges change nothing. That was round 3 = V − 1, the last one. Every cheapest route uses at most 3 edges, so every distance is now final.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "highlightEdges": [["C", "S"], ["B", "A"], ["S", "A"], ["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [1, 2, 3, 4]}, "vars": {"round": 3}}, 
-    {"caption": "Check pass: one more look at every edge. None improves anything, so there is no negative cycle. Final costs from S: A = −2, B = 2, C = 1. That took 3 rounds × 5 edges = 15 edge checks, plus 5 for the check pass.", "line": 6, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "mark": ["S", "A", "B", "C"]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "mark": [0, 1, 2, 3, 4]}, "vars": {"edge checks": 20}}]}
+    {"caption": "B→A: 2 + (−4) = −2, better than 1. A drops to −2.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "4"}, "highlight": ["A"], "highlightEdges": [["B", "A"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [2]}, "vars": {"round": 2}}, 
+    {"caption": "S→A and S→B improve nothing. C still says 4, from A's old value.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "4"}, "highlightEdges": [["S", "A"], ["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [3, 4]}, "vars": {"round": 2}}, 
+    {"caption": "Round 3. A→C: −2 + 3 = 1, better than 4. C = 1.", "line": 5, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "highlight": ["C"], "highlightEdges": [["A", "C"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [0]}, "vars": {"round": 3}}, 
+    {"caption": "Nothing else changes. Round 3 = V − 1 was the last, so every distance is final.", "line": 4, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "highlightEdges": [["C", "S"], ["B", "A"], ["S", "A"], ["S", "B"]]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "highlight": [1, 2, 3, 4]}, "vars": {"round": 3}}, 
+    {"caption": "Check pass: nothing improves, so no negative cycle. From S: A = −2, B = 2, C = 1. 3 rounds × 5 edges = 15 checks, plus 5 for the check pass.", "line": 6, "graph": {"nodes": [{"id": "S", "x": 10, "y": 50}, {"id": "B", "x": 50, "y": 90}, {"id": "A", "x": 90, "y": 50}, {"id": "C", "x": 50, "y": 10}], "edges": [["A", "C", 3], ["C", "S", 1], ["B", "A", -4], ["S", "A", 1], ["S", "B", 2]], "directed": true, "labels": {"S": "0", "A": "−2", "B": "2", "C": "1"}, "mark": ["S", "A", "B", "C"]}, "array": {"label": "edges, in this order", "values": ["A→C 3", "C→S 1", "B→A −4", "S→A 1", "S→B 2"], "mark": [0, 1, 2, 3, 4]}, "vars": {"edge checks": 20}}]}
 </script>
 </x-tracer>
 
-<p>Edge order affects speed, not correctness. This order was unlucky: the news about A took a full round to reach C. The code stops early when a round changes nothing.</p>
+<p>Edge order affects speed, not correctness. The code stops early when a round changes nothing.</p>
 
 <x-code>
 <pre lang="js">
@@ -86,9 +86,9 @@ def bellman_ford(nodes, edges, start):
 
 <h2>Negative cycles</h2>
 
-<p>Suppose a new leg C→B appears with cost −2. Now B→A→C→B costs −4 + 3 − 2 = −3. Every lap of that loop makes the courier 3 richer, so there is no cheapest route any more. One more lap is always cheaper.</p>
+<p>Add a leg C→B with cost −2. Now B→A→C→B costs −4 + 3 − 2 = −3. One more lap is always cheaper, so no cheapest route exists.</p>
 
-<x-figure caption="A negative cycle. Each lap around B → A → C → B adds −3, so the cost of reaching any of them has no floor.">
+<x-figure caption="Each lap around B → A → C → B adds −3, so the cost of reaching them has no floor.">
 <svg viewBox="0 0 440 210" aria-label="Three circles B, A and C joined in a loop by arrows: B to A costs minus 4, A to C costs 3, C to B costs minus 2. The middle of the loop reads: one lap = minus 3.">
   <defs><marker id="bf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-bad"/></marker></defs>
   <line x1="98" y1="160" x2="200" y2="52" class="s-bad" stroke-width="2.5" marker-end="url(#bf-arrow)"/>
@@ -104,7 +104,7 @@ def bellman_ford(nodes, edges, start):
 </svg>
 </x-figure>
 
-<p>Bellman-Ford catches this. Without a negative cycle, everything is final after V − 1 rounds. So the code makes one extra pass: if any edge can <em>still</em> lower a distance, a negative loop is to blame, and the function returns null instead of wrong numbers.</p>
+<p>Without a negative cycle, everything is final after V − 1 rounds. So Bellman-Ford makes one extra pass: if any edge can <em>still</em> lower a distance, a negative loop is to blame, and it returns null instead of wrong numbers.</p>
 
 <x-callout type="real-world">
 <p>Currency traders hunt negative cycles. Make each exchange rate <code>r</code> a cost of <code>−log(r)</code>, and a loop of trades that ends with more money becomes a negative cycle.</p>
@@ -112,19 +112,19 @@ def bellman_ford(nodes, edges, start):
 
 <h2>Floyd-Warshall: every pair at once</h2>
 
-<p>Now the dispatcher wants the cheapest cost from <em>every</em> depot to <em>every</em> other. You could run Bellman-Ford from each one. Floyd-Warshall does it with three short loops and one table.</p>
+<p>Now the dispatcher wants the cheapest cost from <em>every</em> depot to <em>every</em> other. Instead of running Bellman-Ford from each, Floyd-Warshall uses three short loops and one table.</p>
 
-<p>The idea is to allow stopovers one depot at a time. Start with a table of direct legs. Then allow S as a stopover: for every pair <code>i</code>, <code>j</code>, check whether <code>i → S → j</code> is cheaper. Then add A, then B, then C. When you allow depot <code>k</code>, the best route from <code>i</code> to <code>j</code> either avoids <code>k</code>, so the table already has it, or goes through <code>k</code> once: the best <code>i → k</code> plus the best <code>k → j</code>, both already in the table.</p>
+<p>Start with a table of direct legs, then allow stopovers one depot at a time. Allowing S, check for every pair whether <code>i → S → j</code> is cheaper; then add A, B and C. With <code>k</code> allowed, the best <code>i</code> to <code>j</code> route either avoids <code>k</code> (already in the table) or passes through it once: best <code>i → k</code> plus best <code>k → j</code>, both in the table.</p>
 
 <x-tracer title="Floyd-Warshall on the courier map">
 <script type="application/json">
 {"code": ["dist = direct costs (0 on the diagonal, ∞ if no leg)", "for k in nodes:   # allow k as a stopover", "  for i in nodes:", "    for j in nodes:", "      dist[i][j] = min(dist[i][j], dist[i][k] + dist[k][j])"], "codeLang": "text", "steps": [
-    {"caption": "Start with direct legs only. 0 on the diagonal (staying put is free), ∞ where there is no direct leg.", "line": 1, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "∞"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "∞"], ["1", "∞", "∞", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"]}, "vars": {"stopovers allowed": "none"}}, 
-    {"caption": "Allow stopovers at S. Only C has a leg into S, so only row C can improve: C→S→A = 1 + 1 = 2 and C→S→B = 1 + 2 = 3.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "∞"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "∞"], ["1", "2", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[3, 1], [3, 2]]}, "vars": {"k": "S", "stopovers allowed": "S", "cells improved": 2}}, 
-    {"caption": "Now S or A may be stopovers. Through A: S→A→C = 1 + 3 = 4 and B→A→C = −4 + 3 = −1. C→A→C would be 2 + 3 = 5, worse than staying put at 0.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "4"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "−1"], ["1", "2", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[0, 3], [2, 3]]}, "vars": {"k": "A", "stopovers allowed": "S, A", "cells improved": 2}}, 
-    {"caption": "Add B. S→B→A = 2 − 4 = −2 beats 1. S→B→C = 2 + (−1) = 1 beats 4: that reuses the B→A→C route found in the last step. C→B→A = 3 − 4 = −1 beats 2.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[0, 1], [0, 3], [3, 1]]}, "vars": {"k": "B", "stopovers allowed": "S, A, B", "cells improved": 3}}, 
-    {"caption": "Add C, the last one. A→C→S = 3 + 1 = 4, A→C→B = 3 + 3 = 6, B→C→S = −1 + 1 = 0. Every pair has now been allowed every stopover.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["4", "0", "6", "3"], ["0", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[1, 0], [1, 2], [2, 0]]}, "vars": {"k": "C", "stopovers allowed": "S, A, B, C", "cells improved": 3}}, 
-    {"caption": "Done. Row S matches Bellman-Ford: −2, 2, 1. Every diagonal cell is still 0, so there is no negative cycle. 4 × 4 × 4 = 64 checks gave all 16 answers.", "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["4", "0", "6", "3"], ["0", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "mark": [[0, 1], [0, 2], [0, 3]]}, "vars": {"checks": 64}}]}
+    {"caption": "Direct legs only. 0 on the diagonal (staying put is free), ∞ where there is no leg.", "line": 1, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "∞"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "∞"], ["1", "∞", "∞", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"]}, "vars": {"stopovers allowed": "none"}}, 
+    {"caption": "Allow S. Only C has a leg into S, so only row C improves: C→S→A = 1 + 1 = 2, C→S→B = 1 + 2 = 3.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "∞"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "∞"], ["1", "2", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[3, 1], [3, 2]]}, "vars": {"k": "S", "stopovers allowed": "S", "cells improved": 2}}, 
+    {"caption": "Add A. S→A→C = 1 + 3 = 4 and B→A→C = −4 + 3 = −1.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "1", "2", "4"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "−1"], ["1", "2", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[0, 3], [2, 3]]}, "vars": {"k": "A", "stopovers allowed": "S, A", "cells improved": 2}}, 
+    {"caption": "Add B. S→B→A = 2 − 4 = −2 beats 1. S→B→C = 2 + (−1) = 1 beats 4, reusing B→A→C. C→B→A = 3 − 4 = −1 beats 2.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["∞", "0", "∞", "3"], ["∞", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[0, 1], [0, 3], [3, 1]]}, "vars": {"k": "B", "stopovers allowed": "S, A, B", "cells improved": 3}}, 
+    {"caption": "Add C. A→C→S = 4, A→C→B = 6, B→C→S = −1 + 1 = 0.", "line": 5, "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["4", "0", "6", "3"], ["0", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "highlight": [[1, 0], [1, 2], [2, 0]]}, "vars": {"k": "C", "stopovers allowed": "S, A, B, C", "cells improved": 3}}, 
+    {"caption": "Done. Row S matches Bellman-Ford: −2, 2, 1. The diagonal is all 0, so no negative cycle. 4 × 4 × 4 = 64 checks gave all 16 answers.", "grid": {"label": "dist (row = from, column = to)", "rows": [["0", "−2", "2", "1"], ["4", "0", "6", "3"], ["0", "−4", "0", "−1"], ["1", "−1", "3", "0"]], "rowLabels": ["S", "A", "B", "C"], "colLabels": ["S", "A", "B", "C"], "mark": [[0, 1], [0, 2], [0, 3]]}, "vars": {"checks": 64}}]}
 </script>
 </x-tracer>
 
@@ -164,7 +164,7 @@ def floyd_warshall(n, edges):
 </pre>
 </x-code>
 
-<p>Negative cycles show up for free: a loop from <code>i</code> back to <code>i</code> with a negative total puts a negative number on the diagonal.</p>
+<p>Negative cycles show up for free as a negative number on the diagonal.</p>
 
 <h2>Which one to use</h2>
 
@@ -184,11 +184,11 @@ def floyd_warshall(n, edges):
 <h2>Common mistakes</h2>
 
 <x-callout type="mistake" title="Putting the k loop inside">
-<p>In Floyd-Warshall, <code>k</code> must be the <strong>outer</strong> loop. The method is "finish all routes with stopovers up to <code>k</code>, then allow the next". With <code>k</code> inside, entries are read before the routes they depend on are done, and answers come out too high.</p>
+<p>In Floyd-Warshall, <code>k</code> must be the <strong>outer</strong> loop: finish all routes with stopovers up to <code>k</code>, then allow the next. With <code>k</code> inside, entries are read before their routes are done, and answers come out too high.</p>
 </x-callout>
 
 <x-callout type="mistake" title="A big number instead of infinity">
-<p>Some code uses <code>1e9</code> to mean "no route". Then <code>1e9 + (−4)</code> is smaller than <code>1e9</code>, and an unreachable place suddenly looks reachable. Use real infinity, as above, or skip any edge whose start is still unreached.</p>
+<p>With <code>1e9</code> meaning "no route", <code>1e9 + (−4)</code> is smaller than <code>1e9</code>, and an unreachable place looks reachable. Use real infinity, or skip edges whose start is unreached.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Negative costs on two-way roads">
@@ -202,27 +202,27 @@ def floyd_warshall(n, edges):
 {
   "questions": [
     {
-      "question": "A graph has 6 places. What is the largest number of rounds Bellman-Ford needs before the distances are final, if there is no negative cycle?",
+      "question": "A graph has 6 places and no negative cycle. At most how many rounds does Bellman-Ford need?",
       "options": [
-        { "text": "5", "correct": true, "why": "A cheapest route never repeats a place, so it has at most 6 − 1 = 5 edges, and each round extends the correct routes by one edge." },
-        { "text": "6", "why": "The sixth pass is only the check for negative cycles. Real distances are done after 5." },
-        { "text": "It depends on the costs", "why": "The costs change which route wins, not how many edges a cheapest route can have." }
+        { "text": "5", "correct": true, "why": "A cheapest route never repeats a place, so it has at most 6 − 1 = 5 edges, and each round extends correct routes by one edge." },
+        { "text": "6", "why": "The sixth pass is only the negative-cycle check." },
+        { "text": "It depends on the costs", "why": "Costs change which route wins, not how many edges it can have." }
       ]
     },
     {
-      "question": "After V − 1 rounds, Bellman-Ford's check pass finds that an edge can still lower a distance. What does that mean?",
+      "question": "After V − 1 rounds, the check pass finds an edge that still lowers a distance. What does that mean?",
       "options": [
-        { "text": "More rounds are needed", "why": "V − 1 rounds always suffice when cheapest routes exist. Further improvement means they do not." },
+        { "text": "More rounds are needed", "why": "V − 1 rounds suffice when cheapest routes exist, so they do not." },
         { "text": "Some loop reachable from the start has a negative total", "correct": true, "why": "Only a negative cycle can keep making routes cheaper forever." },
-        { "text": "The graph has a negative edge", "why": "Negative edges are fine, as the courier map shows. Only a negative loop breaks things." }
+        { "text": "The graph has a negative edge", "why": "Negative edges are fine, as the courier map shows." }
       ]
     },
     {
       "question": "You need the cheapest cost between every pair among 200 warehouses, and all costs are positive. Which fits best?",
       "options": [
-        { "text": "Floyd-Warshall", "correct": true, "why": "200³ is 8 million steps: quick, with tiny code. Running Dijkstra 200 times also works, and can win on sparse graphs." },
-        { "text": "One run of Dijkstra", "why": "One run gives the costs from a single start, not every pair." },
-        { "text": "BFS from each warehouse", "why": "BFS ignores costs. It finds the fewest legs, not the cheapest route." }
+        { "text": "Floyd-Warshall", "correct": true, "why": "200³ is 8 million steps: quick, with tiny code. Dijkstra 200 times also works, and can win on sparse graphs." },
+        { "text": "One run of Dijkstra", "why": "That gives costs from one start only." },
+        { "text": "BFS from each warehouse", "why": "BFS ignores costs." }
       ]
     }
   ]
@@ -232,4 +232,4 @@ def floyd_warshall(n, edges):
 
 <h2>What to practise next</h2>
 
-<p>Shortest paths answer "how do I get from here to there cheaply?". The last lesson in this module asks a different question: what is the cheapest set of links that connects every place at all? That is <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a>, and it brings back <a href="/algorithms/union-find.html">Union-Find</a>.</p>
+<p>A different question: what is the cheapest set of links that connects every place? That is <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a>, which brings back <a href="/algorithms/union-find.html">Union-Find</a>.</p>

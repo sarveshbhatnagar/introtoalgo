@@ -2,34 +2,34 @@
 {
   "title": "Sampling and Temperature",
   "description": "Why the same prompt can give different answers. See how a model picks each token from its chances, and what temperature and top-p really change.",
-  "minutes": 14,
+  "minutes": 12,
   "tags": ["llm", "sampling", "temperature"]
 }
 -->
-<p>Ask an assistant to suggest a name for your new bakery. Ask again in a fresh chat with the exact same words. You get a different name. Nothing broke, and the model did not change its mind. It rolled a weighted die, and the die landed somewhere else.</p>
+<p>Ask an assistant to name your new bakery. Ask again in a fresh chat, same words, and you get a different name. Nothing broke. The model rolled a weighted die, and it landed somewhere else.</p>
 
-<p>In <a href="/ai/what-is-an-llm.html">What Is an LLM</a>, the toy generator always took the most likely word. Most assistants do not. Here is how they pick instead, and what the settings called <em>temperature</em> and <em>top-p</em> do to the pick.</p>
+<p>The toy generator in <a href="/ai/what-is-an-llm.html">What Is an LLM</a> always took the most likely word. Most assistants do not. Here is how they pick, and what <em>temperature</em> and <em>top-p</em> change.</p>
 
 <h2>Picking from the chances</h2>
 
 <p>Each model call gives every possible next token a raw score. Softmax turns the scores into chances that add up to 1, as in the <a href="/ai/attention-and-transformers.html">attention lesson</a>. Then one token is chosen.</p>
 
-<p>Always taking the top token is called <strong>greedy</strong> decoding. It is predictable, but it tends to produce flat, repetitive text, and it can get stuck repeating the same phrase. So most systems <strong>sample</strong>: they pick at random, but weighted by the chances. A token with chance 0.46 is picked about 46% of the time.</p>
+<p>Always taking the top token is <strong>greedy</strong> decoding. It is predictable but gives flat text and can get stuck repeating a phrase. So most systems <strong>sample</strong>: pick at random, weighted by the chances. A token with chance 0.46 is picked about 46% of the time.</p>
 
-<p>The usual way to sample: draw a random number <code>r</code> between 0 and 1, then walk through the tokens adding up their chances. The first token whose running total passes <code>r</code> is the pick. Each token owns a slice of the line from 0 to 1, and the slice is as wide as its chance.</p>
+<p>To sample, draw a random number <code>r</code> between 0 and 1, then walk through the tokens adding up their chances. The first token whose running total passes <code>r</code> is the pick. Each token owns a slice of the line from 0 to 1, as wide as its chance.</p>
 
 <h2>Temperature: sharpen or flatten</h2>
 
-<p>Temperature is a single number that changes the chances before the pick. Divide every score by the temperature, then apply softmax as usual.</p>
+<p>Temperature reshapes the chances before the pick: divide every score by it, then apply softmax.</p>
 
 <ul>
-<li><strong>Below 1</strong>, the gaps between scores get bigger, so the top token gets even more likely. The text is safer and more predictable.</li>
-<li><strong>Exactly 1</strong> leaves the model's chances as they are.</li>
-<li><strong>Above 1</strong>, the gaps shrink, so unlikely tokens get a bigger share. The text is more varied, and more likely to go wrong.</li>
-<li><strong>0</strong> is treated as greedy: always the top token. (You cannot divide by zero, so code handles it as a special case.)</li>
+<li><strong>Below 1</strong>: gaps grow, the top token gets even more likely. Safer, more predictable text.</li>
+<li><strong>Exactly 1</strong>: the model's chances as they are.</li>
+<li><strong>Above 1</strong>: gaps shrink, unlikely tokens gain share. More varied text, more likely to go wrong.</li>
+<li><strong>0</strong>: treated as greedy, a special case since you cannot divide by zero.</li>
 </ul>
 
-<p>Here is a model finishing "My favourite fruit is", with five candidate words.</p>
+<p>Here a model finishes "My favourite fruit is" from five candidates.</p>
 
 <x-tracer title="Temperature and sampling for one token">
 <script type="application/json">
@@ -44,12 +44,12 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "The model's raw scores. At temperature 1 the scores are used as they are, and softmax gives the chances (rounded).", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "score", "values": [2, 1.5, 1, 0, -1] }, { "label": "chance", "values": [0.46, 0.28, 0.17, 0.06, 0.02], "highlight": [0] } ], "vars": { "temperature": 1 } },
-    { "caption": "Draw a random number: say <code>r = 0.62</code>. Start walking. After apple the running total is 0.46. 0.62 is not below 0.46, so apple's slice does not contain it. Keep going.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "highlight": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "highlight": [0] } ], "vars": { "r": 0.62, "running": 0.46 } },
-    { "caption": "After mango the running total is 0.74. 0.62 is below 0.74, so the pick is <strong>mango</strong>, even though apple was more likely. Greedy decoding would have said apple every time.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "mark": [1], "dim": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "mark": [1] } ], "vars": { "r": 0.62, "running": 0.74, "pick": "mango" } },
-    { "caption": "Now temperature 0.5. Dividing by 0.5 doubles every score: 4, 3, 2, 0, −2. The gaps double too, so apple jumps from 0.46 to 0.66 and durian all but disappears.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [4, 3, 2, 0, -2] }, { "label": "chance", "values": [0.66, 0.24, 0.09, 0.01, 0.00], "highlight": [0] } ], "vars": { "temperature": 0.5 } },
-    { "caption": "Temperature 2 halves every score: 1, 0.75, 0.5, 0, −0.5. The gaps shrink, the chances (rounded) even out, and durian is now picked about 1 time in 13.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [1, 0.75, 0.5, 0, -0.5] }, { "label": "chance", "values": [0.34, 0.26, 0.2, 0.12, 0.07], "highlight": [4] } ], "vars": { "temperature": 2 } },
-    { "caption": "The order never changes: apple is always first. Temperature only changes how far ahead of the others it is. Same scores, three very different amounts of variety.", "arrays": [ { "label": "T = 0.5", "values": [0.66, 0.24, 0.09, 0.01, 0.00] }, { "label": "T = 1", "values": [0.46, 0.28, 0.17, 0.06, 0.02] }, { "label": "T = 2", "values": [0.34, 0.26, 0.2, 0.12, 0.07] } ] }
+    { "caption": "The raw scores. At temperature 1 they are used as they are; softmax gives the chances (rounded).", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "score", "values": [2, 1.5, 1, 0, -1] }, { "label": "chance", "values": [0.46, 0.28, 0.17, 0.06, 0.02], "highlight": [0] } ], "vars": { "temperature": 1 } },
+    { "caption": "Draw <code>r = 0.62</code>. After apple the running total is 0.46. 0.62 is not below it, so keep going.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "highlight": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "highlight": [0] } ], "vars": { "r": 0.62, "running": 0.46 } },
+    { "caption": "After mango the total is 0.74. 0.62 is below it, so the pick is <strong>mango</strong>, though apple was more likely. Greedy would say apple every time.", "line": 6, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"], "mark": [1], "dim": [0] }, { "label": "running", "values": [0.46, 0.74, 0.91, 0.98, 1], "mark": [1] } ], "vars": { "r": 0.62, "running": 0.74, "pick": "mango" } },
+    { "caption": "Temperature 0.5 doubles every score: 4, 3, 2, 0, −2. The gaps double too, so apple jumps from 0.46 to 0.66 and durian all but disappears.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [4, 3, 2, 0, -2] }, { "label": "chance", "values": [0.66, 0.24, 0.09, 0.01, 0.00], "highlight": [0] } ], "vars": { "temperature": 0.5 } },
+    { "caption": "Temperature 2 halves every score: 1, 0.75, 0.5, 0, −0.5. The chances (rounded) even out; durian is now picked about 1 time in 13.", "line": 2, "arrays": [ { "label": "word", "values": ["apple", "mango", "banana", "kiwi", "durian"] }, { "label": "scaled", "values": [1, 0.75, 0.5, 0, -0.5] }, { "label": "chance", "values": [0.34, 0.26, 0.2, 0.12, 0.07], "highlight": [4] } ], "vars": { "temperature": 2 } },
+    { "caption": "The order never changes; temperature only changes how far ahead apple is. Same scores, three very different amounts of variety.", "arrays": [ { "label": "T = 0.5", "values": [0.66, 0.24, 0.09, 0.01, 0.00] }, { "label": "T = 1", "values": [0.46, 0.28, 0.17, 0.06, 0.02] }, { "label": "T = 2", "values": [0.34, 0.26, 0.2, 0.12, 0.07] } ] }
   ]
 }
 </script>
@@ -57,7 +57,7 @@
 
 <h2>The code</h2>
 
-<p>The random number is passed in as <code>r</code> so you can test the function. In real use you would pass <code>Math.random()</code> or <code>random.random()</code>.</p>
+<p>The random number is passed in as <code>r</code> for testing; in real use, pass <code>Math.random()</code> or <code>random.random()</code>.</p>
 
 <x-code>
 <pre lang="js">
@@ -115,13 +115,13 @@ words[sample(chances, 0.62)]  # "mango"
 </pre>
 </x-code>
 
-<p>The cost is tiny next to running the model: one pass over the vocabulary to scale and normalise, and one pass to sample, so O(V) for a vocabulary of V tokens. The top-p filter below adds a sort, O(V log V), which is still tiny.</p>
+<p>The cost is tiny next to running the model: O(V) for a vocabulary of V tokens. The top-p filter below adds a sort, O(V log V), still tiny.</p>
 
 <h2>Top-p: cut off the long tail</h2>
 
-<p>A real vocabulary has tens of thousands of tokens or more. Most have tiny chances, but together that "long tail" adds up, and any one of them can be picked now and then, often derailing a sentence. <strong>Top-p</strong> sampling (also called nucleus sampling) cuts the tail off first.</p>
+<p>A real vocabulary has tens of thousands of tokens or more. Most have tiny chances, but that "long tail" adds up, and an occasional pick from it can derail a sentence. <strong>Top-p</strong> (nucleus) sampling cuts the tail off first.</p>
 
-<p>Sort the tokens by chance and keep the most likely ones until their chances add up to at least <code>p</code>. Drop the rest, and rescale the kept ones so they sum to 1 again. With the fruit example at temperature 1 and <code>p = 0.9</code>: apple 0.46, plus mango 0.74, plus banana 0.91. That passes 0.9, so kiwi and durian are dropped, and the three survivors become about 0.51, 0.31 and 0.19.</p>
+<p>Sort tokens by chance and keep the likeliest until their chances reach at least <code>p</code>. Drop the rest and rescale the kept ones to sum to 1. For the fruit at temperature 1 and <code>p = 0.9</code>: apple 0.46, plus mango 0.74, plus banana 0.91 passes 0.9. Kiwi and durian are dropped; the survivors become about 0.51, 0.31 and 0.19.</p>
 
 <x-code title="Top-p filter">
 <pre lang="js">
@@ -150,7 +150,7 @@ def top_p(chances, p):
 </pre>
 </x-code>
 
-<p>A simpler cousin, <strong>top-k</strong>, keeps a fixed number of tokens, say the top 40. Top-p adapts: when the model is sure, it may keep only one or two tokens; when many continuations are reasonable, it keeps more. Systems often combine temperature with one of these filters.</p>
+<p><strong>Top-k</strong> keeps a fixed number, say the top 40. Top-p adapts: one or two tokens when the model is sure, more when many continuations are reasonable. Systems often combine temperature with one of these.</p>
 
 <x-callout type="key">
 <p>The model gives chances; sampling turns them into a choice. Temperature reshapes the chances without changing their order, and top-p or top-k removes the unlikely tail before the pick.</p>
@@ -158,27 +158,33 @@ def top_p(chances, p):
 
 <h2>Choosing settings</h2>
 
-<p>Low temperature suits tasks with one right answer: extracting fields from a form, classifying a ticket, writing code to a spec. Moderate temperature suits open-ended writing and brainstorming, where several different good answers are worth seeing. Very high temperatures rarely help: past a point, the extra variety is mostly mistakes. Many apps pick these values for you and do not expose them at all. Where you can set them, check the documentation: the allowed range and the default differ between providers, so the same number does not mean exactly the same thing everywhere.</p>
+<ul>
+<li><strong>Low</strong> for one right answer: extracting fields, classifying a ticket, code to a spec.</li>
+<li><strong>Moderate</strong> for open-ended writing and brainstorming, where several good answers are worth seeing.</li>
+<li><strong>Very high</strong> rarely helps: past a point, the extra variety is mostly mistakes.</li>
+</ul>
+
+<p>Many apps set these for you. Where you can, check the documentation: ranges and defaults differ between providers, so the same number does not mean the same thing everywhere.</p>
 
 <h2>Common mistakes</h2>
 
 <x-callout type="mistake" title="Expecting temperature 0 to make output identical every time">
-<p>Greedy decoding removes the dice roll, so outputs are usually the same. But tiny numerical differences in how the computation is run on the server can sometimes flip a near-tie between two tokens, and from that token on, the text differs. Do not build anything that depends on exact repeatability.</p>
+<p>Greedy decoding removes the dice roll, so outputs are usually the same. But tiny numerical differences on the server can flip a near-tie between two tokens, and the text diverges from there. Do not depend on exact repeatability.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Raising temperature to get &quot;smarter&quot; or more creative ideas">
-<p>Temperature does not add knowledge or skill. It only makes less likely tokens more likely. For more varied ideas, ask for them directly ("give 10 options that differ in style") and keep temperature moderate.</p>
+<p>Temperature adds no knowledge or skill; it only makes less likely tokens more likely. For varied ideas, ask directly ("give 10 options that differ in style") and keep temperature moderate.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Lowering temperature to fix wrong facts">
-<p>If the model's top choice is wrong, greedy decoding picks the wrong answer every time, just more consistently. Low temperature reduces random slips; it cannot fix what the model does not know. <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a> covers what does help.</p>
+<p>If the top choice is wrong, greedy decoding picks it every time. Low temperature reduces random slips; it cannot fix what the model does not know. <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a> covers what helps.</p>
 </x-callout>
 
 <h2>Try it yourself</h2>
 
 <x-tryit title="Pick the settings">
 <x-task>
-<p>For each task, choose a low temperature (near 0) or a moderate one (around 0.7 to 1), and say why in one line.</p>
+<p>For each task, choose low temperature (near 0) or moderate (around 0.7 to 1), with a one-line reason.</p>
 </x-task>
 <x-start>
 1. Pull the invoice number, date and total out of 5,000 scanned invoices.
@@ -188,12 +194,12 @@ def top_p(chances, p):
 </x-start>
 <x-answer>
 <ol>
-<li><strong>Low.</strong> There is one right answer per invoice. Any randomness can only add errors.</li>
-<li><strong>Moderate.</strong> You want variety. At near 0, many names would be close variations of the single most likely one.</li>
-<li><strong>Low.</strong> The output must follow a strict format; an unlikely token can break the JSON.</li>
-<li><strong>Moderate.</strong> "Different" is the whole point. Also run it several times: sampling gives you new options for free.</li>
+<li><strong>Low.</strong> One right answer per invoice; randomness can only add errors.</li>
+<li><strong>Moderate.</strong> You want variety. Near 0, many names would be variations of the most likely one.</li>
+<li><strong>Low.</strong> A strict format; an unlikely token can break the JSON.</li>
+<li><strong>Moderate.</strong> "Different" is the point. Run it several times too: sampling gives new options for free.</li>
 </ol>
-<p>Rule of thumb: if there is one correct output, go low. If you want options to choose from, go moderate and generate several.</p>
+<p>Rule of thumb: one correct output, go low. Options to choose from, go moderate and generate several.</p>
 </x-answer>
 </x-tryit>
 
@@ -208,14 +214,14 @@ def top_p(chances, p):
       "options": [
         { "text": "The first", "why": "Its slice is 0 to 0.5. 0.85 is beyond it." },
         { "text": "The second", "why": "Its slice is 0.5 to 0.8. 0.85 is still beyond it." },
-        { "text": "The third", "correct": true, "why": "The running totals are 0.5, 0.8, 1.0. 0.85 first falls below 1.0, in the third slice." }
+        { "text": "The third", "correct": true, "why": "Running totals are 0.5, 0.8, 1.0. 0.85 first falls below 1.0." }
       ]
     },
     {
       "question": "What happens to the chances when temperature goes from 1 to 2?",
       "options": [
-        { "text": "They even out, but the order stays the same", "correct": true, "why": "Dividing by 2 shrinks the gaps between scores, so the top token loses share to the others. The ranking never changes." },
-        { "text": "The order of the tokens changes", "why": "Dividing every score by the same positive number cannot change which is bigger." },
+        { "text": "They even out, but the order stays the same", "correct": true, "why": "Dividing by 2 shrinks the gaps, so the top token loses share. The ranking never changes." },
+        { "text": "The order of the tokens changes", "why": "Dividing every score by the same positive number keeps their order." },
         { "text": "The top token gets more likely", "why": "That is what a temperature below 1 does." }
       ]
     },
@@ -224,7 +230,7 @@ def top_p(chances, p):
       "options": [
         { "text": "Only the first", "why": "0.6 has not reached 0.8 yet, so keep adding." },
         { "text": "The first two", "correct": true, "why": "0.6 + 0.25 = 0.85, which reaches 0.8. The last two are dropped." },
-        { "text": "The first three", "why": "You stop as soon as the total reaches p. After two tokens it already has." }
+        { "text": "The first three", "why": "You stop as soon as the total reaches p, which happens after two." }
       ]
     }
   ]
@@ -234,4 +240,4 @@ def top_p(chances, p):
 
 <h2>What to practise next</h2>
 
-<p>Write the temperature step yourself in <a href="/practice/storyteller-word-odds.html">Storyteller Word Odds</a>. Then continue with <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a>, which uses everything in this module to explain why a model can be fluent and wrong at the same time.</p>
+<p>Write the temperature step yourself in <a href="/practice/storyteller-word-odds.html">Storyteller Word Odds</a>. Then read <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a>: why a model can be fluent and wrong at once.</p>
