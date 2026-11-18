@@ -1,18 +1,16 @@
 <!--
 {
   "title": "String Matching",
-  "description": "Find a pattern inside a long text: the naive scan, KMP with its failure table traced step by step, and Rabin-Karp's rolling hash, in JS and Python.",
-  "minutes": 18,
+  "description": "How to find a pattern in a text with the naive scan, KMP and Rabin-Karp, how they differ, and what interviewers ask about them.",
+  "minutes": 17,
   "tags": ["strings", "hashing", "patterns"]
 }
 -->
-<p>You flip a coin all afternoon and write down <code>HHTHHTHHH</code>. A friend bet that <code>HHTHHH</code> would show up. Did it, and where?</p>
+<p>String matching means finding every position where a pattern of length <code>m</code> appears inside a text of length <code>n</code>. It is the operation behind a Find box, a search through DNA, and the <code>indexOf</code> or <code>str.find</code> calls in every language. This lesson covers three ways to do it: the naive scan, Knuth-Morris-Pratt (KMP), and Rabin-Karp.</p>
 
-<p>That is string matching: find every place a <strong>pattern</strong> of length <code>m</code> appears in a <strong>text</strong> of length <code>n</code>, as your editor's Find box or a genome search does.</p>
+<h2>The naive scan</h2>
 
-<h2>The naive way: try every start</h2>
-
-<p>Line the pattern up under the text at position 0 and compare character by character. On a mismatch, slide one step right and start again.</p>
+<p>Place the pattern at position 0 of the text and compare character by character. If every character matches, record the position. If any character differs, move the pattern one position to the right and start comparing from its first character again. The trace below searches for <code>HHTHHH</code> in <code>HHTHHTHHH</code>.</p>
 
 <x-tracer title="Naive search for HHTHHH">
 <script type="application/json">
@@ -26,16 +24,16 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Start 0. Five characters match, then text <code>T</code> meets pattern <code>H</code>. 6 comparisons.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [5], "mark": [0,1,2,3,4] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "pointers": { "start": 0 } } ], "vars": { "comparisons": 6 } },
-    { "caption": "Slide to start 1 and begin again. Text positions 1 and 2 are read a second time; <code>T</code> against <code>H</code> fails.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [2], "mark": [1] }, { "label": "pattern", "values": [null,"H","H","T","H","H","H",null,null], "pointers": { "start": 1 } } ], "vars": { "comparisons": 8 } },
-    { "caption": "Start 2: <code>T</code> against <code>H</code> fails at once.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [2] }, { "label": "pattern", "values": [null,null,"H","H","T","H","H","H",null], "pointers": { "start": 2 } } ], "vars": { "comparisons": 9 } },
-    { "caption": "Start 3: all six match. Found at 3, after 15 comparisons on a 9-character text.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "pointers": { "start": 3 } } ], "vars": { "comparisons": 15, "found at": 3 } }
+    { "caption": "At start 0, five characters match and then the text character <code>T</code> meets the pattern character <code>H</code>. That is 6 comparisons so far.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [5], "mark": [0,1,2,3,4] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "pointers": { "start": 0 } } ], "vars": { "comparisons": 6 } },
+    { "caption": "The pattern slides to start 1 and the comparison begins again. Text positions 1 and 2 are read a second time, and <code>T</code> against <code>H</code> fails.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [2], "mark": [1] }, { "label": "pattern", "values": [null,"H","H","T","H","H","H",null,null], "pointers": { "start": 1 } } ], "vars": { "comparisons": 8 } },
+    { "caption": "At start 2, <code>T</code> against <code>H</code> fails on the first comparison.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "highlight": [2] }, { "label": "pattern", "values": [null,null,"H","H","T","H","H","H",null], "pointers": { "start": 2 } } ], "vars": { "comparisons": 9 } },
+    { "caption": "At start 3 all six characters match, so the pattern is found at index 3 after 15 comparisons on a 9-character text.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "pointers": { "start": 3 } } ], "vars": { "comparisons": 15, "found at": 3 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>Each of about <code>n</code> starts can cost <code>m</code> comparisons: O(n·m). Search a million <code>H</code>s for <code>HHHHHHHHHT</code> and every start matches nine before failing.</p>
+<p>Each of the roughly <code>n</code> start positions can cost up to <code>m</code> comparisons, so the worst case is O(n·m). A text of a million <code>H</code> characters searched for <code>HHHHHHHHHT</code> is the standard bad case, because every start matches nine characters before failing on the last one. On ordinary text the first comparison usually fails, so the naive scan runs close to O(n) in practice, which is why it is acceptable when the inputs are small.</p>
 
 <x-code title="Naive search">
 <pre lang="js">
@@ -69,11 +67,11 @@ naive_search("HHTHHTHHH", "HHTHHH")  # [3]
 </pre>
 </x-code>
 
-<h2>KMP: never read a character twice</h2>
+<h2>KMP</h2>
 
-<p>At the first mismatch we had just matched <code>HHTHH</code>, so we already know those text characters. The Knuth-Morris-Pratt algorithm (KMP) never re-reads them. <code>HHTHH</code> ends with <code>HH</code>, and the pattern starts with <code>HH</code>, so slide the pattern to line them up and carry on from pattern position 2.</p>
+<p>The naive scan throws away what it learned. At the first mismatch in the trace, the text characters <code>HHTHH</code> were already known to match the start of the pattern. KMP uses that knowledge and never compares a text character twice. The suffix <code>HH</code> of the matched part is also a prefix of the pattern, so the pattern can slide until its first two characters sit under those two text characters, and the comparison continues from pattern position 2.</p>
 
-<x-figure caption="Slide the pattern so its prefix HH sits under the matched suffix HH.">
+<x-figure caption="The pattern slides right so that its first two characters, HH, sit under the HH at the end of the matched part of the text.">
 <svg viewBox="0 0 480 200" aria-label="Top row: text HHTHHTHHH. Middle row: the pattern at start 0, with HHTHH matched and a mismatch at position 5. Bottom row: the pattern slid to start 3, its first two letters lined up under text positions 3 and 4.">
   <text x="0" y="36" class="t-sans t-small f-muted">text</text>
   <rect x="60" y="16" width="40" height="32" rx="6" class="f-surface s-line"/><text x="80" y="37" text-anchor="middle">H</text>
@@ -99,15 +97,15 @@ naive_search("HHTHHTHHH", "HHTHHH")  # [3]
   <rect x="324" y="140" width="40" height="32" rx="6" class="f-surface s-line"/><text x="344" y="161" text-anchor="middle">H</text>
   <rect x="368" y="140" width="40" height="32" rx="6" class="f-surface s-line"/><text x="388" y="161" text-anchor="middle">H</text>
   <rect x="412" y="140" width="40" height="32" rx="6" class="f-surface s-line"/><text x="432" y="161" text-anchor="middle">H</text>
-  <text x="300" y="192" text-anchor="middle" class="t-sans t-small f-accent">compare here next</text>
+  <text x="300" y="192" text-anchor="middle" class="t-sans t-small f-accent">next comparison</text>
 </svg>
 </x-figure>
 
-<p>A <strong>border</strong> is a proper prefix that is also a suffix: <code>HHTHH</code> has borders <code>H</code> and <code>HH</code>. Use the longest, so the slide is smallest and no match is skipped. Borders depend only on the pattern, so KMP computes them once in the <strong>failure table</strong>: <code>table[i]</code> is the length of the longest border of <code>pattern[0..i]</code>.</p>
+<p>A <strong>border</strong> of a string is a proper prefix that is also a suffix. The string <code>HHTHH</code> has two borders, <code>H</code> and <code>HH</code>. KMP slides by the longest border, because that is the smallest slide that cannot skip a real match. Borders depend only on the pattern, so KMP computes them once, before searching, in a <strong>failure table</strong>. The entry <code>table[i]</code> is the length of the longest border of the first <code>i + 1</code> characters of the pattern.</p>
 
 <h3>Building the failure table</h3>
 
-<p>At each new character, try to extend the current border <code>k</code> by one. If that fails, fall back to the border of the border, <code>table[k − 1]</code>, and retry.</p>
+<p>The table is built left to right with a variable <code>k</code> that holds the current border length. For each new character, check whether it extends the current border, meaning <code>pattern[i]</code> equals <code>pattern[k]</code>. If it does, <code>k</code> grows by one. If it does not, the next shorter border that could still be extended is the border of the current border, which is <code>table[k − 1]</code>, so <code>k</code> falls back to that value and the check repeats.</p>
 
 <x-tracer title="Failure table for HHTHHH">
 <script type="application/json">
@@ -122,14 +120,14 @@ naive_search("HHTHHTHHH", "HHTHHH")  # [3]
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "A single character has no border: <code>table[0] = 0</code>, <code>k = 0</code>.", "line": 1, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0 } }, { "label": "table", "values": [0,null,null,null,null,null], "mark": [0] } ], "vars": { "k": 0 } },
-    { "caption": "<code>p[1]</code> and <code>p[0]</code> are both H, so the border grows to 1.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 1 }, "highlight": [0,1] }, { "label": "table", "values": [0,1,null,null,null,null], "mark": [1] } ], "vars": { "k": 1 } },
-    { "caption": "<code>p[2]</code> is T but <code>p[1]</code> is H. Fall back: <code>k = table[0] = 0</code>.", "line": 4, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 2 }, "highlight": [1,2] }, { "label": "table", "values": [0,1,null,null,null,null] } ], "vars": { "k": 0 } },
-    { "caption": "T does not match <code>p[0]</code> (H): <code>table[2] = 0</code>.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 2 }, "highlight": [0,2] }, { "label": "table", "values": [0,1,0,null,null,null], "mark": [2] } ], "vars": { "k": 0 } },
-    { "caption": "<code>p[3]</code> matches <code>p[0]</code>: border 1.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 3 }, "highlight": [0,3] }, { "label": "table", "values": [0,1,0,1,null,null], "mark": [3] } ], "vars": { "k": 1 } },
-    { "caption": "<code>p[4]</code> matches <code>p[1]</code>: border 2 (<code>HH</code>).", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 4 }, "highlight": [1,4] }, { "label": "table", "values": [0,1,0,1,2,null], "mark": [4] } ], "vars": { "k": 2 } },
-    { "caption": "<code>p[5]</code> is H but <code>p[2]</code> is T. Fall back to the border of <code>HH</code>: <code>k = table[1] = 1</code>.", "line": 4, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 2, "i": 5 }, "highlight": [2,5] }, { "label": "table", "values": [0,1,0,1,2,null] } ], "vars": { "k": 1 } },
-    { "caption": "H matches <code>p[1]</code>, so <code>k = 2</code> and <code>table[5] = 2</code>. Done: <code>[0, 1, 0, 1, 2, 2]</code>.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 5 }, "highlight": [1,5] }, { "label": "table", "values": [0,1,0,1,2,2], "mark": [0,1,2,3,4,5] } ], "vars": { "k": 2 } }
+    { "caption": "A single character has no border, so <code>table[0] = 0</code> and <code>k = 0</code>.", "line": 1, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0 } }, { "label": "table", "values": [0,null,null,null,null,null], "mark": [0] } ], "vars": { "k": 0 } },
+    { "caption": "<code>p[1]</code> and <code>p[0]</code> are both H, so the border grows to length 1.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 1 }, "highlight": [0,1] }, { "label": "table", "values": [0,1,null,null,null,null], "mark": [1] } ], "vars": { "k": 1 } },
+    { "caption": "<code>p[2]</code> is T but <code>p[1]</code> is H, so the border cannot grow and <code>k</code> falls back to <code>table[0] = 0</code>.", "line": 4, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 2 }, "highlight": [1,2] }, { "label": "table", "values": [0,1,null,null,null,null] } ], "vars": { "k": 0 } },
+    { "caption": "T does not match <code>p[0]</code>, which is H, so <code>table[2] = 0</code>.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 2 }, "highlight": [0,2] }, { "label": "table", "values": [0,1,0,null,null,null], "mark": [2] } ], "vars": { "k": 0 } },
+    { "caption": "<code>p[3]</code> matches <code>p[0]</code>, so the border length is 1.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 0, "i": 3 }, "highlight": [0,3] }, { "label": "table", "values": [0,1,0,1,null,null], "mark": [3] } ], "vars": { "k": 1 } },
+    { "caption": "<code>p[4]</code> matches <code>p[1]</code>, so the border grows to length 2, which is <code>HH</code>.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 4 }, "highlight": [1,4] }, { "label": "table", "values": [0,1,0,1,2,null], "mark": [4] } ], "vars": { "k": 2 } },
+    { "caption": "<code>p[5]</code> is H but <code>p[2]</code> is T, so <code>k</code> falls back to the border of <code>HH</code>, which is <code>table[1] = 1</code>.", "line": 4, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 2, "i": 5 }, "highlight": [2,5] }, { "label": "table", "values": [0,1,0,1,2,null] } ], "vars": { "k": 1 } },
+    { "caption": "H matches <code>p[1]</code>, so <code>k</code> becomes 2 and <code>table[5] = 2</code>. The finished table is <code>[0, 1, 0, 1, 2, 2]</code>.", "line": 6, "arrays": [ { "label": "pattern", "values": ["H","H","T","H","H","H"], "pointers": { "k": 1, "i": 5 }, "highlight": [1,5] }, { "label": "table", "values": [0,1,0,1,2,2], "mark": [0,1,2,3,4,5] } ], "vars": { "k": 2 } }
   ]
 }
 </script>
@@ -137,7 +135,7 @@ naive_search("HHTHHTHHH", "HHTHHH")  # [3]
 
 <h3>Searching with the table</h3>
 
-<p>Same shape: <code>j</code> counts matched pattern characters, and on a mismatch it drops to <code>table[j − 1]</code> while the text position <code>i</code> stays put.</p>
+<p>The search has the same shape. The variable <code>j</code> counts how many pattern characters are currently matched. When the text character equals <code>pattern[j]</code>, <code>j</code> grows. On a mismatch, <code>j</code> falls back to <code>table[j − 1]</code> and the same text character is compared again, so the text index only ever moves forward.</p>
 
 <x-tracer title="KMP search for HHTHHH">
 <script type="application/json">
@@ -152,13 +150,13 @@ naive_search("HHTHHTHHH", "HHTHHH")  # [3]
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Nothing matched yet.", "line": 1, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 0 } }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null] } ], "vars": { "j": 0, "comparisons": 0 } },
-    { "caption": "Text positions 0 to 4 match, one comparison each. <code>j = 5</code>.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 4 }, "mark": [0,1,2,3,4] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "mark": [0,1,2,3,4] } ], "vars": { "j": 5, "comparisons": 5 } },
-    { "caption": "At <code>i = 5</code>, text T meets pattern H. Mismatch.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "highlight": [5] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "highlight": [5] } ], "vars": { "j": 5, "comparisons": 6 } },
-    { "caption": "Fall back: <code>j = table[4] = 2</code>. The pattern slides to start 3; <code>i</code> stays at 5.", "line": 4, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "mark": [3,4] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4] } ], "vars": { "j": 2, "comparisons": 6 } },
-    { "caption": "T matches T. <code>j = 3</code>.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "mark": [3,4,5] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5] } ], "vars": { "j": 3, "comparisons": 7 } },
-    { "caption": "Positions 6, 7 and 8 match. <code>j</code> reaches 6, the full pattern.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 8 }, "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] } ], "vars": { "j": 6, "comparisons": 10 } },
-    { "caption": "Found at 8 − 6 + 1 = 3, in 10 comparisons instead of 15. <code>i</code> never moved backwards.", "line": 6, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] } ], "vars": { "found at": 3, "comparisons": 10, "naive": 15 } }
+    { "caption": "No characters have been matched yet.", "line": 1, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 0 } }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null] } ], "vars": { "j": 0, "comparisons": 0 } },
+    { "caption": "Text positions 0 to 4 match the pattern, one comparison each, so <code>j</code> is 5.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 4 }, "mark": [0,1,2,3,4] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "mark": [0,1,2,3,4] } ], "vars": { "j": 5, "comparisons": 5 } },
+    { "caption": "At <code>i = 5</code> the text character T meets the pattern character H, which is a mismatch.", "line": 3, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "highlight": [5] }, { "label": "pattern", "values": ["H","H","T","H","H","H",null,null,null], "highlight": [5] } ], "vars": { "j": 5, "comparisons": 6 } },
+    { "caption": "The search falls back to <code>j = table[4] = 2</code>. The pattern is now effectively at start 3, and <code>i</code> stays at 5.", "line": 4, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "mark": [3,4] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4] } ], "vars": { "j": 2, "comparisons": 6 } },
+    { "caption": "T matches T, so <code>j</code> becomes 3.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 5 }, "mark": [3,4,5] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5] } ], "vars": { "j": 3, "comparisons": 7 } },
+    { "caption": "Text positions 6, 7 and 8 match, so <code>j</code> reaches 6, the length of the pattern.", "line": 5, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "pointers": { "i": 8 }, "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] } ], "vars": { "j": 6, "comparisons": 10 } },
+    { "caption": "The match starts at 8 − 6 + 1 = 3, found in 10 comparisons instead of 15. The index <code>i</code> never moved backwards.", "line": 6, "arrays": [ { "label": "text", "values": ["H","H","T","H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] }, { "label": "pattern", "values": [null,null,null,"H","H","T","H","H","H"], "mark": [3,4,5,6,7,8] } ], "vars": { "found at": 3, "comparisons": 10, "naive": 15 } }
   ]
 }
 </script>
@@ -223,13 +221,23 @@ def kmp_search(text, pattern):
 </pre>
 </x-code>
 
-<p>The inner <code>while</code> does not make this O(n·m): <code>j</code> rises at most once per character and cannot fall more often than it rose, so the search takes at most 2n steps, and the table build likewise. It is the "count total moves" argument from <a href="/algorithms/two-pointers.html">two pointers</a>.</p>
+<p>After a full match the code sets <code>j = table[j − 1]</code> instead of 0, so that overlapping matches are also reported. For example, <code>AA</code> occurs twice in <code>AAA</code>.</p>
 
-<h2>Rabin-Karp: compare fingerprints</h2>
+<p>The inner <code>while</code> loop does not make the search O(n·m). The value of <code>j</code> rises by at most 1 per text character, and each fallback lowers it, so the total number of fallbacks cannot exceed the total number of increases, which is at most <code>n</code>. The search therefore does at most about 2n steps, and the table construction follows the same argument for <code>m</code>.</p>
 
-<p>Turn each window of <code>m</code> characters into a number, a <strong>hash</strong>, and compare numbers instead of strings. The trick is computing each window's number in O(1) from the previous one.</p>
+<x-callout type="mistake" title="Resetting to zero on a mismatch">
+<p>Setting <code>j = 0</code> after a mismatch instead of <code>j = table[j − 1]</code> discards the border, so KMP misses matches that start inside the part it already matched. In the search trace above, resetting at <code>i = 5</code> means the match that begins at index 3 is never found.</p>
+</x-callout>
 
-<p>With digits: search for <code>265</code> in <code>31415926535</code>. The first window is 314. To slide, drop the leading 3, shift left, and add the next digit: (314 − 3 × 100) × 10 + 1 = 141. That is a <strong>rolling hash</strong>.</p>
+<x-callout type="mistake" title="Not falling back after a full match">
+<p>After <code>j</code> reaches the pattern length, the code must set <code>j = table[j − 1]</code> before reading the next character. Leaving <code>j</code> at <code>m</code> would read past the end of the pattern, and resetting it to 0 would miss overlapping matches.</p>
+</x-callout>
+
+<h2>Rabin-Karp</h2>
+
+<p>Rabin-Karp compares numbers instead of strings. It converts every window of <code>m</code> characters in the text into a number called a <strong>hash</strong> and compares it with the pattern's hash. Comparing two numbers takes O(1), and the method works because each window's hash can be computed from the previous window's hash in O(1) instead of from scratch.</p>
+
+<p>The idea is easiest to see with digits. To search for <code>265</code> in <code>31415926535</code>, the first window is 314. To move one position right, remove the leading digit by subtracting 3 × 100, shift the rest left by multiplying by 10, and add the new digit: (314 − 300) × 10 + 1 = 141.</p>
 
 <x-tracer title="Rolling the window to find 265">
 <script type="application/json">
@@ -242,21 +250,19 @@ def kmp_search(text, pattern):
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "The pattern's number is 265. The first window is 314. Not equal.", "line": 3, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [0,1,2] }, "vars": { "target": 265, "h": 314 } },
-    { "caption": "Roll: (314 − 300) × 10 + 1 = 141. Three operations, whatever the window length.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [1,2,3], "dim": [0] }, "vars": { "target": 265, "h": 141 } },
-    { "caption": "(141 − 100) × 10 + 5 = 415. Not equal.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [2,3,4], "dim": [0,1] }, "vars": { "target": 265, "h": 415 } },
-    { "caption": "(415 − 400) × 10 + 9 = 159.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [3,4,5], "dim": [0,1,2] }, "vars": { "target": 265, "h": 159 } },
-    { "caption": "(159 − 100) × 10 + 2 = 592.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [4,5,6], "dim": [0,1,2,3] }, "vars": { "target": 265, "h": 592 } },
-    { "caption": "(592 − 500) × 10 + 6 = 926.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [5,6,7], "dim": [0,1,2,3,4] }, "vars": { "target": 265, "h": 926 } },
-    { "caption": "(926 − 900) × 10 + 5 = 265. Numbers match; the characters check out. Found at 6, after 7 windows.", "line": 3, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "mark": [6,7,8], "dim": [0,1,2,3,4,5] }, "vars": { "target": 265, "h": 265, "found at": 6 } }
+    { "caption": "The pattern's number is 265 and the first window of three digits is 314, so they are not equal.", "line": 3, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [0,1,2] }, "vars": { "target": 265, "h": 314 } },
+    { "caption": "Rolling the window (a <strong>rolling hash</strong>) gives (314 − 300) × 10 + 1 = 141.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [1,2,3], "dim": [0] }, "vars": { "target": 265, "h": 141 } },
+    { "caption": "The next window is (141 − 100) × 10 + 5 = 415, which is not equal to 265.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [2,3,4], "dim": [0,1] }, "vars": { "target": 265, "h": 415 } },
+    { "caption": "Then (415 − 400) × 10 + 9 = 159.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [3,4,5], "dim": [0,1,2] }, "vars": { "target": 265, "h": 159 } },
+    { "caption": "Then (159 − 100) × 10 + 2 = 592.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [4,5,6], "dim": [0,1,2,3] }, "vars": { "target": 265, "h": 592 } },
+    { "caption": "Then (592 − 500) × 10 + 6 = 926.", "line": 4, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "highlight": [5,6,7], "dim": [0,1,2,3,4] }, "vars": { "target": 265, "h": 926 } },
+    { "caption": "Finally (926 − 900) × 10 + 5 = 265. The numbers match and the digits agree, so the pattern is found at index 6 after looking at 7 windows.", "line": 3, "array": { "label": "text", "values": [3,1,4,1,5,9,2,6,5,3,5], "mark": [6,7,8], "dim": [0,1,2,3,4,5] }, "vars": { "target": 265, "h": 265, "found at": 6 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>For real text, use character codes as digits in base 256, and keep values modulo a large prime such as 1,000,000,007.</p>
-
-<p>The price: different windows can share a hash. With modulo 7, 314 and 265 both leave remainder 6. So equal hashes mean "maybe" and need a character check, but different hashes rule a window out at once.</p>
+<p>For real text, treat each character code as a digit in base 256, and keep every value modulo a large prime such as 1,000,000,007 so the numbers stay small. The modulo creates a cost, because different windows can now have the same hash. With modulo 7, for example, both 314 and 265 leave remainder 6. An equal hash therefore only means that the window might match, and the code must compare the actual characters before reporting it. A different hash proves the window does not match, and that is what lets most windows be skipped.</p>
 
 <x-code title="Rabin-Karp">
 <pre lang="js">
@@ -304,39 +310,61 @@ def rabin_karp(text, pattern):
 </pre>
 </x-code>
 
+<x-callout type="mistake" title="Negative values after subtracting">
+<p>When the leading character is removed from the hash, the result can go below zero before the modulo is applied. In JavaScript <code>-3 % 7</code> is <code>-3</code>, not 4, so the code adds <code>MOD</code> before taking the remainder. Python's <code>%</code> already returns a non-negative result.</p>
+</x-callout>
+
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
     { "name": "Naive", "time": "O(n·m)", "space": "O(1)", "note": "Up to m comparisons at each of about n starts." },
-    { "name": "KMP", "time": "O(n + m)", "space": "O(m)", "note": "Table in O(m); the text pointer never moves back." },
-    { "name": "Rabin-Karp", "time": "O(n + m) expected", "space": "O(1)", "note": "O(1) per roll, plus m for each hash match. O(n·m) if most windows match or collide." }
+    { "name": "KMP", "time": "O(n + m)", "space": "O(m)", "note": "The table takes O(m) to build, and the text pointer never moves back." },
+    { "name": "Rabin-Karp", "time": "O(n + m) expected", "space": "O(1)", "note": "Each roll costs O(1), plus m for each hash match. It degrades to O(n·m) if most windows match or collide." }
   ]
 }
 </script>
 </x-complexity>
 
-<x-callout type="key">
-<p>Both fast methods avoid redoing work: KMP remembers matched characters; Rabin-Karp updates a fingerprint instead of rebuilding it.</p>
-</x-callout>
+<h2>Choosing between the methods</h2>
 
-<p>For everyday search, use the built-in (<code>indexOf</code>, <code>str.find</code>). Write KMP for a guaranteed O(n + m) or the failure table itself. Use Rabin-Karp to compare many windows at once, such as finding a repeated substring: put every window's hash in a <a href="/algorithms/hash-tables.html">hash set</a>.</p>
+<h3>When to use the built-in search</h3>
 
-<h2>Common mistakes</h2>
+<p>For everyday work, call the language's own search function, such as <code>indexOf</code> in JavaScript or <code>str.find</code> in Python. It is already optimised and tested. Write KMP or Rabin-Karp yourself when an interviewer asks for it.</p>
 
-<x-callout type="mistake" title="Resetting to zero on a mismatch">
-<p>Setting <code>j = 0</code> instead of <code>j = table[j − 1]</code> throws away the border. In the trace, resetting at <code>i = 5</code> never finds the pattern at 3.</p>
-</x-callout>
+<h3>When to use KMP</h3>
 
-<x-callout type="mistake" title="Trusting a hash match">
-<p>Skip the character check and a rare collision gives wrong answers on some inputs.</p>
-</x-callout>
+<p>Use KMP when you need a worst-case guarantee for a single pattern, or when the failure table is the point of the problem.</p>
 
-<x-callout type="mistake" title="Negative values after subtracting">
-<p>In JavaScript, <code>-3 % 7</code> is <code>-3</code>, not 4, so add <code>MOD</code> after removing the left character, as the code does. Python's <code>%</code> is already non-negative.</p>
-</x-callout>
+<h3>When to use Rabin-Karp</h3>
 
-<h2>Check yourself</h2>
+<p>Rabin-Karp is the better fit when you must compare many windows at once. To find a repeated substring of a given length, put the hash of every window in a <a href="/algorithms/hash-tables.html">hash set</a> and look for a hash that appears twice, then verify the candidates. Its weakness is that the O(n + m) bound is only expected: a poor hash or an adversarial input that causes many collisions pushes it back toward O(n·m).</p>
+
+<h3>Other algorithms for related problems</h3>
+
+<p>All three methods match an exact string. If the pattern is a regular expression, or if small differences must be allowed, as in spell checking, you need a regex engine or an edit-distance approach such as <a href="/algorithms/dp-on-strings.html">dynamic programming on strings</a>. If you must search for a large set of different words in one text, running KMP once per word is slow, and a <a href="/algorithms/tries.html">trie</a>-based method such as Aho-Corasick is the standard answer.</p>
+
+<p>Two other exact-matching algorithms come up in interviews. The Z-function gives, for every position, the length of the longest substring starting there that is also a prefix of the string, and it solves the same problems as the failure table. Boyer-Moore compares the pattern from its right end and skips several text characters after a mismatch, which makes it the fastest in practice for long patterns.</p>
+
+
+
+
+
+<h2>What interviewers ask about string matching</h2>
+
+<p>The usual form of the question is about finding one string inside another, usually phrased as "return the index of the first occurrence" or "does this string contain that one". Related forms are a prefix that is also a suffix, a string built by repeating a shorter one, or a repeated substring. If the constraints allow O(n·m), for example when both strings are under a few thousand characters, the naive scan is acceptable, and you should say so before you offer anything more complex.</p>
+
+<p>Questions to expect:</p>
+
+<ul>
+<li><strong>"What is the naive approach and when does it get slow?"</strong> It tries every start position and compares up to <code>m</code> characters at each, so it takes O(n·m).</li>
+<li><strong>"What does the failure table store?"</strong> For each prefix of the pattern, it stores the length of the longest proper prefix that is also a suffix of that prefix. On a mismatch after <code>j</code> matched characters, that length tells KMP how many of those characters are still a valid match, so the search resumes at <code>table[j − 1]</code> without moving back in the text.</li>
+<li><strong>"Why is KMP O(n + m) when it has a loop inside a loop?"</strong> The pattern index <code>j</code> increases by at most one per text character, and every fallback decreases it. The total number of fallbacks is therefore at most the total number of increases, which is at most <code>n</code>. The table build follows the same reasoning.</li>
+<li><strong>"What is the worst case for Rabin-Karp?"</strong> It is O(n·m). If many windows have the same hash as the pattern, the algorithm compares characters for each of them. With a good modulus and base that is unlikely on ordinary input, which is why the expected time is O(n + m).</li>
+<li><strong>"How would you check whether a string is made of a shorter string repeated?"</strong> Build the failure table and let <code>L = n − table[n − 1]</code>. If <code>table[n − 1]</code> is greater than 0 and <code>L</code> divides <code>n</code>, the first <code>L</code> characters repeat to form the string.</li>
+<li><strong>"Why not just use <code>indexOf</code>?"</strong> In production you should. The interviewer is asking whether you understand what it does, so be ready to explain the failure table and the O(n + m) guarantee, and to say that the built-in version may use a different algorithm.</li>
+<li><strong>"How do you make Rabin-Karp reliable?"</strong> Use a large prime modulus and always compare the characters when the hashes are equal. To make collisions harder for an adversary to construct, pick the base at random or use two different moduli.</li>
+</ul>
 
 <x-quiz>
 <script type="application/json">
@@ -345,32 +373,28 @@ def rabin_karp(text, pattern):
     {
       "question": "What is the failure table for the pattern <code>ABAB</code>?",
       "options": [
-        { "text": "<code>[0, 0, 1, 2]</code>", "correct": true, "why": "<code>A</code> and <code>AB</code> have no border. <code>ABA</code> has <code>A</code> (1); <code>ABAB</code> has <code>AB</code> (2)." },
-        { "text": "<code>[0, 1, 2, 3]</code>", "why": "That is the table for <code>AAAA</code>. <code>AB</code> has no border." },
-        { "text": "<code>[0, 0, 1, 1]</code>", "why": "The last entry is 2: <code>AB</code> is a prefix and a suffix of <code>ABAB</code>." }
+        { "text": "<code>[0, 0, 1, 2]</code>", "correct": true, "why": "<code>A</code> and <code>AB</code> have no border, <code>ABA</code> has the border <code>A</code> with length 1, and <code>ABAB</code> has the border <code>AB</code> with length 2." },
+        { "text": "<code>[0, 1, 2, 3]</code>", "why": "That is the table for <code>AAAA</code>. The prefix <code>AB</code> has no border, so the second entry is 0." },
+        { "text": "<code>[0, 0, 1, 1]</code>", "why": "The last entry should be 2, because <code>AB</code> is both a prefix and a suffix of <code>ABAB</code>." }
       ]
     },
     {
-      "question": "KMP has a <code>while</code> inside a <code>for</code> over the text. Why is the search still O(n)?",
+      "question": "KMP has a <code>while</code> loop inside a <code>for</code> loop over the text. Why is the search still O(n)?",
       "options": [
-        { "text": "The <code>while</code> loop runs at most once per character", "why": "It can run several times at one character. Only the total is bounded." },
-        { "text": "<code>j</code> rises at most once per character, and every fallback lowers it", "correct": true, "why": "Total falls cannot exceed total rises, which are at most n." },
-        { "text": "The failure table makes every comparison O(1)", "why": "Comparisons were always O(1). The question is how many." }
+        { "text": "The <code>while</code> loop runs at most once for each text character.", "why": "It can run several times for one character. Only the total number of runs is bounded." },
+        { "text": "<code>j</code> rises by at most one per text character, and every fallback lowers it.", "correct": true, "why": "The total number of fallbacks cannot exceed the total number of increases, which is at most n." },
+        { "text": "The failure table makes every comparison take O(1) time.", "why": "Each comparison was always O(1). The question is how many comparisons happen." }
       ]
     },
     {
-      "question": "In Rabin-Karp, a window's hash equals the pattern's hash. What do you know?",
+      "question": "In Rabin-Karp, a window's hash equals the pattern's hash. What does that tell you?",
       "options": [
-        { "text": "The window equals the pattern", "why": "Different strings can share a hash after the modulo." },
-        { "text": "The window might equal the pattern, so compare the characters", "correct": true, "why": "A match is a candidate. Different hashes rule a window out for certain." },
-        { "text": "The base is too small", "why": "Collisions happen with any base and modulus; a larger prime only makes them rarer." }
+        { "text": "The window is equal to the pattern.", "why": "Different strings can have the same hash after the modulo is applied." },
+        { "text": "The window might equal the pattern, so the characters must be compared.", "correct": true, "why": "An equal hash only marks a candidate. A different hash proves the window is not a match." },
+        { "text": "The base is too small.", "why": "Collisions happen with any base and modulus. A larger prime only makes them rarer." }
       ]
     }
   ]
 }
 </script>
 </x-quiz>
-
-<h2>What to practise next</h2>
-
-<p>Build the failure table for <code>ABCABD</code> by hand, then check it with the code. Next, <a href="/algorithms/segment-and-fenwick-trees.html">Segment Trees and Fenwick Trees</a> answer range questions on changing data.</p>

@@ -1,213 +1,173 @@
 <!--
 {
   "title": "Choosing a Database",
-  "description": "Pick relational, key-value, document, wide-column, graph or time-series from access patterns, guarantees and scale, and defend it in one sentence.",
-  "minutes": 12,
+  "description": "How the main database categories store data, what each is good and bad at, how to choose from your queries, and what interviewers ask about it.",
+  "minutes": 16,
   "tags": ["databases", "building blocks", "storage", "data modeling"]
 }
 -->
-<p>A team keeps readings from 50,000 sensors in a relational table. Each reports every 10 seconds: 50,000 ÷ 10 = 5,000 inserts a second, 5,000 × 86,400 = 432 million rows a day, kept 30 days. Each night a job deletes the oldest day row by row, updating every index, and dashboards time out while it runs.</p>
+<p>Choosing a database means matching the way your application reads and writes data to a storage engine built for that pattern. The main categories are relational, key-value, document, wide-column, graph and time-series databases, plus search indexes. They differ in how they organise data, which queries they answer quickly, and how much consistency they guarantee. In an interview you pick one, give a reason that refers to a query or guarantee, and say what it costs.</p>
 
-<p>The database was built for a different job. A time-series store writes in chunks by time and expires a day by dropping one chunk. The access pattern picks the database.</p>
+<p>If you pick the wrong category, the system fights its own storage. Sensor readings kept in an ordinary relational table force the database to maintain its indexes on every insert, and expiring old data means deleting millions of rows individually, while a store built for time-ordered appends drops an expired time range in one operation.</p>
 
-<h2>The idea</h2>
+<h2>Where databases sit in a system</h2>
 
-<p>Ask three questions, in order, and the category usually falls out:</p>
+<x-arch caption="Application servers read and write a primary database, and other stores hold copies of data in shapes that suit other queries.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Client", "kind": "client", "col": 0, "row": 1 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "db", "label": "Primary database", "kind": "database", "col": 2, "row": 1 },
+    { "id": "cache", "label": "Cache", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "search", "label": "Search index", "kind": "search", "col": 3, "row": 1 }
+  ],
+  "edges": [
+    { "from": "client", "to": "app" },
+    { "from": "app", "to": "db", "label": "reads and writes" },
+    { "from": "app", "to": "cache", "label": "hot reads" },
+    { "from": "db", "to": "search", "label": "copy of changes", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The primary database is the system of record, the store that holds the authoritative copy. The other stores are derived from it and can be rebuilt from it.</p>
+
+<h2>How to choose</h2>
+
+<p>Start from the queries, because each category is fast at one kind of query and slow at others. Write down the three or four most important reads and writes, as described in <a href="/system-design/data-modeling.html">data modeling</a>. Then ask three questions.</p>
 
 <ol>
-<li><strong>How is the data read and written?</strong> By key, by time range, by following relationships, or with joins and ad hoc filters? Write down the top three queries, as in <a href="/system-design/data-modeling.html">data modeling</a>.</li>
-<li><strong>What must never go wrong?</strong> Two writes that must succeed or fail together (take stock, create the order) need transactions. If a second-old read is fine, you have more choices.</li>
-<li><strong>How big and how fast?</strong> Rows, bytes, writes a second.</li>
+<li><strong>What are the access patterns?</strong> Records may be fetched by one key, by a time range, by following relationships, by text search, or by filters and joins that you cannot predict.</li>
+<li><strong>What consistency does the data need?</strong> If two writes must succeed or fail together, such as taking stock and creating an order, you need transactions. If a slightly old read is acceptable, more designs are open. See <a href="/system-design/transactions-and-isolation.html">transactions</a>.</li>
+<li><strong>How large will it get?</strong> Measure the data size and the write rate. One server handles more than most people expect.</li>
 </ol>
 
-<p>The default is relational: transactions, constraints, joins, and queries you did not plan for. Leave it only when a question above gives a reason, and say it.</p>
+<h2>The database categories</h2>
 
-<h2>The six categories</h2>
+<p>The boundaries between categories are not sharp, because many products support more than one data model. Each subsection below covers the data model, what the category is good at, what it is bad at, and a typical use.</p>
 
-<p>Each is good at one access pattern and pays elsewhere. Products blur the lines; treat these as shapes.</p>
+<h3>Relational</h3>
 
-<x-tradeoffs caption="Database categories">
+<p>A relational database stores data in tables of rows and columns with a fixed schema. Tables refer to each other through keys, queries combine them with joins, and the database enforces constraints and supports transactions that make several changes succeed or fail together. PostgreSQL and MySQL are examples. It is the best choice when the data is related, when correctness matters, and when you do not know all the queries in advance, because indexes and joins let you ask new questions without changing the storage. Data is normally normalised, so each fact is stored once. It suits orders, payments and bookings. Its weakness is that writes scale by making the primary server larger. Beyond that you need <a href="/system-design/replication.html">replicas</a> for reads and <a href="/system-design/sharding-and-partitioning.html">sharding</a> for writes, which loses easy joins and transactions across shards.</p>
+
+<h3>Key-value</h3>
+
+<p>A key-value store maps a key to a value that the database treats as opaque. The fast operations are get, put and delete by key, plus expiry. Redis and DynamoDB are examples. Because every request names one key, the data partitions across many nodes easily and a lookup takes about a millisecond or less. It suits sessions, carts, feature flags and lookups by id. It cannot answer "find all carts containing this product", because there is no query over the values, so such a query needs a second key that acts as an index or a different category. Secondary indexes, where a product offers them, cost extra writes and are less flexible than relational ones.</p>
+
+<h3>Document</h3>
+
+<p>A document store keeps each record as a self-contained document, usually JSON, and can index and query fields inside it. A product with its variants and attributes is one document, so one read returns everything a product page needs, and documents in a collection may have different fields. MongoDB is the common example. It fits records that are read and written whole and whose shape varies, such as a catalog. The cost appears when data is shared between documents: if a seller's name is copied into every product, renaming the seller updates all of them, and looking it up instead is a join you write yourself. Transactions across documents are limited or slower than in a relational database, so keep data that changes together inside one document.</p>
+
+<h3>Wide-column</h3>
+
+<p>A wide-column store keeps rows under a partition key, so all rows with the same key live together on the same nodes, sorted inside the partition by a clustering key. You design each table for one query. Messages might use the chat id as partition key and the message time as clustering key, so the latest 50 messages of a chat are one read from one partition. Cassandra and HBase are examples. These stores take very high write rates across many nodes and tolerate node failures, which suits messages, activity logs and event histories. They can only query efficiently by partition and clustering key, so you often keep one copy of the data per query, each with a different key, and transactions across partitions are weak or missing.</p>
+
+<h3>Graph</h3>
+
+<p>A graph database stores nodes and the relationships between them as first-class data, and queries follow relationships directly. Finding friends of friends who like a band walks edges without a join per hop. Neo4j is an example. Pick it when the important questions are paths several hops deep, such as fraud rings or recommendations. For one or two hops a relational join table is enough. Graph databases are also hard to spread over many machines, because a traversal can cross any partition.</p>
+
+<h3>Time-series</h3>
+
+<p>A time-series database is built for records stamped with a time that are appended and rarely updated, such as metrics, sensor readings and prices. It writes data in blocks ordered by time, compresses it well, computes roll-ups such as averages per minute, and expires old data by dropping whole blocks. InfluxDB and TimescaleDB are examples. It is a poor fit for data that is updated in place or looked up by anything other than time and a few labels. A relational table partitioned by day can do the job at moderate rates, because dropping an old partition is cheap, so a dedicated store is justified mainly by the write rate or the roll-up features.</p>
+
+<h3>Search index</h3>
+
+<p>A search index stores text in an inverted index that maps each word to the documents containing it, so it can answer full-text queries, rank by relevance, and filter and count by field. Elasticsearch and OpenSearch are examples. It is not a system of record: it is filled from the primary database, can be rebuilt from it, and shows new writes after a short delay. It is a poor choice for frequent updates and for transactions. See <a href="/system-design/search-systems.html">search systems</a> for the mechanics.</p>
+
+<h2>SQL or NoSQL</h2>
+
+<p>"SQL or NoSQL" is a common opening question, and the weak answer picks one by reputation. NoSQL is a label for every category except relational, and those categories share few properties, so a good answer compares the two on what the system needs.</p>
+
+<p>A relational database gives you an enforced schema, joins and transactions. A NoSQL store gives up some of those in exchange for something specific, such as easier partitioning, a flexible record shape or a layout fitted to one access pattern. If the data is related and must stay consistent, choose relational. If one access pattern dominates and the volume exceeds what one primary can write, choose the NoSQL category that fits that pattern, and keep the transactional data in a relational database.</p>
+
+<h2>When one relational database is enough</h2>
+
+<p>For most systems, and for many interview problems, a single relational database is the right answer. As a rough guide, one well-configured server handles thousands to tens of thousands of simple writes per second and several terabytes of data, and read replicas multiply the read capacity.</p>
+
+<p>Moving away from it needs a reason from the numbers or the access pattern: the write rate exceeds one primary, the data is many times larger than one machine, or one simple pattern is cheaper in a partitioned store. Each extra store is another system to run, back up and keep consistent.</p>
+
+<h2>Using more than one store</h2>
+
+<p>Many real systems use several stores, each for the data it suits. A shop might keep orders and stock in a relational database, carts in a key-value store, and product search in a search index. The rule that keeps this manageable is to have one system of record for each piece of data, and to treat every other store as a copy that is derived from it.</p>
+
+<x-arch caption="Orders are written to the relational database, and the search index and the metrics store are filled from it asynchronously.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "Relational",
-      "good": "Transactions, constraints, joins, ad hoc queries. Examples: PostgreSQL, MySQL.",
-      "bad": "Scaling writes past one server means sharding by hand.",
-      "pick": "Money, orders, inventory, relationships. The default.",
-      "default": true
-    },
-    {
-      "name": "Key-value",
-      "good": "Get and put by key in about a millisecond; partitions easily. Examples: Redis, DynamoDB.",
-      "bad": "No queries except by key.",
-      "pick": "Sessions, carts, flags, lookups by id."
-    },
-    {
-      "name": "Document",
-      "good": "Reads a whole nested object (a product with its variants) in one go. Flexible fields. Example: MongoDB.",
-      "bad": "Shared data is copied or joined in the app. Multi-document transactions are limited or slower.",
-      "pick": "Self-contained records read whole, fields varying by type."
-    },
-    {
-      "name": "Wide-column",
-      "good": "Huge write rates over many nodes. Rows sorted within a partition make \"latest 50 for this user\" one read. Example: Cassandra.",
-      "bad": "One table per query. Weak or no cross-partition transactions.",
-      "pick": "Massive appends read by partition key: messages, activity logs."
-    },
-    {
-      "name": "Graph",
-      "good": "Follows relationships many hops deep, no join per hop. Example: Neo4j.",
-      "bad": "Harder to partition. Overkill for one or two hops.",
-      "pick": "Path questions: fraud rings, \"friends of friends who like X\"."
-    },
-    {
-      "name": "Time-series",
-      "good": "Appends by time, compresses well, rolls up and expires old data cheaply. Example: InfluxDB.",
-      "bad": "Poor at updates and non-time lookups.",
-      "pick": "Metrics, sensor readings, prices over time."
-    }
+  "nodes": [
+    { "id": "app", "label": "Shop service", "kind": "service", "col": 0, "row": 1 },
+    { "id": "sql", "label": "Orders (relational)", "kind": "database", "col": 1, "row": 1 },
+    { "id": "queue", "label": "Change events", "kind": "queue", "col": 2, "row": 1 },
+    { "id": "search", "label": "Search index", "kind": "search", "col": 3, "row": 0 },
+    { "id": "ts", "label": "Metrics (time-series)", "kind": "database", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "app", "to": "sql", "label": "1. write order" },
+    { "from": "sql", "to": "queue", "label": "2. publish change", "style": "async" },
+    { "from": "queue", "to": "search", "label": "3. update copy" },
+    { "from": "queue", "to": "ts", "label": "3. record metric" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<p>A lookup for the interview:</p>
+<p>The usual mistake is a dual write, where the application writes to the database and then to the search index in two calls. If the second call fails, the stores disagree and nothing records it. The safer pattern is to write only to the system of record and let the other stores be updated from its changes, through a change stream or an outbox table that is read and published to a <a href="/system-design/message-queues-and-streams.html">queue</a>.</p>
 
-<table>
-<thead><tr><th>If you hear</th><th>Lean toward</th><th>Say why like this</th></tr></thead>
-<tbody>
-<tr><td>"Must not double-charge", "stock cannot go negative"</td><td>Relational</td><td>"These two writes must commit together, so I want a transaction."</td></tr>
-<tr><td>"Look up by id", millions of reads a second</td><td>Key-value</td><td>"Every read is by one key; no query engine needed."</td></tr>
-<tr><td>"Each item has different fields", read whole</td><td>Document</td><td>"Read as one unit; its shape varies."</td></tr>
-<tr><td>"Billions of messages, newest first per chat"</td><td>Wide-column</td><td>"Partition by chat, sort by time; one partition read per page."</td></tr>
-<tr><td>"Paths three or more hops deep"</td><td>Graph</td><td>"Each hop would be a join." For "my friends", a join table is enough.</td></tr>
-<tr><td>"Per-minute averages, keep 30 days"</td><td>Time-series</td><td>"Appends by time; old data expires in bulk."</td></tr>
-</tbody>
-</table>
+<h2>Nuances that interviewers probe</h2>
 
-<h2>One system, several stores</h2>
+<h3>A hot partition from a poor partition key</h3>
 
-<p>Real systems often use several stores. Each is another thing to run, back up and keep in sync, so add one only with a reason.</p>
+<p>Partitioned stores spread data by hashing the partition key, so the choice of key decides whether load is even. If a chat app partitions messages by the chat id, one very busy group chat sends all its traffic to one node while others sit idle. A key such as the date puts every write of the day on one partition. Choose a key with many distinct values and an even spread of traffic, and for an unavoidably hot key add a small random suffix, accepting that reads then query several partitions.</p>
 
-<x-tracer title="A checkout touches three stores">
-<script type="application/json">
-{
-  "arch": {
-    "nodes": [
-      { "id": "shopper", "label": "Shopper", "kind": "client", "col": 0, "row": 1 },
-      { "id": "app", "label": "Shop service", "kind": "service", "col": 1, "row": 1 },
-      { "id": "kv", "label": "Carts (key-value)", "kind": "database", "col": 2, "row": 0 },
-      { "id": "sql", "label": "Orders (relational)", "kind": "database", "col": 2, "row": 2 },
-      { "id": "ts", "label": "Metrics (time-series)", "kind": "database", "col": 3, "row": 1 }
-    ],
-    "edges": [
-      { "from": "shopper", "to": "app" },
-      { "from": "app", "to": "kv" },
-      { "from": "app", "to": "sql" },
-      { "from": "app", "to": "ts", "style": "async" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "A shopper clicks Place order. The service reads the cart by session id from the key-value store: one key, about 1 ms.",
-      "arch": { "active": ["shopper", "kv", ["shopper", "app"], ["app", "kv"]], "notes": { "kv": "get cart:s91" } },
-      "vars": { "items": 2 }
-    },
-    {
-      "caption": "In one relational transaction it takes 2 units of stock and inserts the order. Both happen or neither does.",
-      "arch": { "active": ["sql", ["app", "sql"]], "notes": { "sql": "BEGIN" } },
-      "vars": { "items": 2 }
-    },
-    {
-      "caption": "Another shopper buys the last unit at once. A constraint that stock stays at 0 or above makes one fail cleanly, not oversell.",
-      "arch": { "active": ["sql"], "notes": { "sql": "COMMIT" } },
-      "vars": { "items": 2, "stock left": 0 }
-    },
-    {
-      "caption": "It deletes the cart key. If that fails, the worst case is a stale cart.",
-      "arch": { "active": ["kv", ["app", "kv"]], "mark": ["sql"], "notes": { "kv": "del cart:s91" } }
-    },
-    {
-      "caption": "It sends \"checkout took 180 ms\" to the time-series store without waiting. A lost metric hurts nobody.",
-      "arch": { "active": ["ts", ["app", "ts"]], "mark": ["sql"], "notes": { "ts": "+1 point" } }
-    },
-    {
-      "caption": "The unreplicated key-value node dies. Carts are lost: annoying. Orders are safe.",
-      "arch": { "fail": ["kv"], "mark": ["sql"], "dim": [["app", "ts"]] }
-    }
-  ]
-}
-</script>
-</x-tracer>
+<h3>Schemaless does not mean no schema</h3>
 
-<h2>Scale changes less than people think</h2>
+<p>A document store does not check the shape of what you write, so the schema moves into the application code, and every reader must handle every old shape. Keep a version field in each document and migrate old ones in the background.</p>
 
-<p>"It needs to scale" is not a reason; do the arithmetic. As a rough rule, one relational server handles thousands to tens of thousands of simple writes a second and several terabytes, and <a href="/system-design/replication.html">read replicas</a> multiply reads.</p>
+<h3>Consistency in distributed stores</h3>
 
-<p>Leave it when the numbers say so: writes beyond one primary, or data many times one machine, read mostly by key. A self-partitioning store (key-value or wide-column) then saves you <a href="/system-design/sharding-and-partitioning.html">sharding</a> by hand, at the cost of cross-partition transactions and joins.</p>
-
-<x-estimate title="Does it fit on one server?">
-<script type="application/json">
-{
-  "question": "How much data does the orders table add in one year?",
-  "givens": ["2 million orders a day", "About 1 KB per order row, including index entries", "Nothing is deleted"],
-  "unit": "bytes",
-  "answer": "730 GB",
-  "accept": ["300 GB", "3 TB"],
-  "steps": ["2 × 10<sup>6</sup> × 365 = 7.3 × 10<sup>8</sup> orders a year", "7.3 × 10<sup>8</sup> × 10<sup>3</sup> B = 7.3 × 10<sup>11</sup> B ≈ 730 GB", "Writes: 2 million ÷ 86,400 s ≈ 23 a second on average"],
-  "note": "Under 1 TB a year at 23 writes a second is comfortable for one relational primary with replicas. Scale is no reason to leave it."
-}
-</script>
-</x-estimate>
+<p>Many partitioned stores replicate each record to several nodes and let you choose per request how many replicas must confirm a read or a write. Requiring a majority of replicas for both reads and writes means a read sees the latest acknowledged write, at the price of latency and lower availability during failures, while requiring one replica is faster but a read may return an old value.</p>
 
 <h2>In the interview</h2>
 
-<p>Choose right after listing access patterns. Name the category, give a one-sentence reason citing a query, guarantee or number, and say what would change your mind.</p>
+<p>Choose the database right after you have listed the access patterns and the size of the data. Name the category, give one reason that refers to a specific query, guarantee or number, and say what would make you change your mind. Relational is the safe default, so only leaving it needs a stronger argument.</p>
 
-<x-interview title="Picking the store for a chat app">
-<x-interviewer>Where do you store the messages?</x-interviewer>
-<x-you>The main read is "latest 50 messages in this chat", at an estimated 20,000 writes a second. So a wide-column store partitioned by chat id, sorted by time: one partition read per page, writes spread across nodes. Users, billing and membership need constraints and transactions, so they go in a relational database.</x-you>
-<x-interviewer>Why not put everything in the relational database?</x-interviewer>
-<x-you>At this write rate I'd be sharding it by hand within a year. At a tenth of the load I would, to run one store.</x-you>
-<x-coach>It names the query, the number, the cost, and when the simpler choice wins.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"Can a relational database scale?"</strong> Yes: replicas, partitioning, caches, at the cost of operations work and harder cross-shard queries.</li>
-<li><strong>"Couldn't the sensor table stay relational?"</strong> Often: partition by day and expiry becomes dropping one partition, not 432 million deletes. A time-series store does that for you, plus compression and roll-ups.</li>
+<li><strong>"SQL or NoSQL?"</strong> It depends on the access patterns and consistency needs, not on the label. For related data that needs transactions I would use a relational database. If a single access pattern dominates and the write volume is beyond one primary, I would use the NoSQL category that fits that pattern, and keep transactional data in the relational database.</li>
+<li><strong>"Can a relational database scale?"</strong> Yes, further than most people assume. Read replicas spread reads, caches absorb hot reads, and sharding spreads writes. The cost is operational work and harder queries and transactions across shards, so I would do it only when the numbers require it.</li>
+<li><strong>"How do you keep two stores in sync?"</strong> I treat one as the system of record and update the others from its change stream, or from an outbox table that is published to a queue. I avoid writing to both stores from the application, because a failure between the two writes leaves them different and nothing detects it.</li>
+<li><strong>"How would you choose a partition key?"</strong> It must appear in the main query and have many distinct values with an even share of traffic. For chat messages I would use the chat id, and I would watch for a very large group chat that becomes a hot partition.</li>
+<li><strong>"What do you lose by choosing a NoSQL store?"</strong> Usually some combination of ad hoc queries, joins and multi-record transactions. You also design the data for the queries you know, so a new query can mean a new table or a data migration.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Choosing by fashion">
-<p>"NoSQL scales" is a slogan, not a reason, and "NoSQL" covers four different categories. If you cannot name the query the store makes fast and the guarantee you need, you have not chosen yet.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Thinking schemaless means no schema">
-<p>A document store does not check your data's shape, so the schema moves into your code and every reader must handle every old shape.</p>
-</x-callout>
+<x-interview title="Picking the store for a chat app" tone="strong">
+<x-interviewer>Where do you store the messages?</x-interviewer>
+<x-you>The main read is the latest 50 messages of one chat, and I estimate 20,000 writes a second. So I would use a wide-column store partitioned by chat id and sorted by message time, which makes each page one partition read and spreads the writes across nodes. Users, billing and group membership need constraints and transactions, so they go in a relational database.</x-you>
+<x-interviewer>Why not put everything in the relational database?</x-interviewer>
+<x-you>At 20,000 writes a second a single relational primary would be under heavy pressure, and I would have to shard it myself. At a tenth of that load I would keep everything in one relational database, because running one store is simpler.</x-you>
+<x-coach>Each answer names the query, the number and the cost of the choice.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "20,000 delivery vans each report their position every 5 seconds. Dashboards show per-minute averages for the last 7 days. Which store fits best?",
+      "question": "A wallet app moves money between two users' balances. Which property should decide the choice of store?",
       "options": [
-        { "text": "Graph", "why": "No relationships to walk; these are appends by time." },
-        { "text": "Time-series", "correct": true, "why": "20,000 ÷ 5 = 4,000 appends a second, read by time range, expired after 7 days." },
-        { "text": "Document", "why": "Each reading is tiny and uniform, not a nested object." }
+        { "text": "The write rate", "why": "A fast store is still wrong if a transfer can be applied to only one of the two balances." },
+        { "text": "Both balance updates must commit together or not at all", "correct": true, "why": "That needs a transaction across two records, which is the main strength of a relational database." },
+        { "text": "Flexible fields", "why": "A balance has a fixed shape, so schema flexibility does not matter here." }
       ]
     },
     {
-      "question": "A wallet app moves money between two users' balances. Which property decides the store?",
+      "question": "A service keeps product data in a relational database and needs typo-tolerant full-text search with ranking. What is the best design?",
       "options": [
-        { "text": "Write rate", "why": "A fast store is still wrong if a transfer can half-happen." },
-        { "text": "Both balance updates must commit together or not at all", "correct": true, "why": "A transaction across two rows: the relational default's strength." },
-        { "text": "Flexible fields", "why": "A balance has a fixed shape." }
+        { "text": "Move all product data to a search index", "why": "A search index is not a system of record, and the data would lose transactions and constraints." },
+        { "text": "Keep the relational database as the source and fill a search index from its changes", "correct": true, "why": "The search index serves text queries, and it can be rebuilt from the source if it falls behind or is lost." },
+        { "text": "Write to both from the application in two calls", "why": "If the second write fails, the stores disagree and nothing records it." }
       ]
     }
   ]
@@ -217,4 +177,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Whatever store you pick, its speed comes from <a href="/system-design/indexing.html">indexing</a>, which is next. To see stores chosen inside a full design, work through <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>
+<p>The speed of whichever store you choose depends on its indexes, which <a href="/system-design/indexing.html">Indexing</a> covers. To see several stores chosen inside a full design, work through <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>

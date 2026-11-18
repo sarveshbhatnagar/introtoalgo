@@ -1,79 +1,65 @@
 <!--
 {
   "title": "Design Live Comments",
-  "description": "Show comments on a live video to millions of viewers within seconds: SSE fan-out, pub/sub per video, sampling hot streams, history and ordering.",
-  "minutes": 27,
+  "description": "How to design live comments on a video stream: delivering each comment to millions of viewers, sampling busy streams, ordering, and reconnecting viewers.",
+  "minutes": 25,
   "kind": "design",
   "tags": ["case study", "realtime", "fan-out", "pub/sub", "server-sent events"]
 }
 -->
-<p>A cup final is streaming live to 5 million people. A goal goes in, and thousands type "GOAL" in the same second. Each viewer should see a lively stream of comments within a second or two, and someone joining at half time should see what was just said.</p>
+<p>Live comments let viewers of a live video post short messages and see everyone else's messages appear next to the video within a second or two. A viewer who joins late also sees the most recent comments. Each comment is small and cheap to store, but it has to be delivered to every viewer of that video, and on a popular stream that means millions of open connections.</p>
 
-<p>Writes are small. The hard part is reads: one comment may have to reach millions of connections on a thousand servers, fast. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before you read on.</p>
+<p>The difficulty is on the delivery side: finding which servers hold viewers of a given video, and keeping the work bounded when thousands of people post at once. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading on.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design live comments for a video streaming platform.</x-interviewer>
-<x-you>Live only, or also on recordings? And do viewers need every comment, or a readable stream?</x-you>
-<x-interviewer>Live only. A readable stream is fine; nobody can read thousands a second.</x-interviewer>
-<x-you>Total viewers at peak, the biggest single stream, and how often people comment?</x-you>
-<x-interviewer>50 million viewers at peak, up to 5 million on one stream. A viewer comments about once every 10 minutes; 2 billion comments a day.</x-interviewer>
-<x-you>Then fan-out is the design problem. Every comment is stored, but busy streams may show a sample. A viewer may miss a comment during a reconnect, but never sees one twice.</x-you>
-<x-coach>Agreeing "a sample is fine" early turns an impossible fan-out into a feasible one.</x-coach>
+<x-you>Is this only for live streams, or also for recordings? And does every viewer need to see every comment, or is a readable stream enough?</x-you>
+<x-interviewer>Live streams only. A readable stream is enough, because nobody can read thousands of comments a second.</x-interviewer>
+<x-you>How many viewers are there at peak, how large is the biggest single stream, and how often does a viewer comment?</x-you>
+<x-interviewer>There are 50 million viewers at peak and up to 5 million on one stream. A viewer comments about once every 10 minutes, which adds up to about 2 billion comments a day.</x-interviewer>
+<x-you>Then delivery is the main design problem. I will store every comment, but on a busy stream I will show viewers a sample. A viewer may miss a comment while reconnecting but should never see one twice.</x-you>
+<x-coach>Agreeing early that a sample is acceptable turns an impossible delivery problem into a manageable one.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> post a comment; see new comments live; see recent ones on joining; scroll back.</li>
-<li><strong>Non-functional:</strong> shown within 2 seconds; every comment stored durably; up to 5 million viewers on one video; no duplicates on screen; a failing panel never affects the video.</li>
-<li><strong>Out of scope:</strong> replies, likes, recordings, moderation tooling beyond a basic filter.</li>
+<li><strong>Functional:</strong> a viewer can post a comment, see new comments as they arrive, see recent comments when joining, and scroll back.</li>
+<li><strong>Non-functional:</strong> a comment is shown within 2 seconds, every comment is stored durably, one video can have up to 5 million viewers, no comment appears twice on a screen, and a failure in the comment panel never affects video playback.</li>
+<li><strong>Out of scope:</strong> replies, likes, recordings, and moderation tools beyond a basic text filter.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Comments at peak:</strong> 50 million viewers ÷ 600 seconds ≈ 83,000 comments a second.</li>
-<li><strong>On the biggest video:</strong> 5 million ÷ 600 ≈ 8,300 a second.</li>
-<li><strong>Daily average:</strong> 2 billion ÷ 86,400 ≈ 23,000 a second; peak is three to four times that.</li>
-<li><strong>Storage:</strong> 2 billion × 200 bytes = 400 GB a day, about 146 TB a year before replication.</li>
+<li>At peak, 50 million viewers each comment once every 600 seconds, which is about 83,000 comments a second across all videos.</li>
+<li>On the biggest video, 5 million viewers give about 8,300 comments a second.</li>
+<li>Storage is 2 billion comments × 200 bytes = 400 GB a day, or about 146 TB a year before replication.</li>
 </ul>
 
 <x-estimate title="Naive fan-out on the biggest video">
 <script type="application/json">
 {
-  "question": "If every comment on the biggest video went to every viewer, how many deliveries per second is that?",
+  "question": "If every comment on the biggest video were sent to every viewer of that video, how many deliveries per second would that be?",
   "givens": ["5 million viewers on the video", "Each viewer comments once every 10 minutes"],
   "unit": "count/s",
   "answer": "40 billion/s",
   "accept": ["10 billion/s", "100 billion/s"],
   "choices": ["40 million/s", "400 million/s", "4 billion/s", "40 billion/s", "400 billion/s"],
   "steps": ["Comments: 5,000,000 ÷ 600 s ≈ 8,300 a second", "Deliveries: 8,300 × 5,000,000 ≈ 4 × 10<sup>10</sup>, about 40 billion a second"],
-  "note": "Nobody can read 8,300 comments a second. Cap what is shown and the problem shrinks by orders of magnitude."
+  "note": "Nobody can read 8,300 comments a second, so the design shows a capped sample instead."
 }
 </script>
 </x-estimate>
 
-<p>Show at most 10 comments a second per video, and send each viewer one batch every 500 ms. The biggest video then costs 5 million × 2 = 10 million small messages a second over 1,000 servers: 10,000 each, no longer tied to how fast people type.</p>
-
-<x-estimate title="Realtime servers needed">
-<script type="application/json">
-{
-  "question": "How many realtime servers hold the open connections at peak?",
-  "givens": ["50 million viewers at peak, one connection each", "Assume 50,000 connections per server (load test it)"],
-  "unit": "count",
-  "answer": "1000",
-  "accept": ["300", "3000"],
-  "steps": ["50,000,000 ÷ 50,000 = 1,000 servers", "Add spare capacity for a dying server's viewers"]
-}
-</script>
-</x-estimate>
+<p>Suppose the design shows at most 10 comments a second per video and sends each viewer one batch every 500 ms. The biggest video then needs 5 million viewers × 2 batches = 10 million small messages a second. Spread over 1,000 realtime servers, that is 10,000 messages a second per server, and it no longer depends on how fast people type. The 1,000 servers come from 50 million viewers ÷ 50,000 connections per server, an assumption you would confirm with a load test.</p>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls to post, receive new comments, and load older ones. Which transport carries new comments?</p>
+<p>Write the calls to post a comment, to receive new comments, and to load older comments. Which transport carries new comments to the viewer?</p>
 </x-task>
 <x-answer>
-<p>Posting is plain HTTP. New comments flow down a server-sent events stream that resumes from the last event id. Older comments are a paged read with a cursor.</p>
+<p>Posting is a plain HTTP request, new comments arrive on a server-sent events stream that resumes from the last event id, and older comments are a paged read with a cursor.</p>
 </x-answer>
 </x-tryit>
 
@@ -98,16 +84,16 @@ GET /videos/{id}/comments?before=7193...&limit=50
 </pre>
 </x-code>
 
-<p>The decision worth arguing is the transport. Viewers almost only listen, so use <strong>server-sent events</strong> rather than WebSockets: plain HTTP, proxy-friendly, and browsers reconnect on their own with the last event id. Rare posts use an ordinary <code>POST</code> with normal authentication and rate limiting. A retry with the same <code>request_id</code> returns the first comment instead of a duplicate. <a href="/system-design/realtime-communication.html">Realtime communication</a> compares the options.</p>
+<p>If the client retries a post after a timeout, the same <code>request_id</code> makes the server return the first comment instead of creating a second one. The transport for new comments is covered in the deep dives.</p>
 
-<p>History pages with a cursor (<code>before</code> a comment id), not an offset: at 8,300 new comments a second, "page 2" changes every time you ask.</p>
+<p>History is paged with a cursor, meaning "the 50 comments before this comment id", and not with an offset. At 8,300 new comments a second, an offset would skip or repeat comments, because "page 2" changes between requests.</p>
 
 <x-tryit variant="turn" minutes="2" title="Model the data">
 <x-task>
-<p>What is a comment's key, and how do you read "the 50 before this one" on a video getting thousands a second?</p>
+<p>What is the key of a comment, and how do you read "the 50 comments before this one" on a video that receives thousands of comments a second?</p>
 </x-task>
 <x-answer>
-<p>Partition by video plus a time bucket, sorted by a time-ordered comment id. History is one range scan, newest first.</p>
+<p>Partition by video and a time bucket, and sort by a time-ordered comment id, so that reading history is one range scan from newest to oldest.</p>
 </x-answer>
 </x-tryit>
 
@@ -124,27 +110,27 @@ comments                       -- wide-column store, about 200 B a row
   status       TINYINT         -- visible | removed
   PRIMARY KEY ((video_id, bucket), comment_id DESC)
 
-recent:{video_id}              -- in-memory list, last 200 shown
+recent:{video_id}              -- in-memory list of the last 200 shown
   [ { seq, comment_id, user, text }, ... ]
 </pre>
 </x-code>
 
-<p>Writes append, reads are "newest N before an id", nothing joins. A <strong>wide-column store</strong> such as Cassandra fits: built for heavy writes, and the <a href="/system-design/unique-ids.html">time-ordered id</a> gives newest-first order for free.</p>
+<p>Comments are only appended, reads ask for the newest N comments before an id, and nothing needs a join. That access pattern suits a <strong>wide-column store</strong> such as Cassandra, which is built for heavy writes, and a <a href="/system-design/unique-ids.html">time-ordered id</a> gives newest-first order without a separate index.</p>
 
-<p>The bucket bounds partitions. Quiet streams use one-hour buckets. The biggest video would put 8,300 × 3,600 ≈ 30 million rows, 6 GB, in an hour, so busy videos use one-minute buckets (500,000 rows, 100 MB). Store the bucket size on the video so readers can walk back.</p>
+<p>The bucket limits the size of each partition. A quiet stream can use one-hour buckets, but the biggest video writes about 8,300 × 3,600 ≈ 30 million rows, or 6 GB, an hour into one partition, which is too much. Busy videos therefore use one-minute buckets of about 500,000 rows and 100 MB.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the path from a POST to storage and on to 5 million connections. How does a comment find its viewers' servers?</p>
+<p>Sketch the path from a POST to storage and on to 5 million open connections. How does a comment find the servers that hold the viewers of its video?</p>
 </x-task>
 <x-answer>
-<p>Store it and append it to a stream partitioned by video. A fan-out worker per partition samples busy videos and publishes to a pub/sub channel per video, which every realtime server with a viewer of it subscribes to.</p>
+<p>Store the comment and append it to a stream partitioned by video. A fan-out worker reads that partition, samples busy videos, and publishes to a pub/sub channel for the video, and every realtime server that holds a viewer of the video is subscribed to that channel.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Writes and fan-out are split: the comment service makes a comment durable; the fan-out path decides what is shown and where. Realtime servers only hold connections.</p>
+<p>Storing and delivering are separate paths. The comment service makes a comment durable, and the fan-out path decides what is shown and to which servers it goes. The realtime servers only hold connections.</p>
 
 <x-arch caption="Comments are stored, then flow through a stream partitioned by video to fan-out workers, which publish a sampled feed to every subscribed realtime server.">
 <script type="application/json">
@@ -202,52 +188,52 @@ recent:{video_id}              -- in-memory list, last 200 shown
   },
   "steps": [
     {
-      "caption": "Ben opens video 77. His SSE request lands on realtime server R1, which has no other viewer of 77, so it subscribes to <code>video:77</code> first.",
+      "caption": "Ben opens video 77. His SSE request reaches realtime server R1, which has no other viewer of video 77, so R1 first subscribes to the channel <code>video:77</code>.",
       "arch": { "active": ["viewer", "rt", "ps", ["viewer", "rt"], ["ps", "rt"]], "dim": ["cs", "store", "stream", "fan"], "notes": { "rt": "sub video:77" } },
       "vars": { "Ben's last id": "none" }
     },
     {
-      "caption": "Then R1 sends the last 50 shown comments from the recent list. Subscribing first means nothing slips between; a comment in both is dropped by id.",
+      "caption": "R1 then sends Ben the last 50 comments from the recent list. Subscribing first means no comment falls between the two steps.",
       "arch": { "active": ["rt", "cache", ["rt", "cache"], ["rt", "viewer"]], "dim": ["cs", "store", "stream", "fan"], "notes": { "cache": "up to seq 4,121" } },
       "vars": { "Ben's last id": 4121 }
     },
     {
-      "caption": "Ana posts \"what a goal\". The comment service checks rate limit and word filter and assigns a time-ordered id.",
+      "caption": "Ana posts \"what a goal\". The comment service checks her rate limit and assigns a time-ordered comment id.",
       "arch": { "active": ["viewer", "cs", ["viewer", "cs"]], "dim": ["ps", "fan", "cache"] },
       "vars": { "Ben's last id": 4121 }
     },
     {
-      "caption": "It stores the comment and returns 201. Ana's screen already shows it, so posting feels instant.",
+      "caption": "The service stores the comment and returns 201.",
       "arch": { "active": ["cs", "store", ["cs", "store"], ["cs", "viewer"]], "dim": ["ps", "fan", "cache"], "notes": { "store": "stored" } },
       "vars": { "Ben's last id": 4121 }
     },
     {
-      "caption": "It appends to the stream keyed by video id, so all of video 77's comments land in one partition, in one order.",
+      "caption": "The service appends the comment to the stream keyed by video id, so all comments of video 77 go to one partition and keep one order.",
       "arch": { "active": ["stream", ["cs", "stream"]], "dim": ["ps", "rt", "cache"] },
       "vars": { "Ben's last id": 4121 }
     },
     {
-      "caption": "The partition's worker sees video 77 at 6 comments a second, under the cap of 10, so it keeps this one as 4,122 and adds it to the recent list.",
+      "caption": "The worker that owns that partition sees video 77 at 6 comments a second, which is under the cap of 10, so it keeps the comment as number 4,122 and adds it to the recent list.",
       "arch": { "active": ["fan", "cache", ["stream", "fan"], ["fan", "cache"]], "dim": ["cs", "store", "rt"], "notes": { "fan": "seq 4,122" } },
       "vars": { "Ben's last id": 4121 }
     },
     {
-      "caption": "It publishes to <code>video:77</code>. Each subscribed server adds it to the next 500 ms batch. Ben sees it about a second after Ana posted.",
+      "caption": "The worker publishes the comment to <code>video:77</code>. Each subscribed server adds it to its next 500 ms batch, so Ben sees it about a second after Ana posted it.",
       "arch": { "active": ["ps", "rt", "viewer", ["fan", "ps"], ["ps", "rt"], ["rt", "viewer"]], "mark": ["viewer"], "dim": ["cs", "store", "stream"] },
       "vars": { "Ben's last id": 4122 }
     },
     {
-      "caption": "R1 crashes, dropping 50,000 connections. Comments 4,123 to 4,126 go out while Ben is away.",
+      "caption": "R1 crashes and drops its 50,000 connections. Comments 4,123 to 4,126 are published meanwhile.",
       "arch": { "fail": ["rt", ["viewer", "rt"]], "active": ["fan", "ps", "cache", ["fan", "ps"], ["fan", "cache"]], "dim": ["cs", "store"], "notes": { "cache": "up to 4,126" } },
       "vars": { "Ben's last id": 4122 }
     },
     {
-      "caption": "Ben's browser waits a random few seconds and reconnects with <code>Last-Event-ID: 4122</code>. R2, already subscribed, sends 4,123 to 4,126 from the recent list. Ben missed nothing.",
+      "caption": "Ben's browser waits a random few seconds and reconnects with <code>Last-Event-ID: 4122</code>. Server R2 is already subscribed and sends comments 4,123 to 4,126 from the recent list, so Ben misses nothing.",
       "arch": { "active": ["viewer", "rt", "cache", ["viewer", "rt"], ["rt", "cache"], ["rt", "viewer"]], "mark": ["viewer"], "dim": ["cs", "store", "stream"], "notes": { "rt": "R2" } },
       "vars": { "Ben's last id": 4126 }
     },
     {
-      "caption": "Final whistle: video 77 jumps to 8,300 comments a second. All are stored, but the worker publishes only 10 a second, so pub/sub barely notices.",
+      "caption": "At the final whistle video 77 jumps to 8,300 comments a second. All of them are stored, but the worker publishes only 10 a second, so pub/sub load stays almost unchanged.",
       "arch": { "active": ["cs", "store", "stream", "fan", ["cs", "store"], ["cs", "stream"], ["stream", "fan"], ["fan", "ps"]], "notes": { "fan": "keep 10 of 8,300" } },
       "vars": { "posted per s": 8300, "shown per s": 10 }
     }
@@ -258,45 +244,39 @@ recent:{video_id}              -- in-memory list, last 200 shown
 
 <h2>Deep dives</h2>
 
-<h3>Fan-out: which server holds which viewer</h3>
+<h3>Delivering comments to the browser</h3>
 
-<p>Viewers land on any of 1,000 realtime servers. A comment on video 77 must reach exactly the servers holding viewers of 77.</p>
+<p>The viewer's browser needs new comments without asking for them each time. There are three ways to do this.</p>
 
-<x-tradeoffs caption="Getting a video's comments to the servers holding its viewers">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Firehose to every server",
-      "good": "No subscription state; each server filters for its own viewers.",
-      "bad": "Every server gets every comment: 83,000 a second unsampled × 1,000 servers is 83 million internal messages a second.",
-      "pick": "Tens of servers and low comment rates."
-    },
-    {
-      "name": "Pub/sub channel per video",
-      "good": "A server gets only its viewers' videos, subscribing on the first viewer and unsubscribing after the last.",
-      "bad": "Subscriptions churn, and a popular video is subscribed by nearly every server.",
-      "pick": "Large scale with many videos. My choice.",
-      "default": true
-    },
-    {
-      "name": "Route viewers by video id",
-      "good": "Consistent hashing on video id puts a small video's viewers on one or two servers.",
-      "bad": "Uneven load, the load balancer must read the URL, and a viral video must spill onto more servers.",
-      "pick": "On top of pub/sub, for the long tail of small streams."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p><strong>Polling</strong> means the browser asks every couple of seconds for comments newer than the last one it has. It is simple, but 5 million viewers polling every 2 seconds is 2.5 million requests a second for one video, and almost all of them return nothing new.</p>
 
-<p>The pub/sub layer is the registry: each channel lives on one pub/sub node (by hashing the video id), which knows its subscribers. A dead server's subscriptions vanish with its connection. The biggest video is subscribed by all 1,000 servers, fine at 10 comments a second: 10 × 1,000 = 10,000 messages a second from one node. Unsampled it would be 8,300 × 1,000 ≈ 8.3 million.</p>
+<p><strong>WebSockets</strong> keep one two-way connection open per viewer. They suit chat apps where the client sends a lot upstream, but here a viewer posts about once every 10 minutes, so the upstream half is almost never used.</p>
 
-<p>Each realtime server then batches 500 ms of comments into one SSE event per viewer, well inside the 2-second goal.</p>
+<p><strong>Server-sent events (SSE)</strong> keep one long-lived HTTP response open, and the server writes events into it. They work through ordinary HTTP infrastructure, and browsers reconnect automatically and send the id of the last event they received, which lets the server resume the stream after a failure. Posting stays a normal <code>POST</code>. SSE is the choice for this design. <a href="/system-design/realtime-communication.html">Realtime communication</a> compares the transports in more detail.</p>
 
-<h3>Very hot videos: sample, do not drop</h3>
+<h3>Routing a comment to the servers that hold the viewers</h3>
 
-<p>Sample at the fan-out worker: the stream is partitioned by video id, so exactly one worker sees all of a video's comments and can count its rate.</p>
+<p>Viewers of one video are spread over many of the 1,000 realtime servers, and a comment arrives at an unrelated comment service. A comment on video 77 has to reach exactly the servers that hold viewers of video 77. There are three approaches.</p>
+
+<p><strong>Sending every comment to every realtime server</strong> needs no state, because each server simply ignores comments for videos it has no viewers of. The cost is 83,000 comments a second × 1,000 servers = 83 million internal messages a second, most of them thrown away.</p>
+
+<p><strong>A pub/sub channel for each video</strong> avoids that. A realtime server subscribes to the channel of a video when its first viewer of that video connects, and unsubscribes when the last one leaves. The fan-out worker publishes to the channel, and only subscribed servers receive the comment. This is the choice for this design. The cost is constant subscription changes.</p>
+
+<p><strong>Routing viewers by video id</strong> uses consistent hashing so that all viewers of a small video connect to the same one or two servers, and comments for it go there directly. The problem is that load becomes uneven and a viral video has to be spread over many servers anyway, so it only helps as an addition to pub/sub for small streams.</p>
+
+<p>Each channel lives on one pub/sub node, chosen by hashing the video id, and that node knows its subscribers. When a realtime server dies, its subscriptions disappear with its connection. The biggest video is subscribed to by all 1,000 servers, which is acceptable with the cap: 10 comments a second × 1,000 servers is 10,000 messages a second from one node. Without sampling it would be about 8.3 million.</p>
+
+<h3>Limiting the comments shown on a very busy video</h3>
+
+<p>The biggest video produces 8,300 comments a second, which no viewer can read, so something has to decide which are shown. There are three options.</p>
+
+<p><strong>Sending everything</strong> is simple and hides nothing, but it produces about 40 billion deliveries a second, and the screen would scroll too fast to read. It is not possible at this size.</p>
+
+<p><strong>Slowing down posters</strong>, for example one comment per user every 30 seconds, reduces spam, but viewers post about once every 10 minutes anyway, so it removes almost nothing from the load. It is a moderation tool to use next to sampling.</p>
+
+<p><strong>Sampling at the fan-out worker</strong> caps what is published to 10 comments a second per video, whatever the posting rate. The stream is partitioned by video id, so exactly one worker sees all comments of a video and can measure its rate. Below 10 a second every comment passes. Above that, the worker always keeps comments from the creator and from moderators, drops exact repeats (3,000 copies of "GOAL" are mostly noise), and fills the remaining slots with a random pick from each 100 ms window. Posters see their own comment because their client shows it locally.</p>
+
+<p>The cost is that on the biggest streams almost all comments are stored but never broadcast.</p>
 
 <x-tradeoffs caption="Handling a video with 8,300 comments a second">
 <script type="application/json">
@@ -304,114 +284,95 @@ recent:{video_id}              -- in-memory list, last 200 shown
   "options": [
     {
       "name": "Send everything",
-      "good": "Simple; nothing is hidden.",
-      "bad": "Unreadable for viewers and about 40 billion deliveries a second at the source.",
-      "pick": "Never at this size."
+      "good": "Simple, and no comment is hidden.",
+      "bad": "Unreadable for viewers, and about 40 billion deliveries a second.",
+      "pick": "This cannot be used at this size."
     },
     {
       "name": "Sample at the fan-out worker",
-      "good": "Fan-out capped at 10 a second per video, whatever the posting rate. Everything is still stored.",
-      "bad": "Most comments on huge streams are never shown live.",
-      "pick": "The default for busy videos.",
+      "good": "Delivery is capped at 10 comments a second per video, and everything is still stored.",
+      "bad": "Most comments on a huge stream are never shown live.",
+      "pick": "Use it for busy videos. This is my choice.",
       "default": true
     },
     {
       "name": "Slow mode for posters",
-      "good": "Fewer comments to store and filter; less spam.",
-      "bad": "Limits people, not fan-out. A 30-second limit barely matters when people post every 10 minutes.",
-      "pick": "As a moderation tool alongside sampling."
+      "good": "Less spam and less to store and filter.",
+      "bad": "It limits people and not delivery, so a 30-second limit barely changes the load.",
+      "pick": "Use it as a moderation tool alongside sampling."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>How the worker samples: below 10 a second, everything passes. Above it, keep the creator's and moderators' comments, drop exact repeats ("GOAL" ×3,000 is noise), and fill the rest with a random pick from each 100 ms window. Posters always see their own comment locally. The cost: on the biggest stream, almost everything is stored but never broadcast.</p>
+<h3>Ordering, duplicates and gaps</h3>
 
-<p>Joins spike too: 1 million in a minute is 1,000,000 ÷ 60 ≈ 17,000 reads a second of one key. Each realtime server reads the recent list at most once a second and serves all its joiners from that copy, so the cache sees at most 1,000 reads a second.</p>
+<p>Comment ids come from several servers whose clocks differ by a few milliseconds, so they are only roughly in order. The live order does not come from them. It comes from the single worker that owns the video, which numbers the comments it keeps 4,121, 4,122 and so on. Most pub/sub systems keep one publisher's messages on a channel in order, so every viewer sees the same sequence. Stored history is sorted by comment id and can differ from it by a few milliseconds.</p>
 
-<h3>Ordering, duplicates and history</h3>
+<p>Gaps happen because pub/sub stores nothing, so a restarted server misses messages. When a viewer reconnects, the server sends the comments after the viewer's <code>Last-Event-ID</code> from the recent list. The list keeps 200 comments, about 20 seconds at 10 a second, so a viewer who was away longer skips ahead.</p>
 
-<p>Comment ids come from servers whose clocks differ by milliseconds, so they are only roughly ordered. Live order comes from the video's one worker, which numbers comments 4,121, 4,122, and so on. With a pub/sub that keeps one publisher's messages on a channel in order (most do over a single connection), every viewer sees the same sequence. History, sorted by comment id, can differ by a few milliseconds; nobody notices.</p>
-
-<ul>
-<li><strong>Gaps:</strong> pub/sub stores nothing, so a restarting server misses messages. Reconnects fill the gap from the recent list via <code>Last-Event-ID</code>; past the 200 kept (20 seconds at 10 a second), the client skips ahead.</li>
-<li><strong>Lost broadcast:</strong> a comment service dying between insert and stream append leaves a comment stored but never shown, which "a sample is fine" allows.</li>
-<li><strong>Duplicates:</strong> a restarted worker replays from its last committed position, so a comment can arrive twice. Clients drop ids already shown; "never twice" comes from that check.</li>
-</ul>
-
-<p>Older history is rare, so it reads the store directly: <code>before</code> an id, newest first, walking back through buckets.</p>
-
-<x-callout type="mistake" title="Polling for new comments">
-<p>5 million viewers polling every 2 seconds is 2.5 million requests a second for one video, nearly all returning the same few comments. Push over long-lived connections, and batch.</p>
-</x-callout>
+<p>Duplicates happen when a worker restarts and replays the stream from its last committed position, so a comment can be published twice. The client keeps the highest sequence number it has shown and ignores anything at or below it, which is where the guarantee of never showing a comment twice comes from.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (500 million viewers, 50 million on one stream):</p>
-<ul>
-<li><strong>Realtime tier:</strong> 10,000 servers. Outbound bandwidth strains first: delivery cost grows with viewers, not comments.</li>
-<li><strong>Pub/sub:</strong> the hottest channel sends 10 × 10,000 = 100,000 messages a second. Add a few dozen relays between the node and the servers.</li>
-<li><strong>Storage:</strong> 4 TB a day; add nodes. The hottest video's 83,000 writes a second hit one partition, so add a shard number 0 to 15 to its key and merge the 16 on reads.</li>
-</ul>
+<h3>What breaks first at 10x</h3>
+<p>At 10x there are 500 million viewers and up to 50 million on one stream, which needs about 10,000 realtime servers. Outbound bandwidth is the first limit, because delivery cost grows with the number of viewers and not with the number of comments, so you add servers.</p>
+<p>The hottest channel is then subscribed to by 10,000 servers, so its pub/sub node would send 10 × 10,000 = 100,000 messages a second. A few dozen relay servers between the node and the realtime servers share that work.</p>
+<p>Storage grows to 4 TB a day, which is solved by adding nodes. The hottest video receives 83,000 writes a second into one partition, so you add a shard number from 0 to 15 to its partition key and merge the 16 results when reading history.</p>
+
+<h3>What happens when a component fails</h3>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A realtime server</td><td>50,000 viewers lose their stream; the video keeps playing.</td><td>Browsers reconnect with jitter (about 1,700 a second over 30 seconds) and resume from <code>Last-Event-ID</code>.</td></tr>
-<tr><td>A pub/sub node</td><td>Channels on it stop delivering.</td><td>Servers resubscribe on the replacement and fill gaps from the recent list.</td></tr>
-<tr><td>A fan-out worker</td><td>Its videos stop updating live; comments still stored.</td><td>Another worker takes its partitions, resumes from the last committed position, and continues numbering from the recent list's last seq.</td></tr>
-<tr><td>The recent-comments cache</td><td>Joiners see an empty panel; gaps cannot be filled.</td><td>Run replicas; rebuild from the newest bucket in the store.</td></tr>
-<tr><td>A comment store node</td><td>With 3 replicas and quorum writes, posting works while 2 are up.</td><td>Replace the node. If a partition loses 2 replicas, posting returns 503; viewers keep reading.</td></tr>
+<tr><td>A realtime server</td><td>Its 50,000 viewers lose their comment stream, but the video keeps playing.</td><td>Browsers reconnect after a random delay, about 1,700 a second over 30 seconds, and resume from <code>Last-Event-ID</code>.</td></tr>
+<tr><td>A pub/sub node</td><td>The channels on that node stop delivering.</td><td>Realtime servers resubscribe on the replacement node and fill any gap from the recent list.</td></tr>
+<tr><td>A fan-out worker</td><td>Its videos stop updating live, but their comments are still stored.</td><td>Another worker takes over its partitions, resumes from the last committed position and continues numbering from the last sequence number in the recent list.</td></tr>
+<tr><td>The recent-comments cache</td><td>Joining viewers see an empty panel, and gaps cannot be filled.</td><td>Run replicas, and rebuild the list from the newest bucket in the comment store.</td></tr>
+<tr><td>A comment store node</td><td>With 3 replicas and quorum writes, posting keeps working while 2 replicas of a partition are up.</td><td>Replace the node. If a partition loses 2 replicas, posting returns 503 while viewers keep reading.</td></tr>
 </tbody>
 </table>
-
-<x-callout type="mistake" title="Sending comments from the comment service to viewers directly">
-<p>The comment service does not know where viewers are. Asking every realtime server "any viewers of 77?" per comment is the firehose in disguise. Let subscriptions record where viewers are.</p>
-</x-callout>
 
 <h2>What a strong answer sounds like</h2>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Stores comments; clients poll or hold a WebSocket. With help, sees sender and viewers sit on different servers.</td></tr>
-<tr><td>Mid</td><td>Picks SSE or WebSockets with a reason, uses a pub/sub channel per video, pages history with a cursor.</td></tr>
-<tr><td>Senior</td><td>Computes the naive fan-out, agrees a display cap, samples at a per-video worker, says where ordering and no-duplicate guarantees come from, and isolates the panel from the video.</td></tr>
+<tr><td>Junior</td><td>Stores comments and lets clients poll. Needs a hint to see that the posting server and the viewers' servers differ.</td></tr>
+<tr><td>Mid-level</td><td>Chooses SSE or WebSockets and gives a reason, uses a pub/sub channel per video, and pages history with a cursor.</td></tr>
+<tr><td>Senior</td><td>Computes the naive fan-out, agrees a display cap, samples at one worker per video, and explains where ordering and no-duplicate guarantees come from.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="The hottest video" tone="strong">
 <x-interviewer>One stream has 5 million viewers and 8,300 comments a second. What breaks?</x-interviewer>
-<x-you>Sending everything is about 40 billion deliveries a second, and nobody can read 8,300 a second. So the video's worker caps the live feed at 10 a second: creator and moderators first, repeats removed, a random pick of the rest. Everything is still stored. Pub/sub load is 10 × 1,000 servers, and each viewer gets two batches a second.</x-you>
-<x-interviewer>Won't people complain their comment never appeared?</x-interviewer>
-<x-you>Their own client always shows it. On a stream that size, being seen by everyone was never possible; the question is who gets priority.</x-you>
+<x-you>Sending everything would be about 40 billion deliveries a second, and no viewer can read 8,300 comments a second anyway. So the worker that owns the video caps the live feed at 10 comments a second. It keeps the creator's and moderators' comments, removes repeats and picks randomly from the rest, and every comment is still stored.</x-you>
+<x-interviewer>Won't people complain that their comment never appeared?</x-interviewer>
+<x-you>Their own client always shows their comment to them. On a stream that size, showing everything was never possible, so the real decision is which comments get priority.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>How would comments replay with the recording?</h3>
-<p>Store each comment's offset into the video. During playback the client fetches the next minute's comments by offset and shows each at its moment: a cacheable read, not a realtime problem.</p>
+<h3>How would comments replay along with a recording?</h3>
+<p>Store the offset into the video with each comment. During playback the client fetches the next minute of comments by offset and shows each at its moment, which is a normal cacheable read.</p>
 
 <h3>A moderator removes a comment that was already shown. What happens?</h3>
-<p>Mark it removed and publish a small "remove 7193..." event on the video's channel. Clients delete it, and the recent list drops it.</p>
+<p>The comment is marked as removed in the store, and a small "remove 7193..." event is published on the video's channel. Clients delete it when they receive the event, and the recent list drops it so new joiners never see it.</p>
 
-<h3>How would you add live heart reactions?</h3>
-<p>Nobody needs each reaction. Count them per video per second at the fan-out worker and broadcast only the counts.</p>
+<h3>How would you run this across several regions?</h3>
+<p>Give each region its own realtime servers and pub/sub, and have the video's worker publish once to each region, so a comment crosses the ocean once per region and not once per viewer.</p>
 
-<h3>How would you run this across regions?</h3>
-<p>Give each region its own realtime servers and pub/sub. A video's worker publishes once per region, so a comment crosses an ocean once, not once per viewer.</p>
-
-<h3>How do you stop spam and bots?</h3>
-<p>Rate-limit per account and IP, require verified accounts on big streams, and filter text before publishing. Sampling also mutes floods: 1,000 copies of one link are one repeat.</p>
+<h3>How do you stop spam and abusive comments?</h3>
+<p>Rate-limit posting per user at the comment service and run a text filter before the comment is stored, which is why the post call can return 403 or 429. Accounts that are muted or blocked are rejected there, and moderators remove anything that still gets through using the removal event described above.</p>
 
 <x-checklist title="Self-review: live comments">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked for the biggest single stream", "I agreed busy streams may show a sample"] },
+    { "title": "Before drawing", "items": ["I asked for the biggest single stream", "I agreed that busy streams may show a sample"] },
     { "title": "Numbers and interfaces", "items": ["I computed the naive fan-out on the hottest video", "I chose SSE or WebSockets and gave the reason", "I paged history with a cursor, not an offset"] },
-    { "title": "Design and depth", "items": ["I explained how a comment finds its viewers' servers", "I subscribed before loading recent comments", "I sampled hot videos at one worker per video and named the cost", "I batched deliveries per viewer", "I said where ordering and no-duplicate guarantees come from"] },
+    { "title": "Design and depth", "items": ["I explained how a comment finds the servers that hold its viewers", "I subscribed before loading recent comments", "I sampled hot videos at one worker per video and named the cost", "I batched deliveries per viewer", "I said where ordering and no-duplicate guarantees come from"] },
     { "title": "Failure", "items": ["I resumed viewers after a server dies", "I said what breaks first at 10x"] }
   ]
 }

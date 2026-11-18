@@ -1,65 +1,65 @@
 <!--
 {
   "title": "Design Proximity Search",
-  "description": "Design a \"places near me\" service with reviews: geohash or quadtree indexes, text plus location queries, read-heavy scaling and correct ratings.",
+  "description": "How to design a nearby-places search with reviews, including geohash and quadtree indexes, combining text with location, and keeping ratings correct.",
   "minutes": 22,
   "kind": "design",
   "tags": ["case study", "geospatial", "search", "read-heavy", "aggregates"]
 }
 -->
-<p>You type "pizza" into an app and see twenty places within a couple of kilometres, best first, each with stars and a distance. You tap one, read reviews, and later leave your own. Think Yelp.</p>
+<p>A proximity search service lets a user find businesses near a location, filtered by words such as "pizza", sorted by relevance and rating, and then open a business to read and write reviews.</p>
 
-<p>"Near me" turns plain CRUD into a spatial index, a query mixing location with text, a read path for hundreds of reads per write, and a rating that stays right when two people review at once. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading on.</p>
+<p>Interviewers ask it because it combines four problems that each need a different answer. Finding places near a point needs a spatial index, a single query has to mix location with text and filters, the read traffic is hundreds of times larger than the write traffic, and the average rating has to stay correct when two people review the same place at the same moment. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
-<x-interviewer>Design a service that finds businesses near a user, with reviews.</x-interviewer>
-<x-you>Users search by location, category and keywords, open a page, and write a star review. Can one user review a business twice?</x-you>
-<x-interviewer>One review per user per business. They can edit it.</x-interviewer>
-<x-you>How big? How many businesses, users and reviews?</x-you>
-<x-interviewer>50 million businesses, 100 million daily users searching about 5 times a day, 2 million new reviews a day.</x-interviewer>
-<x-you>Reads dwarf writes; search should return in about 200 ms. New data may take seconds to reach search, but the rating must never lose a review. I'll skip photos, ads and owner tools.</x-you>
-<x-coach>Two freshness needs: search may lag, the rating total may not be wrong. That split drives the design.</x-coach>
+<x-interviewer>Design a service that finds businesses near a user and lets people review them.</x-interviewer>
+<x-you>I assume users search by location, category and keywords, open a business page and write a star rating. Can one user review a business more than once?</x-you>
+<x-interviewer>Each user gets one review per business, and they can edit it later.</x-interviewer>
+<x-you>How many businesses, users and searches should I plan for?</x-you>
+<x-interviewer>Assume 50 million businesses, 100 million daily users who search about 5 times a day each, and 2 million new reviews a day.</x-interviewer>
+<x-you>Then the system is read-heavy, and I will aim for search results in about 200 ms. A new review can take a few seconds to show up in search, but a rating must never lose a review. I will leave out photos, ads and owner tools.</x-you>
+<x-coach>The candidate separates two freshness requirements: search may lag a little, but the stored rating must always be exact.</x-coach>
 </x-interview>
 
-<ul>
-<li><strong>Functional:</strong> search near a point by category and keywords, with filters (open now, price, minimum rating); view a business page with reviews; add or edit one 1-to-5-star review per business.</li>
-<li><strong>Non-functional:</strong> search under 200 ms at p99; reads highly available; new data searchable within a minute; the rating counts every review exactly once.</li>
-<li><strong>Out of scope:</strong> photos (see <a href="/system-design/design-photo-sharing.html">Design Photo Sharing</a>), ads, owner dashboards, fake-review detection.</li>
-</ul>
+<p><strong>Functional requirements.</strong> Users can search near a point by category and keywords, with filters for open now, price and minimum rating. They can view a business page with its reviews. They can add, edit or delete their one review of a business.</p>
+
+<p><strong>Non-functional requirements.</strong> Search responds in under 200 ms at the 99th percentile. A new business or review becomes searchable within a minute. Every review is counted in the rating exactly once.</p>
+
+<p><strong>Out of scope.</strong> Photos (see <a href="/system-design/design-photo-sharing.html">Design Photo Sharing</a>), ads and owner dashboards are not part of this design.</p>
 
 <h2>Estimate the scale</h2>
 
-<p>A day is 86,400 seconds; the evening peak is 3 times the average.</p>
+<p>The estimates use 86,400 seconds a day and a peak of 3 times the average.</p>
 
 <ul>
-<li><strong>Searches:</strong> 100 million × 5 = 500 million a day ÷ 86,400 ≈ 5,800 a second, about 17,000 at peak.</li>
-<li><strong>Business page views:</strong> say 2 per search, 1 billion a day ≈ 11,600 a second, about 35,000 at peak.</li>
-<li><strong>Review writes:</strong> 2 million a day ÷ 86,400 ≈ 23 a second, about 70 at peak. Reads outnumber writes about (500 million + 1 billion) ÷ 2 million = 750 to 1.</li>
-<li><strong>Storage:</strong> 50 million businesses × 2 KB = 100 GB. Say 1 billion existing reviews × 1 KB = 1 TB, growing 2 million × 1 KB × 365 ≈ 730 GB a year.</li>
+<li><strong>Searches.</strong> 100 million users × 5 searches is 500 million a day. Divided by 86,400 that is about 5,800 a second, or about 17,000 a second at peak.</li>
+<li><strong>Business page views.</strong> Assuming 2 page views per search, there are 1 billion views a day, about 11,600 a second or 35,000 at peak.</li>
+<li><strong>Review writes.</strong> 2 million a day is about 23 a second, or 70 at peak. Reads outnumber writes by (500 million + 1 billion) ÷ 2 million, which is 750 to 1.</li>
+<li><strong>Storage.</strong> 50 million businesses at 2 KB each take 100 GB. Assuming 1 billion existing reviews at 1 KB each, reviews take 1 TB.</li>
 </ul>
 
 <x-estimate title="How big is the search index?">
 <script type="application/json">
 {
-  "question": "Each business is one search document: name, categories, location, hours, price and rating. About how much memory does the index need?",
+  "question": "Each business is one search document holding its name, categories, location, hours, price and rating. About how much memory does the index need?",
   "givens": ["50 million businesses", "About 500 bytes per search document", "Reviews are not in the index, only each business's rating"],
   "unit": "bytes",
   "answer": "25 GB",
   "accept": ["8 GB", "80 GB"],
-  "steps": ["50 × 10<sup>6</sup> × 500 B = 25 × 10<sup>9</sup> B = 25 GB", "The coordinates alone are 50 million × 24 B (id, latitude, longitude) = 1.2 GB"],
-  "note": "25 GB fits in one server's memory, so you add index machines as full copies for throughput, not to split the data."
+  "steps": ["50 × 10<sup>6</sup> × 500 B = 25 × 10<sup>9</sup> B = 25 GB", "The coordinates alone take 50 million × 24 B (id, latitude and longitude) = 1.2 GB"],
+  "note": "25 GB fits in the memory of one server, so extra index machines are added as full copies to handle more queries, not to split the data."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the search, business page and review endpoints. How does the API make "one review per user" natural and safe to retry?</p>
+<p>Write the search, business page and review endpoints. How can the API make "one review per user" natural and safe to retry?</p>
 </x-task>
 <x-answer>
-<p>Search is a <code>GET</code> with a point, radius, keywords and filters, paged with a cursor. The review is a <code>PUT</code> keyed by business and user, so writing it twice equals writing it once.</p>
+<p>Search is a <code>GET</code> with a point, a radius, keywords and filters, paged with a cursor. The review is a <code>PUT</code> addressed by business and user, so sending it twice has the same effect as sending it once.</p>
 </x-answer>
 </x-tryit>
 
@@ -79,21 +79,21 @@ GET /businesses/{id}/reviews?sort=recent&cursor=...
 
 PUT /businesses/{id}/reviews/me        create or replace my review
   body: { "rating": 5, "text": "..." }
-  200 { "rating": 5, "business_rating": 4.61, "review_count": 313 }
+  200 { "rating": 5, "business_rating": 4.60, "review_count": 311 }
   400 Bad Request   rating not 1 to 5
   404 Not Found     no such business
 DELETE /businesses/{id}/reviews/me
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <code>PUT .../reviews/me</code> over <code>POST .../reviews</code>. A retried <code>POST</code> tries to add a second review. A <code>PUT</code> names this user's one review, so a retry just replaces it. "One review per user" becomes the URL's shape, backed by a primary key.</p>
+<p>The API decision to discuss is using <code>PUT .../reviews/me</code> instead of <code>POST .../reviews</code>. If a phone retries a <code>POST</code> after a timeout, the server may create a second review. A <code>PUT</code> names the user's single review of that business, so a retry replaces it with identical content, and a primary key enforces "one review per user".</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch businesses and reviews. Where does the rating live, and what answers "places near this point"?</p>
+<p>Sketch the business and review records. Where does the rating live, and what answers "places near this point"?</p>
 </x-task>
 <x-answer>
-<p>A relational database: reviews keyed by (business, user), a running star sum and count on the business row. A search index, fed by the database's change stream, answers location and text queries.</p>
+<p>Use a relational database with reviews keyed by business and user, and a running sum of stars and a count of reviews on each business row. A separate search index, fed from the database's change stream, answers the location and text queries.</p>
 </x-answer>
 </x-tryit>
 
@@ -122,24 +122,22 @@ reviews
 </pre>
 </x-code>
 
-<p>Access patterns: search near a point (17,000 a second at peak); read a business and its reviews (35,000 a second); write a review and update the rating (70 a second).</p>
-
-<p>A review write updates two rows in one transaction, so the source of truth is a <strong>relational database</strong>, partitioned by <code>business_id</code> when it outgrows one machine; a business and its reviews share a partition. Search, geometry plus text plus ranking, goes to a <strong>search index</strong> with geo support (see <a href="/system-design/search-systems.html">search systems</a>), built from the database.</p>
+<p>A review write changes two rows that must succeed or fail together, so the source of truth is a <strong>relational database</strong>, partitioned by <code>business_id</code> once it outgrows one machine, so that a business and its reviews live on the same partition. Geometry, text and ranking go to a <strong>search index</strong> with geographic support (see <a href="/system-design/search-systems.html">search systems</a>), which is built from the database.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
 <p>Sketch a search, a page view and a review write. How does a new review reach search?</p>
 </x-task>
 <x-answer>
-<p>Three services behind a gateway. Search reads only the index; page views read through a cache; reviews write to the database in one transaction. A change stream updates the index seconds later.</p>
+<p>Three services sit behind a gateway. Search reads only the index, page views read through a cache, and reviews write to the database in one transaction. A change stream updates the index a few seconds later.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Each path gets its own service and store. The database sees only page misses and 70 writes a second.</p>
+<p>Each path has its own service and store, so a surge in searches cannot slow down review writes.</p>
 
-<x-arch caption="Search reads the index, pages read through a cache, and reviews write the database then delete the cached page. A change stream feeds the index.">
+<x-arch caption="Search reads the index, pages read through a cache, and a review write updates the database and then deletes the cached page. A change stream feeds the index.">
 <script type="application/json">
 {
   "nodes": [
@@ -201,47 +199,47 @@ reviews
   },
   "steps": [
     {
-      "caption": "Mia searches \"pizza\", open now, within 2 km. Any stateless search server takes it.",
+      "caption": "Mia searches for \"pizza\", open now, within 2 km. The gateway sends the request to any stateless search server.",
       "arch": { "active": ["client", "search", ["client", "gw"], ["gw", "search"]], "dim": ["biz", "review", "cache", "db", "indexer"] },
       "vars": { "radius": "2 km" }
     },
     {
-      "caption": "One query goes to one replica. The geo filter turns her point into her precision-5 geohash cell plus 8 neighbours, covering any 2 km circle around her.",
+      "caption": "The search server sends one query to one index replica. The geo filter turns her point into her precision-5 geohash cell plus its 8 neighbours.",
       "arch": { "active": ["search", "index", ["search", "index"]], "dim": ["biz", "review", "cache", "db", "indexer"], "notes": { "index": "9 cells" } },
       "vars": { "radius": "2 km", "cells": 9 }
     },
     {
-      "caption": "It keeps places within the exact 2 km that match \"pizza\" and are open: 140. The index returns the top 20.",
+      "caption": "The index keeps the 140 places within exactly 2 km that match \"pizza\" and are open, and returns the top 20.",
       "arch": { "active": ["index", ["search", "index"]], "dim": ["biz", "review", "cache", "db", "indexer"], "notes": { "index": "140 match" } },
       "vars": { "radius": "2 km", "matches": 140, "returned": 20 }
     },
     {
-      "caption": "Name, rating and distance come from the index documents. No database read.",
+      "caption": "Name, rating and distance come straight from the index documents, so this search makes no database read.",
       "arch": { "active": [["search", "gw"], ["gw", "client"]], "mark": ["client"], "dim": ["biz", "review", "cache", "db", "indexer"] },
       "vars": { "returned": 20, "db reads": 0 }
     },
     {
-      "caption": "She opens Luigi's. The page is cached, so it returns in about a millisecond.",
+      "caption": "She opens Luigi's. The page is in the cache, so it returns in about a millisecond.",
       "arch": { "active": ["biz", "cache", ["client", "gw"], ["gw", "biz"], ["biz", "cache"]], "dim": ["search", "review", "index", "indexer", "db"], "notes": { "cache": "hit" } },
       "vars": { "rating": "4.60 (310)" }
     },
     {
-      "caption": "She gives it 5 stars. One transaction inserts her review and adds 5 to the sum and 1 to the count on Luigi's row.",
+      "caption": "She gives it 5 stars. One transaction inserts her review and adds 5 to the star sum and 1 to the review count on Luigi's row.",
       "arch": { "active": ["review", "db", ["client", "gw"], ["gw", "review"], ["review", "db"]], "dim": ["search", "index", "cache", "indexer"], "notes": { "db": "+5 stars, +1" } },
       "vars": { "rating_sum": "1,426 → 1,431", "rating_count": "310 → 311" }
     },
     {
-      "caption": "Her phone times out and retries the <code>PUT</code>. The (Luigi's, Mia) row exists, so it is an edit from 5 to 5: sum +0, count unchanged.",
+      "caption": "Her phone times out and retries the <code>PUT</code>. Her review already exists, so the retry is an edit from 5 stars to 5 stars and changes nothing.",
       "arch": { "active": ["review", "db", ["review", "db"]], "dim": ["search", "index", "cache", "indexer"], "notes": { "db": "delta 0" } },
       "vars": { "rating_sum": "1,431", "rating_count": "311" }
     },
     {
-      "caption": "After commit the review service deletes Luigi's cached page; the next view reads 4.60. Seconds later the indexer updates the search document.",
+      "caption": "After the commit, the review service deletes Luigi's cached page, and a few seconds later the indexer updates the search document.",
       "arch": { "active": ["review", "indexer", "index", "cache", ["review", "cache"], ["db", "indexer"], ["indexer", "index"]], "dim": ["search", "biz", "gw", "client"], "notes": { "index": "rating 4.60", "cache": "key deleted" } },
       "vars": { "rating": "1,431 ÷ 311 = 4.60" }
     },
     {
-      "caption": "An index replica dies. Each holds the whole 25 GB index, so search retries on another and the rest absorb its share.",
+      "caption": "An index replica dies. Every replica holds the whole 25 GB index, so the search service retries on another one.",
       "arch": { "fail": ["index"], "active": ["search", ["search", "index"]], "dim": ["biz", "review", "cache", "db", "indexer"], "notes": { "index": "1 replica down" } },
       "vars": { "peak searches/s": "17,000" }
     }
@@ -252,9 +250,17 @@ reviews
 
 <h2>Deep dives</h2>
 
-<h3>The geospatial index</h3>
+<h3>Geospatial index for finding nearby places</h3>
 
-<p>An index on latitude finds a thin band around the whole planet, and the database checks every business in it. You need an index that groups points by area. <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a> introduces geohash cells and neighbour cells; here the points are businesses, which almost never move.</p>
+<p>An index on latitude alone is not enough, because it finds every business in a thin band around the whole planet and the database must then check each one. The index has to group points by area. <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a> introduces geohash cells and neighbour cells; here the points are businesses, which almost never move.</p>
+
+<p><strong>Geohash cells.</strong> A geohash divides the map into rectangular cells and gives each cell a string, where a longer string means a smaller cell inside the cell named by its prefix. Any sorted index can therefore answer "all places in this cell", and updating or sharding it is straightforward. The weakness is that cells have a fixed size, so a downtown cell can hold thousands of places while a rural cell holds none. A common workaround is to use a longer prefix in dense areas, which means a query there reads many small cells instead of one large one, and the service has to know which precision applies to each area.</p>
+
+<p>The precision is chosen from the search radius. The user's cell plus its 8 neighbours form a 3 × 3 block that covers any circle whose radius is at most the shorter side of one cell. A precision-6 cell is about 1.2 km × 0.6 km, which is too small for a 2 km radius, while a precision-5 cell is about 4.9 km on each side at the equator. You search all 9 cells and then filter by exact distance, because a place 50 metres away can sit in the next cell.</p>
+
+<p><strong>Quadtree.</strong> A quadtree starts with one square for the whole map and splits any square holding more than a set number of places, for example 100, into four. Dense areas end up with many small squares and empty areas with a few large ones. A search finds the leaf containing the user and collects neighbouring leaves until it has enough places. With at most 100 places per leaf, 50 million places need at least 500,000 leaves, which fits in memory. Since places rarely move, the tree can be built offline and shipped to every search server. The cost is that you maintain this code yourself.</p>
+
+<p><strong>Geo support in a search engine or database.</strong> A search engine can index a geographic point field, and a relational database can use a spatial extension. Both handle cells, neighbours and exact distance for you, and the search engine can also match text and apply filters in the same query, which this problem needs.</p>
 
 <x-tradeoffs caption="Ways to index 50 million places">
 <script type="application/json">
@@ -262,21 +268,21 @@ reviews
   "options": [
     {
       "name": "Geohash cells",
-      "good": "A cell is a string prefix, so any sorted index can query it. Simple to shard and update.",
-      "bad": "Fixed cells: downtown holds thousands of places, a rural cell none.",
-      "pick": "You build it yourself on a key-value or relational store."
+      "good": "Any sorted index can query a cell, and the index is easy to shard and update.",
+      "bad": "Cells have a fixed size, so dense areas overflow and sparse areas stay empty.",
+      "pick": "You are building the index yourself on top of a key-value or relational store."
     },
     {
       "name": "Quadtree in memory",
-      "good": "Splits a square into four when it holds more than, say, 100 places, so cells follow density. A k-nearest search walks the tree.",
-      "bad": "Your own code to build, shard and keep in sync as places change.",
-      "pick": "Points rarely move and you want \"nearest 20\" more than \"within 2 km\"."
+      "good": "Cells follow the density of places, and a search for the nearest 20 places is a natural walk over the tree.",
+      "bad": "You write the code to build, distribute and update the tree.",
+      "pick": "Places rarely move and the query is closer to \"nearest 20\" than to \"within 2 km\"."
     },
     {
       "name": "Geo support in a search engine or database",
-      "good": "A geo-point field in the search index, or a spatial database extension, handles cells, neighbours and exact distance in the same query as text and filters.",
-      "bad": "Less control over cells; a database extension shares the machine with writes.",
-      "pick": "Almost always. A search engine here, since the query also needs text and ranking.",
+      "good": "Cells, neighbours and exact distance are handled in the same query as text and filters.",
+      "bad": "You have less control over the cells.",
+      "pick": "This problem, using a search engine because the query also needs text and ranking.",
       "default": true
     }
   ]
@@ -284,53 +290,23 @@ reviews
 </script>
 </x-tradeoffs>
 
-<p>Interviewers still ask how hand-built versions work. With <strong>geohash</strong>, pick the precision from the radius. A 3 × 3 block covers any circle whose radius is no bigger than one cell's shorter side. A precision-6 cell is about 1.2 km × 0.6 km, too small for 2 km. A precision-5 cell is about 4.9 km square at the equator, so 9 cover 2 km. Width shrinks with latitude: at 50° north it is about 3.1 km, still enough, but compute from the real size.</p>
+<h3>Scaling reads with index replicas and a page cache</h3>
 
-<p>A <strong>quadtree</strong> with at most 100 places per leaf needs at least 500,000 leaves; with 1.2 GB of coordinates it fits in one server's memory. Build it offline, ship it to every search server, and overlay new places until the next rebuild. The strong answer: "I'd use the engine's geo field, and here is how it works inside."</p>
+<p>The 25 GB index fits in memory on every search machine, so you run several <a href="/system-design/replication.html">replicas</a>, each a full copy, and a single replica answers every query. If one replica handles about 1,000 queries a second, the peak of 17,000 searches a second needs 17 replicas, so you run about 20 for headroom.</p>
 
-<x-callout type="mistake" title="Searching only the user's cell">
-<p>A pizza place 50 metres away can sit in the next cell, with a different prefix. Searching one cell misses it. Search the neighbours too, then filter by exact distance, since 9 cells cover far more than the circle.</p>
-</x-callout>
-
-<h3>Serving 750 reads for every write</h3>
-
-<p>The 25 GB index fits on every search machine. Do not shard it; add <a href="/system-design/replication.html">replicas</a>. If one handles about 1,000 queries a second (measure yours), the 17,000 peak needs 17, so run about 20. Each query touches one machine, with no scatter-gather.</p>
-
-<p>Business pages go through a <a href="/system-design/caching.html">cache</a>: the top 10% of 100 GB is about 10 GB. Each review commit deletes the page's key; a 60-second expiry covers a lost delete. Cache search results for 60 seconds keyed by precision-6 cell, words and filters, so one cell's "pizza" searches share an entry; recompute distances for the exact point.</p>
+<p>Business pages go through a <a href="/system-design/caching.html">cache</a>. Every review commit deletes the page's cached key, and a 60-second expiry covers a lost deletion.</p>
 
 <h3>Keeping the average rating correct</h3>
 
-<p>Luigi's has 10 reviews totalling 40 stars, average 4.0. Ana gives 5 stars and Ben gives 1 at the same moment. The right result is 46 stars over 12 reviews, about 3.83. If each request reads the row, computes in the app and writes back, both read (40, 10). Ana writes (45, 11); Ben writes (41, 11). The row ends at 11 reviews averaging 3.73: Ana's review is lost. This lost-update race is the classic mistake.</p>
+<p>The risk is a lost update. Suppose Luigi's has 10 reviews totalling 40 stars, and Ana gives 5 stars while Ben gives 1 star at the same moment. The correct result is 46 stars over 12 reviews. If each request reads the row, calculates in the application and writes back, both read (40, 10), Ana writes (45, 11) and Ben then writes (41, 11). The row ends at 11 reviews and Ana's review is lost.</p>
 
-<x-tradeoffs caption="Ways to keep the rating right">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Recompute from all reviews",
-      "good": "Always exact: <code>AVG(rating)</code> over the reviews after each write.",
-      "bad": "50,000 reviews means 50,000 rows read per write, and concurrent recomputes still need ordering.",
-      "pick": "Small data, or a nightly job that repairs drift."
-    },
-    {
-      "name": "Atomic increment in the review transaction",
-      "good": "<code>SET rating_sum = rating_sum + 5, rating_count = rating_count + 1</code> in the review's transaction. The database serializes updates to the row.",
-      "bad": "Every review briefly locks its business row. Fine at 70 writes a second across millions of businesses.",
-      "pick": "The usual answer.",
-      "default": true
-    },
-    {
-      "name": "Events, aggregated later",
-      "good": "No lock on the business row; a worker adds up review events.",
-      "bad": "The total lags, and a redelivered event counts twice unless the worker dedupes per review.",
-      "pick": "One business gets thousands of reviews a second. Not the case here."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p><strong>Recompute from all reviews.</strong> After each write, run <code>AVG(rating)</code> over the business's reviews. The answer is exact, but a business with 50,000 reviews means reading 50,000 rows for every new review, and concurrent recomputations still need ordering. It suits only small data or a nightly repair job.</p>
 
-<x-code single title="Create or replace a review, rating kept exact">
+<p><strong>Atomic update in the review transaction.</strong> Store the star sum and the review count on the business row, and in the same transaction as the review change them with <code>rating_sum = rating_sum + 5, rating_count = rating_count + 1</code>. The database serializes updates to that row, so no update is lost. Reviews of the same business briefly wait for each other, which is fine at this write rate. This is the approach to choose in an interview.</p>
+
+<p><strong>Events aggregated later.</strong> Each review publishes an event and a worker adds them up, so there is no lock on the business row. The total lags, and a redelivered event is counted twice unless the worker removes duplicates. It is worth it only for a business with thousands of reviews a second.</p>
+
+<x-code single title="Create or replace a review while keeping the rating exact">
 <pre lang="sql">
 BEGIN;
 -- 1. lock the business row: reviews of this business now take turns
@@ -348,25 +324,25 @@ COMMIT;
 </pre>
 </x-code>
 
-<p>Why it is safe: every review of business 81 first locks its row, so they take turns, and step 2 sees the previous commit (at read committed, as in PostgreSQL, each statement reads fresh data). The primary key blocks a second review by one user even under a race. Store the sum and count, never the average: an average cannot take a delta.</p>
+<p>This is safe because every review of business 81 first locks the business row, so the transactions run one after another, and at the read committed isolation level the second one sees the first one's committed data. The primary key stops one user from creating two reviews even if two requests race. The row stores the sum and the count instead of the average, because an average cannot be updated by a delta.</p>
 
-<h3>Mixing words, filters and location</h3>
+<h3>Combining words, filters and location in one query</h3>
 
-<p>"Wood-fired pizza, open now, 4+ stars, within 2 km" has three parts. Separate steps fail: location first fetches thousands of downtown places to keep 20; text first finds every pizza place on Earth.</p>
+<p>A query such as "wood-fired pizza, open now, 4 stars or more, within 2 km" has three parts, and running them as separate steps wastes work in both orders. Filtering by location first fetches thousands of downtown places to keep 20, and matching the text first finds every pizza place in the world.</p>
 
-<p>Use one index query: filters cut candidates, words match the inverted index, and the engine scores what is left. A simple score multiplies text relevance by a distance decay and a rating factor, so a 4.8-star place at 1.5 km can beat a 4.1-star place at 300 m. "Open now" compares one number: opening intervals are stored as minutes of the week in local time, and the server converts "now" to the area's local time.</p>
+<p>Send one query to the search index instead. The filters and the geographic condition cut down the candidates, the words are matched against the inverted index, and the engine scores what remains. A simple score multiplies the text relevance by a distance decay and a rating factor, so a 4.8-star place at 1.5 km can rank above a 4.1-star place at 300 m. Opening hours are stored as minutes of the week in local time, so "open now" is one numeric comparison.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, 170,000 searches a second need about 200 index replicas: split them into regional clusters, each holding its region's index. 700 writes a second still fit a partitioned relational database. Repeated dinner-time queries from one cell hit the result cache.</p>
+<p>At 10 times the traffic there are 170,000 searches a second, which needs about 200 index replicas. You then split them into regional clusters that each hold only their region's index, because a search almost never crosses a continent.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A search index replica</td><td>Its queries fail.</td><td>Retry on another; each holds the full index.</td></tr>
-<tr><td>The indexer or change stream</td><td>New reviews and places stop reaching search.</td><td>Search keeps working; the indexer resumes from the stream's saved position.</td></tr>
-<tr><td>The page cache</td><td>35,000 page reads a second hit the database.</td><td>Read replicas sized for it, plus a short in-process cache.</td></tr>
-<tr><td>A database primary</td><td>Its partition's reviews fail until failover.</td><td>Synchronous replica, automatic failover. Search and pages unaffected.</td></tr>
+<tr><td>A search index replica</td><td>The queries sent to it fail.</td><td>The search service retries on another replica, because each replica holds the full index.</td></tr>
+<tr><td>The indexer or the change stream</td><td>New reviews and places stop reaching search.</td><td>Search keeps working with older data, and the indexer resumes from its saved position in the stream when it restarts.</td></tr>
+<tr><td>The page cache</td><td>All 35,000 page reads a second at peak go to the database.</td><td>Provide read replicas sized for that load, plus a short-lived cache in the business service.</td></tr>
+<tr><td>A database primary</td><td>Review writes for its partition fail until a failover completes.</td><td>Keep a synchronous replica with automatic failover.</td></tr>
 </tbody>
 </table>
 
@@ -375,45 +351,45 @@ COMMIT;
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Filters a lat/lng table with a distance formula; accepts a spatial index when asked about 50 million rows.</td></tr>
-<tr><td>Mid</td><td>Uses geohash or a quadtree with neighbour cells, separates the search index from the database, caches pages.</td></tr>
-<tr><td>Senior</td><td>Replicates the in-memory index instead of sharding, combines geo, filters and text in one query, keeps ratings exact with sum and count, and says which data may lag.</td></tr>
+<tr><td>Junior</td><td>Filters a table of coordinates with a distance formula and adds a spatial index only when asked about 50 million rows.</td></tr>
+<tr><td>Mid</td><td>Uses a geohash or a quadtree with neighbouring cells, keeps the search index separate from the database, and caches pages.</td></tr>
+<tr><td>Senior</td><td>Replicates the in-memory index instead of sharding it, combines location, filters and text in one query, keeps ratings exact with a sum and a count, and says which data is allowed to lag.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Going deep on the index" tone="strong">
 <x-interviewer>How would you shard the geo index?</x-interviewer>
-<x-you>At first I wouldn't. It's about 25 GB, so every node holds a full copy and a query touches one machine; about 20 replicas cover 17,000 searches a second. If it outgrew memory, I'd shard by region, since a search almost never crosses a continent, and give big-city shards more replicas.</x-you>
+<x-you>At first I would not shard it. The index is about 25 GB, so every node can hold a full copy, each query touches one machine, and about 20 replicas cover 17,000 searches a second. If it outgrew memory I would shard by region, because a search almost never crosses a continent, and give big-city shards more replicas.</x-you>
 <x-interviewer>And if you had to build the spatial part yourself?</x-interviewer>
-<x-you>A quadtree with about 100 places per leaf, built offline and shipped to every node, since places barely move. For 2 km I'd collect leaves touching the circle, then filter by exact distance.</x-you>
-<x-coach>Data size first, then a shard key and its cost.</x-coach>
+<x-you>I would build a quadtree with about 100 places per leaf, offline, and ship it to every node. For a 2 km search I would collect the leaves that touch the circle and filter by exact distance.</x-you>
+<x-coach>The candidate starts from the data size and does not shard by default.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>Fewer than 20 results within 2 km. What then?</h3>
-<p>Widen the radius in steps, 2 km, 5, 10, until you have enough or hit a limit. A quadtree walks to neighbouring leaves.</p>
+<h3>What if fewer than 20 places are found within 2 km?</h3>
+<p>Widen the radius in steps, for example from 2 km to 5 km and then 10 km, and repeat the query until there are enough results or you reach a maximum radius. You cap the number of steps to keep latency bounded.</p>
 
-<h3>The user pans the map. How do you search a rectangle?</h3>
-<p>Send the map's corners instead of a point and radius; geo fields filter by box. Cap the box size and show clusters when zoomed out.</p>
+<h3>How do you search when the user pans a map?</h3>
+<p>The client sends the corners of the visible map instead of a point and a radius, and the geo field filters by that bounding box. You cap the box size, because a box covering a whole country would match millions of places. When the map is zoomed far out, you return clusters with a count for each cluster instead of individual places.</p>
 
 <h3>Should a place with one 5-star review rank above one with 300 reviews at 4.7?</h3>
-<p>No. Rank by an adjusted rating that pulls small samples toward the site average, such as (sum + 10 × site average) ÷ (count + 10). Show the real average on the page.</p>
+<p>No. A single review says little about a place, so rank by an adjusted rating that pulls small samples toward the site-wide average, for example (sum + 10 × site average) ÷ (count + 10).</p>
 
-<h3>Search shows Luigi's at 4.60 but the page shows 4.61. Is that a bug?</h3>
-<p>No. Search reads a copy that lags by seconds; the page's cache is cleared on every review. Both totals are exact.</p>
+<h3>Search shows an older rating for Luigi's than its page does. Is that a bug?</h3>
+<p>No, it is expected. Search reads a copy in the index that the indexer updates a few seconds after the commit, while the page cache is cleared as soon as the review commits.</p>
 
 <h3>A review is removed as fake. What changes?</h3>
-<p>Hide it in the same kind of transaction: subtract its stars and 1 from the count. A nightly job recomputes sums to catch drift.</p>
+<p>Hide the review in a transaction like the one for writing a review, which subtracts its stars from the sum and 1 from the count and then deletes the cached page. A nightly job that recomputes the sums from the reviews catches any drift.</p>
 
 <x-checklist title="Self-review: proximity search">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked about one review per user and edits", "I said search may lag but rating totals must be exact"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated peak searches and the index size", "I made the review a PUT keyed by business and user"] },
-    { "title": "Design and depth", "items": ["I explained why a latitude index alone fails", "I chose geohash precision from the radius and searched neighbour cells", "I compared geohash, a quadtree and built-in geo support", "I replicated the index instead of sharding it", "I kept the rating exact with a sum and count in the review transaction", "I combined text, filters and location in one query"] },
-    { "title": "Failure", "items": ["I said what happens when the indexer stops", "I said what breaks first at 10x"] }
+    { "title": "Before drawing", "items": ["I asked about one review per user and about edits", "I said search may lag but rating totals must be exact"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated peak searches and the index size", "I made the review a PUT addressed by business and user"] },
+    { "title": "Design and depth", "items": ["I explained why a latitude index alone fails", "I chose the geohash precision from the radius and searched the neighbouring cells", "I compared geohash, a quadtree and built-in geo support", "I replicated the index instead of sharding it", "I kept the rating exact with a sum and a count in the review transaction", "I combined text, filters and location in one query"] },
+    { "title": "Failure", "items": ["I said what happens when the indexer stops", "I said what breaks first at 10 times the traffic"] }
   ]
 }
 </script>

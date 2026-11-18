@@ -1,44 +1,42 @@
 <!--
 {
   "title": "Design an Email Service",
-  "description": "Receive, store, search and send mail for 100 million users: the SMTP receive path, mailboxes partitioned by user, attachments, bounces and device sync.",
-  "minutes": 28,
+  "description": "How to design an email service: SMTP receiving, per-user mailbox storage, search, sending with retries, device sync, and what interviewers ask.",
+  "minutes": 23,
   "kind": "design",
   "tags": ["case study", "email", "partitioning", "search", "sync"]
 }
 -->
-<p>Someone at another company presses Send. Their mail server finds your domain and hands over a message. Seconds later it is on your phone and laptop, filed in the inbox, spam moved aside, and next year you can find it by typing one word.</p>
+<p>An email service receives messages from other mail servers over SMTP, stores them in each user's mailbox, lets users read, label and search them from several devices, and sends outgoing mail to other providers. Interviewers ask about it because it combines a strict durability requirement, large storage, per-user partitioning, search, and communication with servers that you do not control.</p>
 
-<p>Behind it: a receive path that never loses accepted mail, petabytes of storage, a search index per person, retries against servers you do not control, and devices that agree. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before reading on.</p>
+<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design an email service like a big web mail provider.</x-interviewer>
-<x-you>I'll assume the core is sending and receiving, labels, search and attachments. Do we also serve desktop clients over IMAP?</x-you>
-<x-interviewer>Yes. Our own apps only; IMAP is a stretch goal.</x-interviewer>
-<x-you>How many users, and how much mail per user?</x-you>
-<x-interviewer>100 million users. Each receives about 40 emails a day after spam is rejected, and sends about 5.</x-interviewer>
-<x-you>Then my priorities: once we tell a sender's server "accepted", that message is never lost; new mail reaches every device within seconds; a user's own actions show at once. Search can lag a few seconds.</x-you>
-<x-coach>The candidate names the one promise that cannot break and where lag is fine. Most of the design follows.</x-coach>
+<x-you>I'll assume the core features are sending and receiving mail, labels, search and attachments. Do we also need to support desktop clients over IMAP?</x-you>
+<x-interviewer>Our own apps only. IMAP is a stretch goal.</x-interviewer>
+<x-you>How many users are there, and how much mail does each one get?</x-you>
+<x-interviewer>There are 100 million users. Each receives about 40 emails a day after spam is rejected, and sends about 5.</x-interviewer>
+<x-you>Then my priorities are these. Once we tell the sender's server that a message is accepted, we never lose it. New mail reaches every device within a few seconds. A user's own actions show up immediately. Search results can lag by a few seconds.</x-you>
+<x-coach>The candidate names the promise that must never be broken and says where delay is acceptable.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> receive over SMTP; filter spam and viruses; list by label; open messages and attachments; send, with retries and bounces; label, mark read, archive, delete; search your own mail; sync devices.</li>
-<li><strong>Non-functional:</strong> no accepted message lost; new mail visible within 5 seconds; inbox under 200 ms; search under 500 ms; receiving stays up when reading is degraded.</li>
-<li><strong>Out of scope:</strong> calendar, contacts, chat, ads, end-to-end encryption, IMAP (discussed as a follow-up).</li>
+<li><strong>Functional requirements:</strong> receive mail over SMTP, filter spam and viruses, list mail by label, open messages and attachments, send mail with retries and bounces, change labels, search a user's own mail, and sync devices.</li>
+<li><strong>Non-functional requirements:</strong> no accepted message is lost, new mail is visible within 5 seconds, the inbox opens in under 200 ms, search answers in under 500 ms, and receiving keeps working when reading is degraded.</li>
+<li><strong>Out of scope:</strong> calendar, contacts, chat, ads, end-to-end encryption, and IMAP (which comes up as a follow-up question).</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>Assume an email stores 30 KB: 10 KB of headers and body, plus attachments (one email in 20, averaging 400 KB) adding 400 ÷ 20 = 20 KB. Peak is twice the average, since mail spreads over time zones.</p>
+<p>Assume that an average email takes 30 KB of storage. Headers and body take about 10 KB, and one email in 20 has a 400 KB attachment, which adds 400 KB ÷ 20 = 20 KB on average. Peak traffic is about twice the average.</p>
 
 <ul>
-<li><strong>Received:</strong> 100 million × 40 = 4 billion emails a day, about 90,000 a second at peak.</li>
-<li><strong>Sent:</strong> 100 million × 5 = 500 million a day, about 5,800 a second.</li>
-<li><strong>Reads:</strong> 20 opens per user a day is 2 billion reads, about 23,000 a second.</li>
-<li><strong>Inbound bandwidth:</strong> 120 TB a day ÷ 86,400 s ≈ 1.4 GB/s.</li>
-<li><strong>Per user:</strong> 40 × 365 × 30 KB ≈ 440 MB a year.</li>
+<li><strong>Received mail:</strong> 100 million users × 40 emails = 4 billion emails a day. That is about 46,000 a second on average and about 92,000 a second at peak.</li>
+<li><strong>Reads:</strong> at 20 opened messages per user a day, 2 billion reads a day, about 23,000 a second.</li>
+<li><strong>Inbound bandwidth:</strong> 4 billion × 30 KB = 120 TB a day, which is 120 TB ÷ 86,400 s ≈ 1.4 GB/s on average. Bodies and attachments go to object storage, and only about 500 B of metadata per email (2 TB a day) goes in a database.</li>
 </ul>
 
 <x-estimate title="Inbound message rate">
@@ -49,38 +47,24 @@
   "unit": "count/s",
   "answer": "46 thousand/s",
   "accept": ["15 thousand/s", "150 thousand/s"],
-  "steps": ["100,000,000 × 40 = 4 billion emails a day", "4 × 10<sup>9</sup> ÷ 86,400 ≈ 46,000 a second"],
-  "note": "Writes outnumber reads (46,000 against 23,000 a second), unusual for a consumer product."
-}
-</script>
-</x-estimate>
-
-<x-estimate title="New storage per day">
-<script type="application/json">
-{
-  "question": "How much new mail data arrives each day?",
-  "givens": ["4 billion emails a day", "About 30 KB stored per email, attachments included"],
-  "unit": "bytes",
-  "answer": "120 TB",
-  "accept": ["40 TB", "400 TB"],
-  "steps": ["4 × 10<sup>9</sup> × 30 × 10<sup>3</sup> B = 1.2 × 10<sup>14</sup> B = 120 TB a day", "× 365 ≈ 44 PB a year, before replication"],
-  "note": "Bodies and attachments go to object storage. Only metadata goes in a database: 4 billion × 500 B = 2 TB a day."
+  "steps": ["100,000,000 × 40 = 4 billion emails a day", "4 × 10<sup>9</sup> ÷ 86,400 ≈ 46,000 a second", "At twice the average, the peak is about 92,000 a second"],
+  "note": "Writes outnumber reads here (46,000 a second against 23,000), which is unusual for a consumer product."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="3" title="Define the API">
 <x-task>
-<p>Write the app endpoints: list a label, open a message, send, change labels, search, and sync. What does "send" return, when delivery can take days?</p>
+<p>Write the endpoints the mail apps need: list a label, open a message, send, change labels, search, and sync. What should "send" return when delivery can take days?</p>
 </x-task>
 <x-answer>
-<p>Reads are GETs by label with a cursor; label changes are small operations. Send returns 202: queued, not delivered. Sync is "changes since N".</p>
+<p>Listing is a GET by label with a cursor. Send returns 202, meaning queued and not yet delivered. Sync asks for "changes since sequence number N".</p>
 </x-answer>
 </x-tryit>
 
 <h2>Define the API</h2>
 
-<p>Other mail servers use SMTP on port 25. Your apps use your own API:</p>
+<p>Other mail servers talk to you over SMTP on port 25. Your own apps use an HTTP API:</p>
 
 <x-code single title="App API">
 <pre lang="text">
@@ -108,14 +92,14 @@ GET  /changes?since=81237
 </pre>
 </x-code>
 
-<p>The decision worth arguing is sync. Re-downloading the inbox on every wake fetches 50 rows when one changed, and misses label changes on older mail. Instead a device asks a per-user change log for "everything after 81,237"; offline for a week, it just gets more. Label changes are operations ("add Receipts, remove INBOX"), not a new label set, so two devices editing different labels both win.</p>
+<p>The decision worth arguing is how devices sync. Re-downloading the first 50 inbox messages on every wake-up wastes bandwidth and misses label changes on older mail. Instead, each user has a change log, and a device asks for everything after the last sequence number it has seen, for example "everything after 81,237". Label changes are sent as operations such as "add Receipts, remove INBOX", so two devices editing different labels on one message both succeed.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records. Where do bodies and attachments live? What is the partition key, and how do you list "Inbox, newest first" fast when a message has many labels?</p>
+<p>Sketch the records. Where do bodies and attachments live? What is the partition key, and how do you list "Inbox, newest first" quickly when a message can have many labels?</p>
 </x-task>
 <x-answer>
-<p>Metadata partitioned by <code>user_id</code>; bodies and attachments in object storage. A per-label index row (user, label, time, message) makes a listing one range scan.</p>
+<p>Metadata is partitioned by <code>user_id</code>, and bodies and attachments live in object storage. A per-label index ordered by time makes a listing one range scan.</p>
 </x-answer>
 </x-tryit>
 
@@ -146,23 +130,22 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 </pre>
 </x-code>
 
-<p>A message can carry many labels. A folder is a label limited to one per message; Inbox, Sent, Spam and Trash are system labels. Archiving removes <code>INBOX</code>; nothing moves.</p>
+<p>A message can carry many labels. Inbox, Sent, Spam and Trash are system labels, and archiving a message removes its <code>INBOX</code> label without moving anything.</p>
 
-<p>Almost every query starts "for this user", so partition everything by <code>user_id</code>, in a <strong>sharded relational database</strong> (the deep dives say why). Bodies and attachments never change once written, which suits <a href="/system-design/blob-storage.html">object storage</a>.</p>
+<p>Almost every query is about one user's mail, so everything is partitioned by <code>user_id</code>. The <code>label_index</code> table has one row for each message and label, so "the newest 50 messages in the Inbox" is a single range scan. Bodies and attachments never change after they are written, which suits <a href="/system-design/blob-storage.html">object storage</a>.</p>
 
 <x-tryit variant="turn" minutes="5" title="High-level design">
 <x-task>
-<p>Sketch receiving a message, filing it, and showing it on a phone. When exactly do you tell the sending server "accepted"?</p>
+<p>Sketch how a message is received, filed, and shown on a phone. At what exact point do you tell the sending server that the message is accepted?</p>
 </x-task>
 <x-answer>
-<p>Write the raw message to object storage and a reference to a durable queue, then reply "accepted". Workers filter and file it; apps read through a mail API.</p>
+<p>Write the raw message to object storage and a reference to a durable queue, and only then reply "accepted". Workers filter and file it afterwards.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-
-<x-arch caption="Mail is stored and queued before the sender is told it was accepted; everything slow happens after. (The send path is in the deep dives.)">
+<x-arch caption="Mail is stored and queued before the sender is told it was accepted, and everything slow happens after that. The send path is shown in the deep dives.">
 <script type="application/json">
 {
   "nodes": [
@@ -193,7 +176,7 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 </script>
 </x-arch>
 
-<x-tracer title="Receive, file, sync, and two crashes">
+<x-tracer title="Receiving, filing and syncing a message, and two crashes">
 <script type="application/json">
 {
   "arch": {
@@ -224,49 +207,41 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
   },
   "steps": [
     {
-      "caption": "A sender's server finds our MX record and names the recipient, ana@. SMTP in checks the address exists and the sender passes reputation and SPF checks.",
+      "caption": "A sender's server finds our MX record and names the recipient, ana@. SMTP in checks that the address exists and that the sender passes the reputation and SPF checks.",
       "arch": { "active": ["senders", "smtpin", ["senders", "smtpin"]], "dim": ["app", "api", "search", "mbox", "deliver"] },
       "vars": { "recipient": "ana@", "size": "45 KB" }
     },
     {
-      "caption": "The 45 KB message arrives. SMTP in writes it to the blob store (3 copies) and a reference to the replicated queue, then replies <code>250 OK</code>. It is now ours.",
+      "caption": "The 45 KB message arrives. SMTP in writes it to the blob store as 3 copies and a reference to the replicated queue, then replies 250 OK. The message is now our responsibility.",
       "arch": { "active": ["smtpin", "blob", "queue", ["smtpin", "blob"], ["smtpin", "queue"], ["smtpin", "senders"]], "mark": ["senders"], "dim": ["app", "api", "search", "mbox", "deliver"], "notes": { "smtpin": "250 OK" } },
       "vars": { "recipient": "ana@", "copies": 3 }
     },
     {
-      "caption": "A worker takes the reference, reads the message, scores it for spam (low) and scans the attachment (clean): inbox.",
+      "caption": "A worker reads the message from the blob store, finds a low spam score and no virus, and decides it belongs in the inbox.",
       "arch": { "active": ["deliver", "blob", ["queue", "deliver"], ["deliver", "blob"]], "dim": ["app", "api", "search", "senders"], "notes": { "deliver": "inbox" } },
       "vars": { "spam score": "0.02", "virus": "none" }
     },
     {
-      "caption": "One transaction on Ana's shard: insert the message, add <code>INBOX</code> and <code>UNREAD</code> rows, raise the unread count, append change 81,240 to her log.",
+      "caption": "The worker runs one transaction on Ana's shard. It inserts the message, adds the INBOX and UNREAD rows, raises the unread count, and appends change 81,240 to her change log.",
       "arch": { "active": ["deliver", "mbox", ["deliver", "mbox"]], "mark": ["mbox"], "dim": ["app", "api", "search", "senders", "smtpin"], "notes": { "mbox": "seq 81,240" } },
       "vars": { "inbox unread": "4 → 5", "latest seq": "81,240" }
     },
     {
-      "caption": "A push tells Ana's phone \"mailbox changed\"; it asks for changes since 81,237. Three come back: a read flag from her laptop, an archive, and the new message.",
+      "caption": "A push tells Ana's phone that her mailbox changed. The phone asks for changes since 81,237 and receives three: a read flag from her laptop, an archive, and the new message.",
       "arch": { "active": ["app", "api", "mbox", ["app", "api"], ["api", "mbox"], ["api", "app"]], "dim": ["senders", "smtpin", "queue", "deliver"] },
       "vars": { "phone seq": "81,237 → 81,240" }
     },
     {
-      "caption": "She opens it. Headers came from the database; the body comes from the blob store.",
-      "arch": { "active": ["api", "blob", ["api", "blob"], ["api", "app"]], "mark": ["app"], "dim": ["senders", "smtpin", "queue", "deliver"] }
-    },
-    {
-      "caption": "The change feeds Ana's part of the search index; about 2 seconds later, search finds it.",
-      "arch": { "active": ["search", ["mbox", "search"]], "dim": ["senders", "smtpin", "queue", "deliver", "app"], "notes": { "search": "lag about 2 s" } }
-    },
-    {
-      "caption": "Crash one: a worker commits the delivery, then dies before acknowledging. The queue hands the reference to another worker.",
+      "caption": "In the first crash, a worker commits the delivery and then dies before it acknowledges the queue message. The queue gives the same reference to another worker.",
       "arch": { "active": ["queue", ["queue", "deliver"]], "fail": ["deliver"], "dim": ["app", "api", "search", "senders", "smtpin"], "notes": { "deliver": "crashed" } }
     },
     {
-      "caption": "The second worker's insert hits the unique <code>(user_id, dedupe_key)</code>: no change, acknowledge. Ana sees one copy.",
+      "caption": "The second worker's insert violates the unique (user_id, dedupe_key) constraint, so nothing changes and the worker acknowledges the message. Ana sees one copy.",
       "arch": { "active": ["deliver", "mbox", ["deliver", "mbox"]], "mark": ["mbox"], "dim": ["app", "api", "search", "senders", "smtpin"], "notes": { "mbox": "duplicate: no-op" } },
       "vars": { "copies in inbox": 1 }
     },
     {
-      "caption": "Crash two: SMTP in stores and queues a message, then dies before replying. The sender retries; the dedupe key makes the second copy a no-op.",
+      "caption": "In the second crash, SMTP in dies after queuing a message but before replying. The sender retries later, and the dedupe key makes the second copy a no-op.",
       "arch": { "active": ["senders", ["senders", "smtpin"]], "fail": ["smtpin"], "dim": ["app", "api", "search"], "notes": { "senders": "retry in 15 min" } },
       "vars": { "copies in inbox": 1 }
     }
@@ -277,104 +252,67 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 
 <h2>Deep dives</h2>
 
-<h3>The receive path: when to say 250</h3>
+<h3>Receiving mail and deciding when to reply 250</h3>
 
-<p>SMTP's contract: <code>4xx</code> means "try again later", and the sender will. <code>5xx</code> means "permanently refused", and the sender's server tells its user. <code>250</code> after the body means you now own the message. So decide where each check runs.</p>
+<p>SMTP gives every reply a meaning. A <code>4xx</code> reply means "try again later", and the sending server will retry. A <code>5xx</code> reply means "permanently refused", and the sending server tells its own user that the message was not delivered. A <code>250</code> reply after the message body means that you now own the message and the sender may delete its copy.</p>
 
-<x-tradeoffs caption="Where to stop bad mail">
+<p>There are three places to deal with unwanted mail. The first is to reject it during the SMTP conversation. The sender learns immediately and you store nothing, but the check runs while the sender waits, so only fast and certain checks belong here, such as an unknown recipient or a sending IP address with a bad reputation.</p>
+
+<p>The second is to accept the message and file it in the Spam label. This leaves time for content classifiers and virus scans, which are too slow to run while the connection is open, and the user can rescue a false positive. The cost is that you store the spam.</p>
+
+<p>The third is to accept the message and then send a bounce to the sender. This is the option to avoid. Spam usually forges its sender address, so the bounce goes to an innocent person who never sent anything. That is called backscatter, and it can get your servers blocklisted. Bounces are only for undeliverable mail, from the send path described later.</p>
+
+<p>SMTP in also checks who is really sending the message, because the From address is easy to forge. SPF checks that the connecting IP address is allowed to send for the sender's domain. DKIM checks a cryptographic signature that the sending domain put on the message. DMARC is the policy the domain publishes for what to do when those checks fail, such as reject the message or file it as spam. The results feed into the spam score.</p>
+
+<x-tradeoffs caption="Where to stop unwanted mail">
 <script type="application/json">
 {
   "options": [
     {
       "name": "Reject during SMTP",
-      "good": "The sender learns at once; you store nothing.",
-      "bad": "Runs while the connection is open, so checks must be quick.",
-      "pick": "Cheap, sure checks: unknown recipient, bad reputation, a domain policy that says reject."
+      "good": "The sender learns about the failure at once, and you store nothing.",
+      "bad": "The check runs while the connection is open, so it has to be fast.",
+      "pick": "Use it for cheap and certain checks such as an unknown recipient."
     },
     {
       "name": "Accept, then file as spam",
-      "good": "Time for content classifiers and virus scans. A false positive sits in Spam for the user to rescue.",
-      "bad": "You store the spam; the sender is never told.",
-      "pick": "Content-based decisions. The usual answer.",
+      "good": "There is time for content classifiers and virus scans, and false positives can be rescued.",
+      "bad": "You store the spam, and the sender is never told.",
+      "pick": "Use it for decisions that depend on message content, which covers most mail.",
       "default": true
-    },
-    {
-      "name": "Accept, then bounce",
-      "good": "Tells the sender, in theory.",
-      "bad": "Spam forges its sender, so your bounce hits an innocent address. That is backscatter, and it gets your servers blocklisted.",
-      "pick": "Never for spam. Bounces are only for undeliverable mail, from the send path."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>The pipeline is at-least-once on purpose: a sender may retry after a lost <code>250</code>, and the queue may hand a message to two workers. So make the mailbox write idempotent with a per-recipient dedupe key (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>). A message to three of your users is stored once and queued as three deliveries.</p>
+<p>If the inbound queue is nearly full, SMTP in replies <code>451</code>, so senders retry later and mail is delayed but not dropped.</p>
 
-<p>Back-pressure is free: if the queue nears its limit, SMTP in answers <code>451</code>, a temporary failure, and senders retry later. Mail is delayed, never dropped.</p>
+<p>The pipeline delivers each message at least once, and this is deliberate. A sender may retry after a <code>250</code> reply gets lost, and the queue may give one message to two workers. Exactly-once delivery is not practical, so the mailbox write is made idempotent with a per-recipient dedupe key, which is a hash of the Message-ID header and the content (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
 
-<x-callout type="mistake" title="Replying 250 before the message is safe">
-<p>Answering <code>250</code> as soon as the bytes arrive feels faster. If the server dies before writing, the sender has already deleted its copy. Write and replicate first, then reply.</p>
-</x-callout>
+<h3>Storing mailboxes, partitioned by user</h3>
 
-<h3>Mailbox storage, partitioned by user</h3>
+<p>Each user's mail is independent of everyone else's, so the partition key is <code>user_id</code>. The choice that matters is the kind of store, because one delivery changes several things at once: it adds a message row and label rows, raises the unread count, and appends a change-log entry.</p>
 
-<x-tradeoffs caption="Storing mailbox metadata">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Sharded relational, by user",
-      "good": "A user lives on one shard, so a delivery updates message, labels, counts and change log in one transaction; they never disagree.",
-      "bad": "You run the sharding: a user-to-shard directory, moving heavy users.",
-      "pick": "Per-user consistency matters. The usual answer.",
-      "default": true
-    },
-    {
-      "name": "Wide-column store, partition by user",
-      "good": "Spreads 46,000 writes a second easily; grows by adding nodes.",
-      "bad": "Atomic only within one partition, so label rows, counters and change log can drift and need repair jobs.",
-      "pick": "Write scale matters more than exact counts and sync."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>A sharded relational database keeps one user on one shard, so a delivery is one transaction. The message, its labels, the counts and the change log cannot disagree, and the sync sequence number is simple to assign. The cost is operating the sharding yourself. This is the choice for mailboxes.</p>
 
-<p>Map users to shards with a directory, not <code>user_id</code> modulo the shard count, so you can move one user without rehashing everyone (see <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>). Metadata grows 2 TB a day.</p>
+<p>A wide-column store such as Cassandra also partitions by user and adds capacity by adding nodes, so it absorbs 46,000 writes a second without much effort. Its transactions only cover a single partition, so the label rows, counters and change log can drift apart and need repair jobs.</p>
 
-<p>Attachments are stored by the SHA-256 hash of their bytes, so a 5 MB file sent to 200 of your users takes 5 MB, not 1,000 MB. Access goes through a message the user owns, never by hash. A sweep deletes objects unreferenced for a few days; the grace period protects a delivery reusing one now.</p>
+<p>Users are mapped to shards through a directory and not with <code>user_id</code> modulo the number of shards, so you can move a single user without redistributing everyone (see <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>).</p>
 
-<h3>Search, one user at a time</h3>
+<p>Attachments are stored under the SHA-256 hash of their bytes. A 5 MB file that is sent to 200 of your users then takes 5 MB of storage and not 1,000 MB. Users reach an attachment only through a message that they own, never by its hash.</p>
 
+<h3>Searching one user's mail</h3>
 
-<x-tradeoffs caption="How to split the search index, when every query is one user's mail">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Shard by user",
-      "good": "A user's documents sit on one shard: a query touches one machine and never sees anyone else's mail.",
-      "bad": "A user with millions of messages makes a hot shard; move them like mailbox users.",
-      "pick": "Every query is scoped to one person. The usual answer.",
-      "default": true
-    },
-    {
-      "name": "One global index, any sharding",
-      "good": "Standard setup for a search engine.",
-      "bad": "Every query fans out to every shard to filter to one user; a bug in that filter shows people each other's mail.",
-      "pick": "Searching across users, which mail never does."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>Every search is limited to the mail of the person who asks, so the index is sharded by user. All of one user's documents sit on one shard, a query goes to a single machine, and it cannot return another user's mail.</p>
 
-<p>Index headers, body and attachment names; a slower job adds text from documents. <code>from:</code>, <code>has:attachment</code> and <code>label:</code> are filters. Results are checked against the mailbox, so a message deleted a second ago never appears. <a href="/system-design/search-systems.html">Search systems</a> covers the inverted index.</p>
+<p>A global index would send every query to all shards and filter down to one user, and a bug in that filter would show people each other's mail. Mail search never crosses users, so a global index has no benefit.</p>
 
-<h3>The send path: retries and bounces</h3>
+<p>The index covers headers, body text and attachment names. Operators such as <code>from:</code>, <code>has:attachment</code> and <code>label:</code> are filters on stored fields. The indexer reads the change log, which is why search lags by a couple of seconds, and results are checked against the mailbox so that a message deleted a second ago does not appear. <a href="/system-design/search-systems.html">Search systems</a> explains the inverted index itself.</p>
 
-<x-arch caption="Outgoing mail waits in a queue. Temporary failures go back for a later try; permanent ones become a bounce in the sender's own inbox.">
+<h3>Sending mail with retries and bounces</h3>
+
+<x-arch caption="Outgoing mail waits in a queue. Temporary failures go back for a later retry, and permanent failures become a bounce in the sender's own inbox.">
 <script type="application/json">
 {
   "nodes": [
@@ -397,38 +335,39 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 </script>
 </x-arch>
 
-<p>Before returning <code>202</code>, one transaction writes the message to Sent and an outbox row; a relay moves outbox rows to the queue, so a crash cannot leave mail in Sent that never leaves. The draft id is the idempotency key, so a double tap sends once. Recipients on your own service skip SMTP.</p>
+<p>Before the API returns <code>202</code>, one transaction writes the message to the Sent label and an outbox row, and a relay process moves outbox rows to the outbound queue. Without the outbox row, a crash could leave a message in Sent that was never queued. The draft id is the idempotency key, so a double tap on Send results in one message.</p>
+
+<p>For other recipients, an SMTP out worker takes the message from the queue and does the following:</p>
 
 <ul>
-<li><strong>Delivery:</strong> group recipients by domain, look up its MX record, connect over TLS, and sign with DKIM so the receiver can verify you.</li>
-<li><strong>Temporary failure</strong> (<code>4xx</code>, timeout): retry with growing gaps, say 5 minutes, 15, then hourly, for at least four to five days, as the SMTP standard suggests.</li>
-<li><strong>Permanent failure</strong> (<code>5xx</code>, such as "no such user") or retries used up: put a bounce with the address and reason in the sender's inbox. Only this path bounces.</li>
-<li><strong>Reputation:</strong> receivers judge your sending IPs, so rate-limit accounts and send bulk and personal mail from separate pools.</li>
+<li><strong>Delivery:</strong> it groups the recipients by domain, looks up each domain's MX record, connects over TLS, and signs the message with DKIM so that the receiving server can verify that it came from you.</li>
+<li><strong>Temporary failures:</strong> a <code>4xx</code> reply or a timeout means the message goes to the retry schedule. The gaps grow, for example 5 minutes, then 15, then hourly, for at least four to five days as the SMTP standard suggests.</li>
+<li><strong>Permanent failures:</strong> a <code>5xx</code> reply such as "no such user", or running out of retries, produces a bounce message in the sender's inbox with the address and the reason. </li>
 </ul>
 
-<h3>Sync across devices</h3>
+<h3>Syncing devices</h3>
 
-<p>Each user has a counter, a plain column since a user lives on one shard. Every mailbox change, in its transaction, takes the next number and writes a row to <code>changes</code>. Taking the number locks the counter row until commit, so changes commit in order and a reader never skips a late one. A device remembers the last number it saw.</p>
+<p>Each user has a counter, which is an ordinary column on the user's shard. Every change to the mailbox takes the next number and writes a row to the <code>changes</code> table in the same transaction. Taking the number locks the counter row until commit, so changes commit in order and a reader cannot skip one. A device only has to remember the last number it has seen.</p>
+
+<p>Three situations need explicit handling:</p>
 
 <ul>
-<li><strong>Telling devices:</strong> an open connection for web, a push for phones (see <a href="/system-design/realtime-communication.html">realtime communication</a>). The push says only "something changed"; a lost push just delays sync.</li>
-<li><strong>Offline edits:</strong> the device queues operations such as "mark m_9f2 read" and replays them on reconnect. On conflicting flags, the last write wins.</li>
-<li><strong>Far behind:</strong> keep 30 days of change log. Older requests get <code>410</code> and resync the newest 500 messages per label.</li>
+<li><strong>Telling devices that something changed:</strong> web clients keep an open connection and phones receive a push notification (see <a href="/system-design/realtime-communication.html">realtime communication</a>). The notification only says that something changed, so a lost push causes a delay and nothing worse.</li>
+<li><strong>Offline edits:</strong> the device queues operations such as "mark m_9f2 read" and replays them when it reconnects. If two devices set conflicting flags, the last write wins.</li>
+<li><strong>A device that is far behind:</strong> the change log is kept for 30 days. A request for older changes gets <code>410</code>, and the device resyncs the newest 500 messages in each label.</li>
 </ul>
-
-<p><a href="/system-design/design-file-sync.html">Design File Sync</a> and <a href="/system-design/design-a-chat-app.html">Design a Chat App</a> use similar cursors.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, about 460,000 messages a second and 1.2 PB a day, storage cost is the first wall: compress bodies, store attachments once, tier old mail, enforce quotas. SMTP in and workers are stateless and scale out behind several MX records; mailbox and search add shards.</p>
+<p>At 10 times the load, the system would receive about 460,000 messages a second on average and about 1.2 PB of new data a day. Storage cost is the first limit that is hit. You reduce it by compressing bodies, storing attachments once, moving old mail to cheaper tiers, and enforcing quotas. SMTP in and the filter workers are stateless, so you add more of them behind several MX records, and the mailbox and search tiers add shards.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>Filter workers fall behind</td><td>The inbound queue grows; mail is late.</td><td>Add workers; <code>451</code> back-pressure holds mail at senders.</td></tr>
-<tr><td>A mailbox shard primary</td><td>Its users cannot read; deliveries wait in the queue.</td><td>Fail over to a synchronous replica; the queue drains.</td></tr>
-<tr><td>The search cluster</td><td>Search fails; mail works.</td><td>The indexer resumes from the change log.</td></tr>
-<tr><td>The blob store, in one zone</td><td>Reads use the copies in other zones.</td><td>Store each object in at least 3 zones before acknowledging.</td></tr>
+<tr><td>Filter workers fall behind</td><td>The inbound queue grows and new mail arrives late, but nothing is lost.</td><td>Add workers, and use 451 replies to hold mail at the senders if the queue nears its limit.</td></tr>
+<tr><td>A mailbox shard primary</td><td>Its users cannot read their mail, and deliveries for them wait in the queue.</td><td>Fail over to a synchronous replica, and the queue drains.</td></tr>
+<tr><td>The search cluster</td><td>Search fails, while receiving, reading and sending keep working.</td><td>Restore the cluster, and the indexer resumes from the change log.</td></tr>
+<tr><td>The blob store in one zone</td><td>Reads are served from the copies in other zones.</td><td>Keep each object in at least 3 zones before acknowledging a write.</td></tr>
 </tbody>
 </table>
 
@@ -437,40 +376,42 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>A mail server writing into a database, plus an inbox query and search box; adds object storage when prompted.</td></tr>
-<tr><td>Mid</td><td>Queues between SMTP edge and processing, partitions by user, puts bodies in object storage, retries and bounces outbound mail.</td></tr>
-<tr><td>Senior</td><td>Pins durability to the <code>250</code>, makes delivery idempotent, avoids backscatter, keeps labels, counts and sync log in one per-user transaction, and leads the 10x talk with storage cost.</td></tr>
+<tr><td>Junior</td><td>Draws a mail server that writes into a database, and adds object storage when prompted.</td></tr>
+<tr><td>Mid</td><td>Puts queues between the SMTP edge and processing, partitions by user, and retries outbound mail.</td></tr>
+<tr><td>Senior</td><td>Ties durability to the <code>250</code> reply, makes delivery idempotent, avoids backscatter, keeps labels, counts and the sync log in one per-user transaction, and starts the 10x discussion with storage cost.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="When is a message safe?" tone="strong">
 <x-interviewer>A sender's server hands you a message. When do you say "accepted"?</x-interviewer>
-<x-you>After the raw message is in object storage with three copies and a reference is on a replicated queue. Until then I can fail with a <code>4xx</code> and the sender keeps its copy. After that, losing it is on us.</x-you>
-<x-interviewer>And if you crash after writing, before replying?</x-interviewer>
-<x-you>The sender retries. The mailbox insert is unique on a dedupe key from the Message-ID and a content hash, so the second copy is a no-op.</x-you>
-<x-coach>The answer ties durability to a protocol event and handles the duplicate its own choice creates.</x-coach>
+<x-you>After the raw message is in object storage with three copies and a reference to it is on a replicated queue. Until then I can fail with a <code>4xx</code> and the sender keeps its copy. After that point, losing the message is our fault.</x-you>
+<x-interviewer>What if you crash after writing but before replying?</x-interviewer>
+<x-you>The sender never saw the 250, so it retries. The mailbox insert is unique on a dedupe key built from the Message-ID and a content hash, so the second copy changes nothing.</x-you>
+<x-coach>The answer ties durability to a protocol event and handles the duplicate that its own design can create.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>How does "undo send" work?</h3>
-<p>Queue the outbound message with a delay, say 10 seconds; undo deletes it before release. Once handed to another provider, it cannot be recalled.</p>
+<h3>How does undo send work?</h3>
+<p>The outbound message is queued with a delay of about 10 seconds, and pressing undo deletes it from the queue before it is released. After the message has been handed to another provider it cannot be recalled.</p>
 
 <h3>A mailing list sends one message to 1 million of your users. What happens?</h3>
-<p>Store the body once and queue 1 million deliveries: about 22 seconds at 46,000 a second. A lower-priority queue for bulk keeps personal mail moving.</p>
-
+<p>You store the body once and queue 1 million deliveries, about 22 seconds of work at 46,000 a second. A lower-priority queue keeps this bulk work from delaying personal mail.</p>
 
 <h3>How would you support IMAP clients?</h3>
-<p>Add an IMAP front end mapping labels to folders and the change log to IMAP's modification sequences. The catch: a message with two labels shows in two folders, and deleting it from one should only remove that label.</p>
+<p>You add an IMAP front end that maps labels to folders and maps the change log to IMAP's modification sequence numbers. A message with two labels appears in two folders, and deleting it from one folder must remove only that label.</p>
+
+<h3>How do you group messages into conversations?</h3>
+<p>Each message carries a Message-ID, and a reply names its parent in the In-Reply-To and References headers. At delivery the worker looks up those ids among the user's recent messages and reuses the existing <code>thread_id</code>, or creates a new one if none matches.</p>
 
 <x-checklist title="Self-review: email service">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked about mail received and sent per user", "I named the promise: an accepted message is never lost", "I said where lag is fine and where not"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated inbound rate, daily storage and bandwidth", "Send returns 202, queued rather than delivered", "Sync is \"changes since N\" from a per-user log"] },
-    { "title": "Design and depth", "items": ["I stored the message durably before replying 250", "Delivery is idempotent, not exactly-once", "Mailboxes are partitioned by user, one transaction per change", "Attachments are stored once in object storage", "Each search touches one user's shard", "Temporary failures retry for days; only the send path bounces"] },
-    { "title": "Failure", "items": ["I used 4xx replies as back-pressure", "I covered a mailbox shard or the search cluster dying"] }
+    { "title": "Before drawing", "items": ["I named the promise that an accepted message is never lost", "I said where delay is acceptable"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated inbound rate, daily storage and bandwidth", "Send returns 202, and sync uses a per-user change log"] },
+    { "title": "Design and depth", "items": ["I stored the message durably before replying 250", "Delivery is at least once and made idempotent with a dedupe key", "Mailboxes are partitioned by user, with one transaction per change", "Each search touches one user's shard", "Temporary failures are retried for days, and only the send path creates bounces"] },
+    { "title": "Failure", "items": ["I used 4xx replies as back-pressure"] }
   ]
 }
 </script>

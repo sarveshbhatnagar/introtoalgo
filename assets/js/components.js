@@ -38,7 +38,7 @@ export function initTracer(el) {
     nextBtn.disabled = i === steps.length - 1 && !loop;
   }
   function stop() {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
     el.classList.remove('is-playing');
     playBtn.setAttribute('aria-label', 'Play');
@@ -47,12 +47,20 @@ export function initTracer(el) {
     if (i === steps.length - 1) show(0);
     el.classList.add('is-playing');
     playBtn.setAttribute('aria-label', 'Pause');
-    timer = setInterval(() => {
-      if (i === steps.length - 1) {
-        if (loop) show(0);
-        else stop();
-      } else show(i + 1);
-    }, loop ? 2200 : 1700);
+    // Each step stays up long enough to read its caption: about 3.5 words a
+    // second, never less than 3.5 seconds.
+    const tick = () => {
+      const cap = steps[i].querySelector('.tracer__text') || steps[i];
+      const words = cap.textContent.trim().split(/\s+/).length;
+      timer = setTimeout(() => {
+        if (i === steps.length - 1) {
+          if (loop) show(0);
+          else return stop();
+        } else show(i + 1);
+        tick();
+      }, Math.max(3500, 1200 + words * 290));
+    };
+    tick();
   }
   prevBtn.addEventListener('click', () => { stop(); show(i - 1); });
   nextBtn.addEventListener('click', () => { stop(); show(i + 1 > steps.length - 1 && loop ? 0 : i + 1); });

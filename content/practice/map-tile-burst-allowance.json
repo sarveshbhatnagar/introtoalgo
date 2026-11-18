@@ -7,15 +7,15 @@
   "aka": "Token Bucket Rate Limiter",
   "order": 5,
   "story": [
-    "<p>A map company sells tile access to app developers. Panning a map needs a burst of tiles, then nothing for a while, so each API key gets a token bucket instead of a fixed per-minute cap. The bucket holds up to <code>capacity</code> tokens, a request spends tokens, and one token drips in every <code>intervalMs</code> milliseconds. A full bucket allows a burst; the drip sets the long-run rate.</p>",
-    "<p>This is the token bucket from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a> (see also <a href=\"/system-design/design-a-rate-limiter.html\">Design a Rate Limiter</a>). No timer refills it: each request works out how many tokens arrived since the last one, which is where most bugs hide.</p>"
+    "<p>A map company sells tile access to app developers. Panning a map needs a burst of tiles, then nothing for a while, so each API key gets a token bucket instead of a fixed per-minute cap. The bucket holds up to <code>capacity</code> tokens, a request spends tokens, and one token drips in every <code>intervalMs</code> milliseconds. A full bucket allows a burst, and the drip rate sets the long-run rate.</p>",
+    "<p>This is the token bucket from <a href=\"/system-design/rate-limiting.html\">Rate Limiting</a> (see also <a href=\"/system-design/design-a-rate-limiter.html\">Design a Rate Limiter</a>). No timer refills the bucket. Instead, each request works out how many tokens have arrived since the last one, and that calculation is where most bugs occur.</p>"
   ],
   "task": [
     "<p>Write a class <code>TokenBucket</code>:</p>",
     "<ul>",
-    "<li><code>constructor(capacity, intervalMs)</code>: the bucket starts full at time 0.</li>",
-    "<li><code>take(t, cost)</code>: a request at time <code>t</code> (milliseconds) needing <code>cost</code> tokens. If the bucket holds at least <code>cost</code>, remove them and return <code>true</code>. Otherwise return <code>false</code> and remove nothing.</li>",
-    "<li><code>available(t)</code>: return how many tokens the bucket holds at time <code>t</code>, changing nothing else.</li>",
+    "<li><code>constructor(capacity, intervalMs)</code> creates a bucket that starts full at time 0.</li>",
+    "<li><code>take(t, cost)</code> handles a request at time <code>t</code> (milliseconds) needing <code>cost</code> tokens. If the bucket holds at least <code>cost</code>, remove them and return <code>true</code>. Otherwise return <code>false</code> and remove nothing.</li>",
+    "<li><code>available(t)</code> returns how many tokens the bucket holds at time <code>t</code> and changes nothing else.</li>",
     "</ul>",
     "<p>Drips happen at fixed times: <code>intervalMs</code>, <code>2 × intervalMs</code>, <code>3 × intervalMs</code>, and so on. Each adds one token, unless the bucket is full, in which case the token is lost. A drip at exactly time <code>t</code> counts before the request at <code>t</code>.</p>"
   ],
@@ -31,23 +31,23 @@
       "ops": ["TokenBucket", "take", "take", "take", "take", "take", "take", "available"],
       "args": [[3, 1000], [0, 1], [100, 1], [200, 1], [300, 1], [1000, 1], [1500, 1], [2000]],
       "expected": [null, true, true, true, false, true, false, 1],
-      "explanation": "The burst at 0, 100 and 200 ms empties the 3 tokens. At 300 ms nothing has dripped: rejected. The drip at 1,000 ms adds a token, which the request at 1,000 spends. At 1,500 the bucket is empty again. The drip at 2,000 leaves 1 token."
+      "explanation": "The burst at 0, 100 and 200 ms empties the 3 tokens. At 300 ms nothing has dripped yet, so the request is rejected. The drip at 1,000 ms adds a token, which the request at 1,000 spends. At 1,500 ms the bucket is empty again, so that request is rejected, and the drip at 2,000 ms leaves 1 token."
     },
     {
       "ops": ["TokenBucket", "take", "take", "take", "take", "take"],
       "args": [[2, 1000], [0, 2], [600, 1], [1200, 1], [1900, 1], [2000, 1]],
       "expected": [null, true, false, true, false, true],
-      "explanation": "A cost-2 request empties the bucket at 0. At 600 ms no drip has happened. By 1,200 ms the drip at 1,000 has added a token, so the request is allowed; measuring time \"since the last request\" would wrongly reject it. The drip at 2,000 pays for the last request."
+      "explanation": "A cost-2 request empties the bucket at 0. At 600 ms no drip has happened. By 1,200 ms the drip at 1,000 has added a token, so the request is allowed; measuring time \"since the last request\" would wrongly reject it. The drip at 2,000 ms supplies the token for the last request."
     }
   ],
   "hints": [
     "How many drips happen between calls at times <code>a</code> and <code>b</code>? Try a = 600, b = 1,200 with a 1,000 ms interval, then a = 0, b = 600.",
-    "The drips up to time <code>t</code> number <code>floor(t / intervalMs)</code>. The drips between two calls are the difference of those counts, so nothing is lost to rounding.",
+    "The number of drips up to time <code>t</code> is <code>floor(t / intervalMs)</code>. The drips between two calls are the difference of those counts, so nothing is lost to rounding.",
     "Store the token count and the drip count at the last update. On every call, add the new drips to the tokens, clamp to <code>capacity</code>, and save the new drip count.",
-    "<code>take</code> refills first, then compares with <code>cost</code>. <code>available</code> refills and returns the count; refilling early is harmless because you store the drip count, not the call time."
+    "<code>take</code> refills first, then compares with <code>cost</code>. <code>available</code> refills and then returns the count. Refilling early is harmless because you store the drip count, not the call time."
   ],
   "bruteForce": [
-    "<p>A gateway with a million API keys cannot run a million refill timers. Simulating each drip inside every call is too slow too: a 1 ms interval with calls a trillion milliseconds apart is a trillion steps.</p>",
+    "<p>A gateway with a million API keys cannot run a million refill timers. Simulating each drip inside every call is also too slow, because a 1 ms interval with calls a trillion milliseconds apart takes a trillion steps.</p>",
     "<p>One division counts the drips in O(1), and the bucket is two numbers per key, small enough for a shared in-memory store.</p>"
   ],
   "signature": {
@@ -195,22 +195,22 @@
       "        return self.tokens"
     ],
     "walkthrough": [
-      "<p>The bucket is two numbers: tokens now, and drips counted so far. Every call first catches up: the drips up to <code>t</code> are <code>floor(t / intervalMs)</code>, so the new ones are that minus the stored count.</p>",
+      "<p>The bucket stores two numbers: the current token count and the number of drips counted so far. Every call first catches up on the drips that have happened. The total number of drips up to <code>t</code> are <code>floor(t / intervalMs)</code>, so the new drips are that total minus the stored count.</p>",
       "<p>Trace the second example, capacity 2, interval 1,000:</p>",
       "<ol>",
-      "<li>t = 0, cost 2: 0 drips. 2 tokens ≥ 2: take them, 0 left.</li>",
-      "<li>t = 600, cost 1: floor(600 / 1000) = 0, nothing new. 0 &lt; 1: rejected.</li>",
-      "<li>t = 1,200, cost 1: floor(1200 / 1000) = 1, one new drip. Take it, 0 left, drips stored as 1.</li>",
-      "<li>t = 1,900: still 1 drip. Rejected.</li>",
-      "<li>t = 2,000: 2 drips, one new. Allowed.</li>",
+      "<li>At t = 0 with cost 2 there are no drips, and 2 tokens is enough, so the request takes them and 0 are left.</li>",
+      "<li>At t = 600 with cost 1, floor(600 / 1000) = 0, so there are no new drips, and 0 tokens is less than 1, so the request is rejected.</li>",
+      "<li>At t = 1,200 with cost 1, floor(1200 / 1000) = 1, so there is one new drip. The request takes it, 0 tokens are left, and the stored drip count becomes 1.</li>",
+      "<li>At t = 1,900 there is still only 1 drip, so the request is rejected.</li>",
+      "<li>At t = 2,000 there are 2 drips, one of them new, so the request is allowed.</li>",
       "</ol>",
-      "<p>Storing the drip count, not the last call time, is the whole trick. <code>gained = floor((t - last) / interval); last = t</code> throws away the 600 ms of progress before the call at 600, so it rejects the request at 1,200. In a real gateway, refill and take must be one atomic step in the shared store, or two servers can spend the same token.</p>"
+      "<p>The key point is to store the drip count instead of the last call time. <code>gained = floor((t - last) / interval); last = t</code> throws away the 600 ms of progress made before the call at 600, so it wrongly rejects the request at 1,200. In a real gateway, refill and take must be one atomic step in the shared store, or two servers can spend the same token.</p>"
     ],
     "time": "O(1)",
     "timeWhy": "Each call does one division, one min and a comparison.",
     "space": "O(1)",
     "spaceWhy": "Two numbers per bucket, whatever the traffic.",
-    "takeaway": "A token bucket refills lazily: on each request, count the tokens that arrived since the last update and cap at capacity. Count refills from a fixed origin so partial intervals are never lost. Capacity sets the burst; the drip rate sets the average."
+    "takeaway": "A token bucket refills lazily: on each request, count the tokens that arrived since the last update and cap at capacity. Count refills from a fixed origin so partial intervals are never lost. Capacity sets the largest burst, and the drip rate sets the average rate."
   },
   "related": ["rate-limiting", "design-a-rate-limiter"]
 }

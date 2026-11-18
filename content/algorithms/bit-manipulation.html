@@ -1,18 +1,18 @@
 <!--
 {
   "title": "Bit Manipulation",
-  "description": "Treat a number as a row of on/off switches. Test, set and clear single bits, count them fast, find the odd one out with XOR, and list subsets as masks.",
-  "minutes": 12,
+  "description": "How to test, set and clear single bits, count bits, find a lone value with XOR and list subsets with masks, plus what interviewers ask about bits.",
+  "minutes": 14,
   "tags": ["bits", "math", "patterns"]
 }
 -->
-<p>A photo app has six on/off settings: grid lines, flash, timer, HDR, location tags and sound. Instead of six true/false values, store one small number where each binary digit is one switch: grid lines in the rightmost digit, flash next, then timer, and so on. Flash and timer on is <code>000110</code>, the number 6. Saving, copying and comparing all six settings becomes one operation.</p>
+<p>Bit manipulation means working directly on the binary digits of an integer with operators such as AND, OR, XOR and shifts. It is used to store many yes/no flags in one number, to do some jobs in constant extra memory that would otherwise need a hash map or a loop, and to represent a subset of a small set as a single integer. You reach for it when a problem asks about flags, parity, a value that appears an odd number of times, or all subsets of at most about 20 items.</p>
 
-<p>File permissions, feature flags and chess engines all store state this way.</p>
+<p>Without it, a set of six on/off settings needs six separate booleans, and "find the one number without a partner" needs a hash map that uses O(n) memory. With bits, the six settings fit in one integer that can be copied or compared in one operation, and the lone number can be found with O(1) memory.</p>
 
-<h2>A number is a row of switches</h2>
+<h2>Binary numbers and the bit operators</h2>
 
-<p>In binary, each position is worth double the one to its right: 1, 2, 4, 8, 16, 32. A number is the sum of the positions that are on. Positions count from the right, starting at 0: in 44, bits 2, 3 and 5 are on.</p>
+<p>In binary, each position is worth twice the position to its right: 1, 2, 4, 8, 16, 32. A number is the sum of the positions that hold a 1. Positions are numbered from the right starting at 0, so in 44 the bits at positions 2, 3 and 5 are on.</p>
 
 <x-figure caption="44 in binary. Bit i is worth 2 to the power i, and 44 is the sum of the bits that are on.">
 <svg viewBox="0 0 480 150" aria-label="Six boxes holding 1, 0, 1, 1, 0, 0. Above them the values 32, 16, 8, 4, 2, 1. Below them bit numbers 5 down to 0. The boxes holding 1 are highlighted.">
@@ -40,30 +40,32 @@
 </svg>
 </x-figure>
 
-<p>Six operators work on all bits at once, shown on 12 (<code>1100</code>) and 10 (<code>1010</code>):</p>
+<p>The bitwise operators work on every bit position at the same time. AND gives a 1 only where both numbers have a 1, OR gives a 1 where either number has one, and XOR gives a 1 where the two numbers differ. NOT flips every bit. A left shift by k moves all bits k places to the left, which multiplies the number by 2ᵏ, and a right shift by k moves them right and drops the lowest k bits, which divides by 2ᵏ and rounds down.</p>
 
 <table>
-<thead><tr><th>Operator</th><th>Rule, bit by bit</th><th>Example</th></tr></thead>
+<thead><tr><th>Operator</th><th>Example</th></tr></thead>
 <tbody>
-<tr><td><code>a &amp; b</code> (AND)</td><td>1 only if both are 1</td><td><code>1100 &amp; 1010 = 1000</code>, which is 8</td></tr>
-<tr><td><code>a | b</code> (OR)</td><td>1 if either is 1</td><td><code>1100 | 1010 = 1110</code>, which is 14</td></tr>
-<tr><td><code>a ^ b</code> (XOR)</td><td>1 if they differ</td><td><code>1100 ^ 1010 = 0110</code>, which is 6</td></tr>
-<tr><td><code>~a</code> (NOT)</td><td>flips every bit</td><td><code>~5</code> is −6 (see the mistakes below)</td></tr>
-<tr><td><code>a &lt;&lt; k</code></td><td>moves bits k places left, times 2ᵏ</td><td><code>12 &lt;&lt; 1</code> is 24</td></tr>
-<tr><td><code>a &gt;&gt; k</code></td><td>moves bits k places right, drops the last k</td><td><code>12 &gt;&gt; 2</code> is 3</td></tr>
+<tr><td><code>a &amp; b</code> (AND)</td><td><code>1100 &amp; 1010 = 1000</code>, so 12 &amp; 10 is 8</td></tr>
+<tr><td><code>a | b</code> (OR)</td><td><code>1100 | 1010 = 1110</code>, so 12 | 10 is 14</td></tr>
+<tr><td><code>a ^ b</code> (XOR)</td><td><code>1100 ^ 1010 = 0110</code>, so 12 ^ 10 is 6</td></tr>
+<tr><td><code>~a</code> (NOT)</td><td><code>~5</code> is −6</td></tr>
+<tr><td><code>a &lt;&lt; k</code></td><td><code>12 &lt;&lt; 1</code> is 24</td></tr>
+<tr><td><code>a &gt;&gt; k</code></td><td><code>12 &gt;&gt; 2</code> is 3</td></tr>
 </tbody>
 </table>
 
-<h2>The idea: masks</h2>
+<h2>Testing, setting and clearing one bit with a mask</h2>
 
-<p>To touch one switch, build a <strong>mask</strong> with only that bit on: <code>1 &lt;&lt; i</code> moves a single 1 into position <code>i</code>. Then combine:</p>
+<p>To change one bit without touching the others, you build a mask that has a 1 only at that position. The expression <code>1 &lt;&lt; i</code> produces it. You then combine the mask with the number using one of four operations.</p>
 
 <ul>
-<li><strong>Check</strong> bit i: <code>(x &gt;&gt; i) &amp; 1</code> is 1 if it is on.</li>
-<li><strong>Set</strong> it: <code>x | (1 &lt;&lt; i)</code>. OR with 1 forces a 1.</li>
-<li><strong>Clear</strong> it: <code>x &amp; ~(1 &lt;&lt; i)</code>. The flipped mask is 0 only at bit i, and AND with 0 forces a 0.</li>
-<li><strong>Toggle</strong> it: <code>x ^ (1 &lt;&lt; i)</code>. XOR with 1 flips a bit.</li>
+<li><strong>Check bit i:</strong> <code>(x &gt;&gt; i) &amp; 1</code> moves bit i to the lowest position and keeps only that bit, so the result is 1 if the bit is on.</li>
+<li><strong>Set bit i:</strong> <code>x | (1 &lt;&lt; i)</code>. OR with a 1 always produces a 1, and OR with the 0s of the mask leaves the other bits as they were.</li>
+<li><strong>Clear bit i:</strong> <code>x &amp; ~(1 &lt;&lt; i)</code>. The flipped mask has a 0 only at position i, and AND with 0 always produces 0, while AND with the 1s leaves the other bits as they were.</li>
+<li><strong>Toggle bit i:</strong> <code>x ^ (1 &lt;&lt; i)</code>. XOR with a 1 flips a bit, and XOR with a 0 leaves it alone.</li>
 </ul>
+
+<p>The example below stores six camera settings in one number, with the grid-lines setting at bit 0, flash at bit 1 and timer at bit 2.</p>
 
 <x-code>
 <pre lang="js">
@@ -99,13 +101,17 @@ settings = flip(settings, 1)     # flash off again: 000100, which is 4
 </pre>
 </x-code>
 
-<h2>Drop the lowest 1 bit</h2>
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(1)", "space": "O(1)", "note": "Each operation is a single instruction on one machine word." } ] }
+</script>
+</x-complexity>
 
-<x-callout type="key">
-<p><code>x &amp; (x - 1)</code> turns off the lowest 1 bit and keeps the rest.</p>
-</x-callout>
+<h2>Counting the 1 bits with x &amp; (x − 1)</h2>
 
-<p>Subtracting 1 turns the lowest 1 into 0 and every 0 below it into 1. AND with the original wipes out exactly those positions. Repeat until nothing is left and you have counted the 1 bits.</p>
+<p>The expression <code>x &amp; (x - 1)</code> turns off the lowest 1 bit of x and leaves every other bit unchanged. Subtracting 1 turns the lowest 1 into a 0 and turns every 0 below it into a 1, while the bits above it do not change. AND with the original number then keeps only the bits that were 1 in both, and the only bits that differ between x and x − 1 are the lowest 1 and the ones below it, so exactly the lowest 1 disappears.</p>
+
+<p>Repeating this until x is 0 counts the 1 bits, and the number of repetitions equals the number of 1 bits. The tracer below does it for 44.</p>
 
 <x-tracer title="Count the 1 bits in 44">
 <script type="application/json">
@@ -118,20 +124,19 @@ settings = flip(settings, 1)     # flash off again: 000100, which is 4
   ],
   "codeLang": "text",
   "steps": [
-    {"caption":"x = 44 is 101100. Count its 1 bits without checking every position.","line":1,"grid":{"rows":[[1,0,1,1,0,0]],"rowLabels":["x = 44"],"colLabels":["32","16","8","4","2","1"],"highlight":[[0,0],[0,2],[0,3]]},"vars":{"x":44,"count":0}},
-    {"caption":"Subtract 1: 43 is 101011. The lowest 1, worth 4, became 0 and the zeros below it became 1s. Nothing above changed.","line":3,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1]],"rowLabels":["x = 44","x − 1 = 43"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,3],[1,4],[1,5]]},"vars":{"x":44,"count":0}},
-    {"caption":"AND keeps a bit only where both rows have a 1. The rows differ only at and below the lowest 1, so exactly that bit disappears. x is now 40.","line":4,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1],[1,0,1,0,0,0]],"rowLabels":["x = 44","x − 1 = 43","x & (x − 1) = 40"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0],[2,2]],"dim":[[2,3]]},"vars":{"x":40,"count":1}},
-    {"caption":"Subtract 1: 39 is 100111. The lowest 1, worth 8, flips to 0 and everything below flips to 1.","line":3,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1]],"rowLabels":["x = 40","x − 1 = 39"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":40,"count":1}},
-    {"caption":"AND them: 32 is left. Count is 2.","line":4,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1],[1,0,0,0,0,0]],"rowLabels":["x = 40","x − 1 = 39","x & (x − 1) = 32"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0]],"dim":[[2,2]]},"vars":{"x":32,"count":2}},
-    {"caption":"x = 32 has a single 1. Subtract 1: 31 is 011111.","line":3,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1]],"rowLabels":["x = 32","x − 1 = 31"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,0],[1,1],[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":32,"count":2}},
-    {"caption":"AND gives 0, so the loop stops. 3 rounds: one per 1 bit, not per position.","line":4,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1],[0,0,0,0,0,0]],"rowLabels":["x = 32","x − 1 = 31","x & (x − 1) = 0"],"colLabels":["32","16","8","4","2","1"],"dim":[[2,0]]},"vars":{"x":0,"count":3}}
-
+    {"caption":"x = 44 is 101100, and the count starts at 0. The loop will drop one 1 bit per round instead of checking every position.","line":1,"grid":{"rows":[[1,0,1,1,0,0]],"rowLabels":["x = 44"],"colLabels":["32","16","8","4","2","1"],"highlight":[[0,0],[0,2],[0,3]]},"vars":{"x":44,"count":0}},
+    {"caption":"Subtracting 1 gives 43, which is 101011. The lowest 1, worth 4, became 0 and the zeros below it became 1s. Nothing above it changed.","line":3,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1]],"rowLabels":["x = 44","x − 1 = 43"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,3],[1,4],[1,5]]},"vars":{"x":44,"count":0}},
+    {"caption":"AND keeps a bit only where both rows have a 1. The rows differ only at and below the lowest 1, so exactly that bit disappears and x becomes 40.","line":4,"grid":{"rows":[[1,0,1,1,0,0],[1,0,1,0,1,1],[1,0,1,0,0,0]],"rowLabels":["x = 44","x − 1 = 43","x & (x − 1) = 40"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0],[2,2]],"dim":[[2,3]]},"vars":{"x":40,"count":1}},
+    {"caption":"Subtracting 1 from 40 gives 39, which is 100111. The lowest 1, worth 8, became 0 and everything below it became 1.","line":3,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1]],"rowLabels":["x = 40","x − 1 = 39"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":40,"count":1}},
+    {"caption":"AND leaves 32 and the count becomes 2.","line":4,"grid":{"rows":[[1,0,1,0,0,0],[1,0,0,1,1,1],[1,0,0,0,0,0]],"rowLabels":["x = 40","x − 1 = 39","x & (x − 1) = 32"],"colLabels":["32","16","8","4","2","1"],"mark":[[2,0]],"dim":[[2,2]]},"vars":{"x":32,"count":2}},
+    {"caption":"Now x = 32 has a single 1 bit, and subtracting 1 gives 31, which is 011111.","line":3,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1]],"rowLabels":["x = 32","x − 1 = 31"],"colLabels":["32","16","8","4","2","1"],"highlight":[[1,0],[1,1],[1,2],[1,3],[1,4],[1,5]]},"vars":{"x":32,"count":2}},
+    {"caption":"AND gives 0, so the loop stops with a count of 3. It ran three times because 44 has three 1 bits, not once for each of the six positions.","line":4,"grid":{"rows":[[1,0,0,0,0,0],[0,1,1,1,1,1],[0,0,0,0,0,0]],"rowLabels":["x = 32","x − 1 = 31","x & (x − 1) = 0"],"colLabels":["32","16","8","4","2","1"],"dim":[[2,0]]},"vars":{"x":0,"count":3}}
   ]
 }
 </script>
 </x-tracer>
 
-<p>It also tests for a power of two, which has exactly one 1 bit: <code>x &gt; 0 &amp;&amp; (x &amp; (x - 1)) === 0</code>.</p>
+<p>The same expression tests for a power of two, because a power of two has exactly one 1 bit and dropping it leaves 0. The test also needs <code>x &gt; 0</code>, since 0 would otherwise pass.</p>
 
 <x-code>
 <pre lang="js">
@@ -167,13 +172,19 @@ is_power_of_two(44)   # False
 </pre>
 </x-code>
 
-<p>In Python 3.10 and later, <code>x.bit_count()</code> counts for you. The "drop the lowest 1" step still matters inside other algorithms, such as <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick trees</a>.</p>
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(k)", "space": "O(1)", "note": "k is the number of 1 bits in x, so the loop runs at most as many times as x has bits." } ] }
+</script>
+</x-complexity>
 
-<h2>XOR finds the odd one out</h2>
+<p>Python 3.10 and later has <code>x.bit_count()</code>, which does the same count.</p>
 
-<p>Every sock ID in a drawer appears twice, except one: <code>[4, 7, 2, 7, 4]</code>. A number XOR itself is 0, a number XOR 0 is itself, and order does not matter. So XOR everything: pairs cancel and the lonely sock is left, with no extra memory.</p>
+<h2>Finding the value without a partner with XOR</h2>
 
-<p>Step by step: 4 ^ 7 = 3, 3 ^ 2 = 1, 1 ^ 7 = 6, 6 ^ 4 = 2. The middle values look random, but the pairs still cancel.</p>
+<p>XOR has three properties that matter here: a number XOR itself is 0, a number XOR 0 is the number itself, and the order of the operands does not matter. If you XOR every value in a list in which each value appears twice except one, every pair cancels to 0 and only the single value remains. This needs no hash map, so the memory is constant.</p>
+
+<p>For <code>[4, 7, 2, 7, 4]</code> the running result is 4, then 4 ^ 7 = 3, then 3 ^ 2 = 1, then 1 ^ 7 = 6, then 6 ^ 4 = 2.</p>
 
 <x-code>
 <pre lang="js">
@@ -196,9 +207,15 @@ unpaired([4, 7, 2, 7, 4])  # 2
 </pre>
 </x-code>
 
-<h2>Subsets as numbers</h2>
+<x-complexity>
+<script type="application/json">
+{ "rows": [ { "time": "O(n)", "space": "O(1)", "note": "One pass over the list with a single running value." } ] }
+</script>
+</x-complexity>
 
-<p>Take the sandwich extras C, E and T from <a href="/algorithms/backtracking.html">Backtracking</a>. Each sandwich is on or off per extra: a 3-bit number. Mask 5 is <code>101</code>: bits 0 and 2, so C and T. Counting from 0 to 2³ − 1 = 7 visits every sandwich once, with no recursion.</p>
+<h2>Representing subsets as masks</h2>
+
+<p>A subset of n items can be stored as an n-bit number in which bit i is 1 when item i is in the subset. For the three items C, E and T, the mask 5 is <code>101</code>, which means bits 0 and 2 are on, so the subset is C and T. Counting the mask from 0 to 2ⁿ − 1 visits every subset exactly once, and no recursion is needed. This is an alternative to the recursive approach in <a href="/algorithms/backtracking.html">Backtracking</a>.</p>
 
 <x-code>
 <pre lang="js">
@@ -230,36 +247,64 @@ subsets_by_mask(["C", "E", "T"])[5]  # ['C', 'T']
 
 <x-complexity>
 <script type="application/json">
-{
-  "rows": [
-    { "name": "Check, set, clear, flip", "time": "O(1)", "space": "O(1)", "note": "One operation on a machine word." },
-    { "name": "Count 1 bits with x & (x − 1)", "time": "O(k)", "space": "O(1)", "note": "k is the number of 1 bits, at most the number of bits in x." },
-    { "name": "Odd one out with XOR", "time": "O(n)", "space": "O(1)", "note": "One pass, no hash map needed." },
-    { "name": "All subsets by mask", "time": "O(n · 2ⁿ)", "space": "O(n)", "note": "2ⁿ masks, n bit checks each. Space excludes the output." }
-  ]
-}
+{ "rows": [ { "time": "O(n · 2ⁿ)", "space": "O(n)", "note": "There are 2ⁿ masks and each one needs n bit checks. The space does not count the output." } ] }
 </script>
 </x-complexity>
 
-<h2>Common mistakes</h2>
+<h2>Variants of the XOR and mask techniques</h2>
+
+<h3>Missing number</h3>
+
+<p>If a list holds the numbers 0 to n with one number missing, XOR all the list values together with all the indexes 0 to n. Every number that is present appears once as a value and once as an index, so it cancels, and the missing number appears only as an index and is left over.</p>
+
+<h3>Two values without a partner</h3>
+
+<p>If two different values appear once and all others appear twice, XOR of everything gives a ^ b, which is not 0 because a and b differ. Pick any bit that is 1 in a ^ b, for example the lowest one, <code>d = x &amp; -x</code>. That bit is 1 in one of the two values and 0 in the other, so you can split the list into two groups by that bit, and XOR each group separately to get a and b. Each group contains one lone value and some complete pairs.</p>
+
+<h3>A value that appears three times</h3>
+
+<p>If every value appears three times except one that appears once, plain XOR does not work, because three equal values XOR to the value itself and not to 0. The usual solution counts, for each bit position, how many numbers have that bit on and takes that count modulo 3. The remaining bits form the lone value. This takes O(32 · n) time and O(1) space.</p>
+
+<h3>The lowest 1 bit and two's complement</h3>
+
+<p>The expression <code>x &amp; -x</code> keeps only the lowest 1 bit of x. Computers store a negative number as its two's complement, which is the bits of the number flipped, plus 1. Flipping turns the lowest 1 into a 0 with 1s below it, and adding 1 carries back up to exactly that position, so -x matches x at the lowest 1 and is the opposite of x everywhere above it. For 44, which is <code>101100</code>, <code>x &amp; -x</code> is 4. Fenwick trees use this form.</p>
+
+<h3>When bits do not apply</h3>
+
+<p>Bit tricks do not help when the values are not integers, when you need to know which items form a pair and not just the lone value, or when the set has more than about 20 items. A subset mask needs 2ⁿ iterations, so it is only practical for n up to roughly 20, and a hash map or a sorted list is simpler for most other counting problems.</p>
+
+<h2>Pitfalls in JavaScript and Python</h2>
 
 <x-callout type="mistake" title="Operator precedence in JavaScript">
-<p>In JavaScript, <code>x &amp; 1 === 0</code> means <code>x &amp; (1 === 0)</code>, always 0, because comparison binds tighter than <code>&amp;</code>, <code>|</code> and <code>^</code>. Python is the other way round. Always add brackets: <code>(x &amp; 1) === 0</code>.</p>
+<p>In JavaScript, <code>x &amp; 1 === 0</code> is parsed as <code>x &amp; (1 === 0)</code>, which is always 0, because comparison binds tighter than <code>&amp;</code>, <code>|</code> and <code>^</code>. Python has the opposite order, so it behaves as you would expect. Put brackets around every bit operation that is part of a larger expression, such as <code>(x &amp; 1) === 0</code>.</p>
 </x-callout>
 
 <x-callout type="mistake" title="JavaScript bit operators use 32 bits">
-<p>JavaScript bit operations work on 32-bit signed integers. <code>1 &lt;&lt; 31</code> is −2147483648, and <code>2 ** 32 | 0</code> is 0. Keep masks under 31 bits, use <code>&gt;&gt;&gt;</code> for an unsigned right shift, or use <code>BigInt</code>.</p>
+<p>JavaScript converts operands to 32-bit signed integers before a bit operation. As a result, <code>1 &lt;&lt; 31</code> is −2147483648 and <code>2 ** 32 | 0</code> is 0. Keep masks under 31 bits, use <code>&gt;&gt;&gt;</code> when you need an unsigned right shift, or use <code>BigInt</code> for larger values.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Negative numbers in Python">
-<p>Python integers have no fixed width. A negative number acts as if it had infinitely many 1 bits on the left, so <code>~5</code> is −6 and the counting loop never ends for a negative input. Mask to a width first, such as <code>x &amp; 0xFFFFFFFF</code>.</p>
+<p>Python integers have no fixed width, so a negative number behaves as if it had infinitely many 1 bits on the left. For example <code>~5</code> is −6, and <code>count_ones</code> never finishes on a negative input because x never reaches 0. If the problem uses 32-bit integers, mask first with <code>x &amp; 0xFFFFFFFF</code>.</p>
 </x-callout>
 
-<x-callout type="real-world">
-<p>Unix file permissions use three bits per kind of user: read, write and execute. A mode digit of 7 means all three (4 + 2 + 1). Databases, compilers and network code use bit masks for flags because they are small and fast.</p>
+<x-callout type="mistake" title="Shifting a negative number right">
+<p>The operator <code>&gt;&gt;</code> keeps the sign bit, so <code>-8 &gt;&gt; 1</code> is −4 and repeated shifts end at −1, not 0. A loop such as <code>while (x) { x &gt;&gt;= 1; }</code> therefore never ends for a negative x in JavaScript. Use <code>&gt;&gt;&gt;</code> in JavaScript, or mask to a fixed width in Python, when you walk through all the bits of a possibly negative number.</p>
 </x-callout>
 
-<h2>Check yourself</h2>
+<h2>In the interview</h2>
+
+<p>The signals in the problem statement are the words "without extra space", "every element appears twice except one", "power of two", "number of 1 bits" or "set bits", "flags" or "permissions", and "all subsets" with a small n. A constraint of n at most about 20 often means a bitmask is intended. Say that you considered the hash-map or sorting solution first and what the bit version saves.</p>
+
+<p>Questions to expect:</p>
+
+<ul>
+<li><strong>"Can you do it without extra memory?"</strong> For a lone value among pairs, XOR all the elements. The pairs cancel, so one integer of memory is enough, and the time is O(n).</li>
+<li><strong>"How do you check whether a number is a power of two?"</strong> A power of two has exactly one 1 bit, so <code>x &gt; 0 &amp;&amp; (x &amp; (x - 1)) === 0</code> works. The <code>x &gt; 0</code> part is needed because 0 would otherwise pass.</li>
+<li><strong>"How do you count the 1 bits faster than checking every position?"</strong> Repeat <code>x &amp;= x - 1</code> until x is 0. It runs once per 1 bit.</li>
+<li><strong>"Two numbers appear once and the rest appear twice. Find both."</strong> XOR everything to get a ^ b, pick a bit that is set in that result, and split the list by that bit. XOR each group separately, and each group yields one of the two numbers.</li>
+<li><strong>"What about negative numbers?"</strong> Say which language and width you are assuming. JavaScript uses 32-bit signed integers, Python integers are unbounded and need a mask, and in both languages a right shift of a negative number keeps the sign, so use an unsigned shift or a mask.</li>
+<li><strong>"When would you use bits instead of a set or a boolean array?"</strong> Use bits when the universe is small and fixed, for example at most 20 to 30 items, because the whole state fits in one integer that can be used as a key in a dynamic programming table. For a larger universe, a boolean array or a hash set is clearer.</li>
+</ul>
 
 <x-quiz>
 <script type="application/json">
@@ -268,25 +313,33 @@ subsets_by_mask(["C", "E", "T"])[5]  # ['C', 'T']
     {
       "question": "What is <code>13 &amp; 6</code>?",
       "options": [
-        { "text": "4", "correct": true, "why": "1101 &amp; 0110: only the bit worth 4 is on in both." },
-        { "text": "15", "why": "That is <code>13 | 6</code>: bits on in either number." },
-        { "text": "11", "why": "That is <code>13 ^ 6</code>: bits that differ." }
+        { "text": "4", "correct": true, "why": "13 is 1101 and 6 is 0110, and only the bit worth 4 is on in both." },
+        { "text": "15", "why": "That is <code>13 | 6</code>, which keeps the bits that are on in either number." },
+        { "text": "11", "why": "That is <code>13 ^ 6</code>, which keeps the bits that differ." }
       ]
     },
     {
       "question": "Why does <code>isPowerOfTwo</code> check <code>x &gt; 0</code> as well as <code>(x &amp; (x - 1)) === 0</code>?",
       "options": [
-        { "text": "Because 0 &amp; (0 − 1) is 0, and 0 is not a power of two", "correct": true, "why": "Right. Without it the test would wrongly say yes for 0." },
+        { "text": "Because 0 &amp; (0 − 1) is 0, and 0 is not a power of two", "correct": true, "why": "Without the check, the test would wrongly report that 0 is a power of two." },
         { "text": "Because 1 would fail without it", "why": "1 &amp; 0 is 0 and 1 is 2⁰, so 1 passes either way." },
-        { "text": "For speed", "why": "It is for correctness: without it, 0 passes." }
+        { "text": "Because the check makes the function faster", "why": "The check exists for correctness, since 0 would pass the other condition." }
       ]
     },
     {
-      "question": "XOR all of <code>[9, 3, 9, 5, 3]</code>. What do you get?",
+      "question": "What do you get by XOR-ing all of <code>[9, 3, 9, 5, 3]</code>?",
       "options": [
-        { "text": "0", "why": "Only pairs cancel. 5 appears once, so it survives." },
-        { "text": "5", "correct": true, "why": "The 9s cancel and the 3s cancel, leaving 5." },
-        { "text": "29", "why": "That is the sum." }
+        { "text": "0", "why": "Only values that appear twice cancel, and 5 appears once, so it survives." },
+        { "text": "5", "correct": true, "why": "The two 9s cancel and the two 3s cancel, which leaves 5." },
+        { "text": "29", "why": "That is the sum of the numbers, and XOR does not add them." }
+      ]
+    },
+    {
+      "question": "Every number in a list appears three times except one that appears once. Why does XOR-ing the whole list fail to find the single number?",
+      "options": [
+        { "text": "Three equal values XOR to the value itself, not to 0", "correct": true, "why": "Only an even number of copies cancels, so every triple leaves its value in the result." },
+        { "text": "XOR only works on sorted lists", "why": "XOR does not depend on order." },
+        { "text": "XOR overflows for large lists", "why": "XOR never produces a value larger than the widest operand." }
       ]
     }
   ]
@@ -296,4 +349,4 @@ subsets_by_mask(["C", "E", "T"])[5]  # ['C', 'T']
 
 <h2>What to practise next</h2>
 
-<p>Bit masks return in harder <a href="/algorithms/dp-introduction.html">dynamic programming</a> problems, where a mask records which items are used. The lowest-bit trick powers <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick trees</a>.</p>
+<p>Bit masks come back in harder <a href="/algorithms/dp-introduction.html">dynamic programming</a> problems, where a mask records which items have been used, and the lowest-bit trick is the core of <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick trees</a>.</p>

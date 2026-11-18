@@ -1,26 +1,44 @@
 <!--
 {
   "title": "Consistent Hashing",
-  "description": "Spread keys over servers so that adding or removing one moves only its share: the hash ring, virtual nodes, and what moves when a node joins or dies.",
-  "minutes": 14,
+  "description": "How consistent hashing places keys on a changing set of servers, how virtual nodes even out the load, and what interviewers ask about it.",
+  "minutes": 16,
   "tags": ["consistent hashing", "partitioning", "caching", "building blocks"]
 }
 -->
-<p>A cache cluster has 4 nodes holding 10 million keys and serves 50,000 reads a second. 95% are hits, so the database sees 50,000 × 0.05 = 2,500 reads a second. Each key's node is <code>hash(key) mod 4</code>. Traffic grows, so someone adds a fifth node and switches to <code>mod 5</code>.</p>
+<p>Consistent hashing is a way of deciding which server stores or serves each key so that adding or removing a server moves only a small share of the keys. It is used wherever data or traffic is spread over a set of machines that changes over time, such as a cache cluster or a partitioned key-value store.</p>
 
-<p>A key stays put only if its hash leaves the same remainder for 4 and 5: 4 values in every 20. So 80% of keys point at a node that lacks them. The hit rate falls to about 0.95 × 0.2 = 19%, and the database goes from 2,500 to 50,000 × 0.81 = 40,500 reads a second. Adding capacity caused the outage.</p>
+<p>The simple alternative is <code>hash(key) % N</code>, where N is the number of servers. It works until N changes. With 4 servers going to 5, a key keeps its server only when its hash gives the same remainder for 4 and 5, which is true for about 20% of keys. The other 80% now point at a server that does not hold them. In a cache, those lookups all miss and fall through to the database, so adding a server to relieve load can overload the database instead.</p>
 
-<h2>The idea</h2>
+<h2>Where consistent hashing sits in a system</h2>
 
-<p>Consistent hashing places keys so that when a node joins or leaves, only about 1/N of them move: the new fifth node takes its fair share, and every other key stays put.</p>
+<x-arch caption="Each app server holds the same ring and uses it to pick the cache node for a key, so no central router is involved.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Clients", "kind": "client", "col": 0, "row": 1 },
+    { "id": "app", "label": "App servers (hold the ring)", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "a", "label": "Cache node A", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "b", "label": "Cache node B", "kind": "cache", "col": 2, "row": 1 },
+    { "id": "c", "label": "Cache node C", "kind": "cache", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "app" },
+    { "from": "app", "to": "a" },
+    { "from": "app", "to": "b" },
+    { "from": "app", "to": "c" }
+  ]
+}
+</script>
+</x-arch>
 
-<p>Use it wherever keys spread over a changing set of machines: caches, partitioned key-value stores, sticky load balancing. The cost is a little bookkeeping in every client.</p>
+<p>The ring is a small data structure kept in the client or in a routing layer. Given a key, it returns the server that owns it, without asking any other machine. In a key-value store the servers are the storage nodes, and in a cache they are the cache nodes. Some load balancers use it to send requests for the same key to the same backend.</p>
 
-<h2>The ring</h2>
+<h2>The hash ring</h2>
 
-<p>Hash server names and keys into one range of numbers, bent into a circle. Real rings use 0 to 2<sup>32</sup> − 1 or more; by hand, use 0 to 99. A key belongs to the first server clockwise from it, wrapping past 99 to 0.</p>
+<p>The hash function maps both server names and keys to numbers in the same fixed range, and the range is treated as a circle, so the largest number is followed by zero. A key belongs to the first server found by walking clockwise from the key's position. Real rings use a range such as 0 to 2<sup>32</sup> &minus; 1, and the examples here use 0 to 99.</p>
 
-<x-figure caption="Each key belongs to the next server clockwise: 5 → A, 25 → B, 52 and 68 → C, and 90 wraps past 0 to A.">
+<x-figure caption="Each key belongs to the first server clockwise from it. Keys 5 and 90 belong to A, key 25 to B, and keys 52 and 68 to C.">
 <svg viewBox="0 0 400 270" aria-label="A ring of positions 0 to 99. Servers A at 10, B at 40 and C at 75 sit on the ring. Keys at 5, 25, 52, 68 and 90 each belong to the next server clockwise.">
   <circle cx="200" cy="135" r="95" class="f-none s-line" stroke-width="2"/>
   <line x1="200" y1="32" x2="200" y2="48" class="s-muted" stroke-width="2"/>
@@ -47,9 +65,11 @@
 </svg>
 </x-figure>
 
-<p>Now watch what moves when a server joins, then leaves.</p>
+<h2>What moves when a server joins or leaves</h2>
 
-<x-tracer title="Join and leave on a ring of 100">
+<p>When a server joins, it takes over only the range between its predecessor on the ring and its own position, and the keys in that range come from one neighbour. When a server leaves, its range passes to the next server clockwise. Every other key keeps its owner. On average, adding the (N+1)th server moves about 1/(N+1) of the keys, which is the share the new server should hold anyway, while <code>mod N</code> would move about N/(N+1) of them.</p>
+
+<x-tracer title="A server joins and another leaves">
 <script type="application/json">
 {
   "steps": [
@@ -68,7 +88,7 @@
       "vars": { "keys moved": 0 }
     },
     {
-      "caption": "Server D joins at 60, taking positions 41 to 60 from C. Only keys there can move.",
+      "caption": "Server D joins at position 60 and takes positions 41 to 60 from C. Only keys in that range can move.",
       "graph": {
         "directed": true,
         "nodes": [
@@ -82,7 +102,7 @@
       "vars": { "keys moved": 0 }
     },
     {
-      "caption": "Key 52 moves from C to D. Key 68, past 60, stays; A and B are untouched. 1 of 5 keys moved.",
+      "caption": "Key 52 moves from C to D. Key 68 is past 60, so it stays with C, and A and B are untouched. One of the five keys moved.",
       "graph": {
         "directed": true,
         "nodes": [
@@ -98,7 +118,7 @@
       "vars": { "keys moved": 1 }
     },
     {
-      "caption": "B leaves. Its positions, 11 to 40, go to D, next clockwise. Only key 25 moves.",
+      "caption": "B leaves. Its positions 11 to 40 go to D, the next server clockwise, so only key 25 moves.",
       "graph": {
         "directed": true,
         "nodes": [
@@ -114,7 +134,7 @@
       "vars": { "keys moved": 2 }
     },
     {
-      "caption": "The catch: D now owns 11 to 60, 50 of 100 positions, C only 15. One point per server gives lopsided shares, and a leaving server dumps its load on one neighbour.",
+      "caption": "D now owns positions 11 to 60, which is half the ring, while C owns only 15 positions. With one point per server the shares are uneven, and a server that leaves passes all of its keys to a single neighbour.",
       "graph": {
         "directed": true,
         "nodes": [
@@ -133,17 +153,19 @@
 </script>
 </x-tracer>
 
+<p>The last step of the tracer shows a flaw in the basic ring. With only one position per server, the ranges can be very different in size, and a leaving server hands its whole range to one neighbour, which may then be overloaded. Virtual nodes fix this.</p>
+
 <h2>Virtual nodes</h2>
 
-<p>The fix: give each server many points, called virtual nodes, by hashing <code>"A#0"</code>, <code>"A#1"</code>, up to <code>"A#99"</code>. Each server owns 100 small scattered arcs instead of one big one:</p>
+<p>A virtual node is one of many positions on the ring that belong to the same physical server. Instead of hashing <code>"A"</code> once, you hash <code>"A#0"</code>, <code>"A#1"</code> and so on up to <code>"A#99"</code>, and each result is a point on the ring that maps back to server A. Each server then owns many small ranges scattered around the ring instead of one large range. This has three effects:</p>
 
 <ul>
-<li><strong>Even shares.</strong> Summing many random arcs, a share's deviation from average shrinks roughly as 1 ÷ √v for v points: about 10% at 100.</li>
-<li><strong>Even recovery.</strong> A leaving server's 100 arcs go to many neighbours, not one.</li>
-<li><strong>Weights.</strong> A server with twice the memory gets 200 points and about twice the keys.</li>
+<li>The share of keys per server is much closer to equal. The random variation in a server's share shrinks roughly as 1/&radic;v for v points, which is about 10% at 100 points.</li>
+<li>When a server leaves, its many small ranges go to many different neighbours, so no single server takes the whole load.</li>
+<li>A server with twice the memory can be given twice as many points, and it will hold about twice as many keys.</li>
 </ul>
 
-<p>A lookup <a href="/algorithms/binary-search.html">binary-searches</a> the sorted points for the first at or after the key's hash, wrapping to the start. The hash must mix well (here, the first 32 bits of MD5), or similar names like <code>"A#0"</code> and <code>"A#1"</code> can bunch. See also <a href="/algorithms/hash-tables.html">hash tables</a>.</p>
+<p>A lookup keeps all the points in a sorted array and uses <a href="/algorithms/binary-search.html">binary search</a> to find the first point at or after the key's hash, wrapping to the start of the array if there is none. The hash function must spread values evenly.</p>
 
 <x-code title="A ring with virtual nodes">
 <pre lang="js">
@@ -203,146 +225,98 @@ class Ring:
 </pre>
 </x-code>
 
-<h2>When a cache node dies</h2>
+<h2>Replication on the ring</h2>
 
-<p>Back to the 4-node cache, now on a ring with 100 virtual nodes each. Every app server holds the same ring.</p>
+<p>A key can be stored on more than one server by copying it to the next servers clockwise from its owner. With a replication factor of 3, a key is stored on the first three distinct servers found when walking from its position. With virtual nodes the walk must skip points that belong to a server already chosen, otherwise two copies could land on the same machine. If a server fails, the copies on the next servers already hold its keys, so reads can continue without moving data first. <a href="/system-design/replication.html">Replication</a> covers the consistency questions that come with it.</p>
 
-<x-tracer title="A cache node dies, then returns">
-<script type="application/json">
-{
-  "arch": {
-    "nodes": [
-      { "id": "app", "label": "App servers", "kind": "service", "col": 0, "row": 1 },
-      { "id": "a", "label": "Cache A", "kind": "cache", "col": 2, "row": 0 },
-      { "id": "b", "label": "Cache B", "kind": "cache", "col": 2, "row": 1 },
-      { "id": "c", "label": "Cache C", "kind": "cache", "col": 2, "row": 2 },
-      { "id": "d", "label": "Cache D", "kind": "cache", "col": 2, "row": 3 },
-      { "id": "db", "label": "Database", "kind": "database", "col": 0, "row": 3 }
-    ],
-    "edges": [
-      { "from": "app", "to": "a" },
-      { "from": "app", "to": "b" },
-      { "from": "app", "to": "c" },
-      { "from": "app", "to": "d" },
-      { "from": "app", "to": "db" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "An app server hashes <code>user:7</code>, binary-searches its ring, and gets cache C. Hit.",
-      "arch": { "active": ["app", "c", ["app", "c"]], "notes": { "c": "hit user:7" } },
-      "vars": { "db reads/s": "2,500" }
-    },
-    {
-      "caption": "Cache C dies. Its reads time out.",
-      "arch": { "fail": ["c", ["app", "c"]], "active": ["app"] },
-      "vars": { "db reads/s": "2,500" }
-    },
-    {
-      "caption": "Health checks remove C from every ring. Its 100 arcs pass to A, B and D in roughly equal parts.",
-      "arch": { "fail": ["c"], "active": ["a", "b", "d"], "dim": [["app", "c"]], "notes": { "a": "+1/12 of keys", "b": "+1/12 of keys", "d": "+1/12 of keys" } },
-      "vars": { "db reads/s": "2,500" }
-    },
-    {
-      "caption": "C held about a quarter of the keys, and their new owners lack them. Those reads miss: 50,000 × (0.05 + 0.95 × 0.25) ≈ 14,000 database reads a second until refilled.",
-      "arch": { "fail": ["c"], "active": ["db", ["app", "db"]], "dim": [["app", "c"]], "notes": { "db": "≈ 14,000/s" } },
-      "vars": { "db reads/s": "≈ 14,000" }
-    },
-    {
-      "caption": "Keys on A, B and D still hit. With <code>mod N</code>, going from 4 to 3 nodes would move 75% of keys: about 38,000 database reads a second.",
-      "arch": { "fail": ["c"], "mark": ["a", "b", "d"], "dim": [["app", "c"]] },
-      "vars": { "db reads/s": "≈ 14,000" }
-    },
-    {
-      "caption": "C restarts and its arcs move back; only those keys miss. Start it empty: its old values may be stale.",
-      "arch": { "active": ["c", ["app", "c"]], "mark": ["a", "b", "d"], "notes": { "c": "rejoins empty" } },
-      "vars": { "db reads/s": "brief rise" }
-    }
-  ]
-}
-</script>
-</x-tracer>
+<h2>Alternatives to the ring</h2>
 
-<h2>Other ways to place keys</h2>
+<h3>hash(key) % N</h3>
 
-<x-tradeoffs caption="Mapping keys to a changing set of nodes">
+<p>This is the simplest method: one line of code, an even spread, and no data structure. It is the right choice when the number of servers never changes. Its problem is the one described at the top: changing N moves almost every key.</p>
+
+<h3>Rendezvous hashing</h3>
+
+<p>Rendezvous hashing, also called highest random weight hashing, has no ring. To place a key, compute a score for every server from the pair (key, server), for example <code>hash(key + server)</code>, and pick the server with the highest score. When a server leaves, only the keys that had it as the top scorer move, and each of them moves to its second-highest scorer, so movement is minimal and spread across all servers. When a server joins, it takes exactly the keys for which it now scores highest. The load is even without virtual nodes, and the code is short. The cost is that each lookup computes N scores, so it is O(N). That is fine for tens of servers and slow for thousands. Pick it for a small cluster where you want even load and simple code.</p>
+
+<h3>Fixed hash slots</h3>
+
+<p>With fixed slots, the key space is cut into a fixed number of slots, for example 16,384, using <code>hash(key) % slots</code>. A table assigns each slot to a server. Adding a server means moving a chosen set of slots to it, and removing a server means reassigning its slots. Because the number of slots never changes, a key always stays in the same slot, and only whole slots move. Some distributed caches and databases work this way. It gives full control over what moves and when. The cost is that the slot table must be stored, versioned and sent to every client, which needs a coordinator or a gossip protocol.</p>
+
+<x-tradeoffs caption="Summary of the ways to map keys to servers">
 <script type="application/json">
 {
   "options": [
     {
       "name": "hash mod N",
-      "good": "One line of code, even.",
+      "good": "It is one line of code and spreads keys evenly.",
       "bad": "Changing N moves almost every key.",
-      "pick": "The node count never changes."
+      "pick": "The number of servers never changes."
     },
     {
       "name": "Ring with virtual nodes",
-      "good": "Joins and leaves move about 1/N of keys. Supports weights. Each client computes placement alone.",
-      "bad": "Needs many points per node. Every client must see the same membership.",
-      "pick": "Caches and leaderless stores with nodes coming and going. The usual answer.",
+      "good": "A join or leave moves about 1/N of the keys, weights are easy, and each client computes placement alone.",
+      "bad": "It needs many points per server, and every client must hold the same membership.",
+      "pick": "Caches and leaderless stores whose servers come and go, which is the most common case.",
       "default": true
     },
     {
       "name": "Rendezvous hashing",
-      "good": "Score each node with hash(key, node); take the highest. Even, minimal movement, no ring.",
-      "bad": "Each lookup scores every node: O(N).",
-      "pick": "Small node counts: tens of servers."
+      "good": "It spreads load evenly with minimal movement and no ring to maintain.",
+      "bad": "Each lookup scores every server, so it costs O(N).",
+      "pick": "A cluster of tens of servers."
     },
     {
-      "name": "Fixed partition table",
-      "good": "Hash into many fixed partitions; a table maps them to nodes. Moves are explicit.",
-      "bad": "The table must be stored, versioned and distributed.",
-      "pick": "Databases that move data deliberately, as in <a href=\"/system-design/sharding-and-partitioning.html\">sharding</a>."
+      "name": "Fixed hash slots",
+      "good": "Data moves only when you decide, one slot at a time.",
+      "bad": "The slot table must be stored and distributed to every client.",
+      "pick": "Databases that move data between servers deliberately."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<h2>Numbers worth remembering</h2>
+<h2>Hot keys, membership changes and failures</h2>
 
-<ul>
-<li>Adding the (N+1)th node moves about 1/(N+1) of keys with consistent hashing; with <code>mod N</code>, about N/(N+1).</li>
-<li>Virtual nodes: 100 to 200 per server is common; spread shrinks as 1 ÷ √v.</li>
-</ul>
+<h3>Consistent hashing does not guarantee balanced load</h3>
 
-<x-estimate title="What mod N moves">
-<script type="application/json">
-{
-  "question": "A cache uses hash(key) mod 4 over 10 million keys, then switches to mod 5. How many keys now map to a different node?",
-  "givens": ["10 million keys, hashes spread evenly", "Old placement: hash mod 4. New: hash mod 5"],
-  "unit": "count",
-  "answer": "8 million",
-  "accept": ["3 million", "10 million"],
-  "steps": ["A key stays only if hash mod 4 = hash mod 5: in any 20 consecutive hashes, for 0, 1, 2 and 3 only", "Moved: 10 million × 16/20 = 8 million", "With consistent hashing: about 10 million ÷ 5 = 2 million"]
-}
-</script>
-</x-estimate>
+<p>The ring balances the number of keys per server, and only approximately. It does not balance traffic. If a few keys are read far more often than the rest, the servers that own them are busy, whatever the ring looks like. Adding virtual nodes does not help because a single key still lives on one server (and on its replicas). The fixes are to keep a short-lived copy of the hot key in each app server's memory, or to store the hot key under several names, such as <code>key#1</code> to <code>key#5</code>, so that its reads spread over several servers.</p>
+
+<h3>Clients that disagree about membership</h3>
+
+<p>Each client builds its own ring from a list of servers, and that list reaches different clients at different times. For a short period two clients can send the same key to different servers. For a cache this causes some extra misses and possibly a stale copy. For a store that holds the only copy of the data it is more serious, so such systems use a coordinator or a consensus service to publish membership changes, or they send a request to the key's true owner, which forwards it if the ring has changed.</p>
+
+<h3>A failed server and its return</h3>
+
+<p>When a cache node fails and is removed from the ring, its keys move to other nodes where they are missing, so those reads go to the database until the cache is filled again. This is about 1/N of the traffic, not all of it. If the node comes back with its old contents, some values may be out of date because writes during its absence went elsewhere. It should therefore be started empty.</p>
+
+<h3>Moving data for stores that keep it</h3>
+
+<p>A cache can simply let moved keys miss. A key-value store cannot, because the data exists only on its servers. When a server joins, the data in its new ranges must be streamed to it before it takes over those ranges, and the old owner deletes it afterwards.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring it up when keys spread over nodes that come and go. State the problem in numbers, then name virtual nodes.</p>
+<p>Bring up consistent hashing when keys are spread over servers that can be added, removed or replaced. Say that <code>hash mod N</code> would move most keys on every change, name the ring with virtual nodes, and add that hot keys still need a separate fix. For a small cluster, or when you control data movement, mention rendezvous hashing or fixed slots.</p>
 
-<x-interview title="Scaling a cache cluster">
-<x-interviewer>The cache needs a fifth node. Any problem?</x-interviewer>
-<x-you>With <code>hash mod N</code>, 4 to 5 remaps 80% of keys and the database takes most reads at once. With consistent hashing and about 100 virtual nodes per server, the new node takes roughly a fifth of the keys, evenly from the others.</x-you>
-<x-interviewer>Does that fix a single very hot key?</x-interviewer>
-<x-you>No, one key still lives on one node. I'd cache the hot key in each app server's memory for a few seconds, or replicate it to several nodes and pick one at random.</x-you>
-<x-coach>It quantifies the failure, picks the fix, and knows its limit.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do clients agree on the ring?"</strong> Membership comes from a configuration service or gossip. During changes clients briefly disagree; a few requests miss.</li>
-<li><strong>"How does replication fit?"</strong> Store each key on the next 3 distinct servers clockwise, skipping repeat points of a chosen server.</li>
+<li><strong>"Why not use hash mod N?"</strong> When N changes, most keys get a new server. For a cache that means most lookups miss at once, and for a store it means most data would have to be copied. Consistent hashing moves only about 1/N of the keys.</li>
+<li><strong>"Why do you need virtual nodes?"</strong> With one point per server the ranges are random and can differ a lot in size, and a failed server hands its whole range to one neighbour. With around 100 points per server, the shares are close to equal and a failure spreads over many servers.</li>
+<li><strong>"What happens when a node is added?"</strong> It takes over ranges from several neighbours, about 1/(N+1) of the keys in total. In a cache those keys miss once and are reloaded. In a store the data for those ranges is streamed to the new node before it is used.</li>
+<li><strong>"How do you replicate with a ring?"</strong> Store each key on the next few distinct servers clockwise from its position, skipping points that belong to servers already chosen. If a server fails, the next servers on the walk already hold its keys.</li>
+<li><strong>"Does it fix hot keys?"</strong> No. It balances the number of keys, not the traffic. A hot key needs a local cache in the app servers or several copies under different names.</li>
+<li><strong>"How do clients learn the ring?"</strong> They get the list of servers from a configuration service or through gossip between servers, and each client builds the same ring from it. Clients can disagree for a short time after a change, which a cache tolerates as a few extra misses.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Thinking it balances hot keys">
-<p>It balances key counts, not traffic. A key read 20,000 times a second still lands on one node.</p>
-</x-callout>
+<x-interview title="Scaling a cache cluster" tone="strong">
+<x-interviewer>The cache needs a fifth node. Is that a problem?</x-interviewer>
+<x-you>With <code>hash mod N</code> it would be, because going from 4 to 5 nodes remaps about 80% of the keys and the database would receive most reads at once. I would place keys with consistent hashing and about 100 virtual nodes per server, so the new node takes roughly a fifth of the keys, a little from each existing node.</x-you>
+<x-interviewer>Does that fix a single very hot key?</x-interviewer>
+<x-you>No, because one key still lives on one node. I would keep a copy of that key in each app server's memory for a few seconds, or store it under several names so that its reads spread across nodes.</x-you>
+<x-coach>The answer shows what goes wrong with the simple method, picks the fix, and states what the fix does not cover.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
@@ -351,17 +325,25 @@ class Ring:
     {
       "question": "Ring of 0 to 99 with servers at 20, 50 and 80. Which server owns key 95?",
       "options": [
-        { "text": "The server at 80", "why": "Ownership goes to the next server clockwise, not the previous." },
-        { "text": "The server at 20", "correct": true, "why": "Nothing between 95 and 99, so the walk wraps past 0 to 20." },
+        { "text": "The server at 80", "why": "Ownership goes to the next server clockwise, not the previous one." },
+        { "text": "The server at 20", "correct": true, "why": "There is no server between 95 and 99, so the walk wraps past 0 and reaches 20." },
         { "text": "The server at 50", "why": "The walk stops at the first server it meets, which is 20." }
       ]
     },
     {
       "question": "A 9-node ring with virtual nodes gets a tenth node. About what share of keys move?",
       "options": [
-        { "text": "About 10%", "correct": true, "why": "The new node takes its fair share, 1/10." },
-        { "text": "About 90%", "why": "That is what <code>mod N</code> would move going from 9 to 10." },
-        { "text": "None until a node fails", "why": "The new node owns arcs immediately." }
+        { "text": "About 10%", "correct": true, "why": "The new node takes its fair share, which is 1/10 of the keys." },
+        { "text": "About 90%", "why": "That is roughly what hash mod N would move when going from 9 to 10 servers." },
+        { "text": "None until a node fails", "why": "The new node owns ranges on the ring as soon as it is added." }
+      ]
+    },
+    {
+      "question": "A cluster of 20 servers needs even load and minimal key movement, and you want the least code. Which method fits?",
+      "options": [
+        { "text": "Rendezvous hashing", "correct": true, "why": "Scoring 20 servers per lookup is cheap, and no ring or virtual nodes are needed." },
+        { "text": "hash mod N", "why": "It moves almost every key whenever the server count changes." },
+        { "text": "A ring with one point per server", "why": "The ranges would be uneven, so the load would be uneven too." }
       ]
     }
   ]
@@ -371,4 +353,4 @@ class Ring:
 
 <h2>What to practise next</h2>
 
-<p>Next, <a href="/system-design/blob-storage.html">blob storage</a> moves from rows to large files. A ring with replication is the core of <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>
+<p>Read <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a> to see how databases split data, and <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a> to use a ring with replication.</p>

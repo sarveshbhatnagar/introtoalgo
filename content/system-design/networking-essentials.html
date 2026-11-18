@@ -1,208 +1,190 @@
 <!--
 {
   "title": "Networking Essentials",
-  "description": "What happens between typing a URL and seeing a page, which latency numbers matter, and when to pick HTTP, gRPC or WebSockets in an interview.",
-  "minutes": 13,
-  "tags": ["networking", "building blocks", "latency", "http"]
+  "description": "How to choose between TCP, UDP, HTTP, gRPC and WebSockets, what DNS and TLS do, and how to justify a protocol choice in an interview.",
+  "minutes": 11,
+  "tags": ["networking", "building blocks", "protocols", "http"]
 }
 -->
-<p>Your server builds the product page in 30 ms. A shopper 8,000 km away still waits about 270 ms for the first byte, even with DNS cached. Almost 90% of that is three trips across the ocean and back.</p>
+<p>Every connection between a client and a service, or between two services, runs on a protocol, and the protocol decides how data is delivered, how many messages are in flight at once and who is allowed to send first. In a system design interview you are expected to pick a protocol for each connection in your design and to say why. The choice is usually between TCP, UDP, HTTP, gRPC and WebSockets.</p>
 
-<p>Where that time goes decides where servers live and whether you need a CDN.</p>
+<p>If you choose badly, the symptoms show up in the product. A video call over TCP stutters whenever a packet is lost, and a chat built on repeated HTTP polling wastes most of its requests.</p>
 
-<h2>The idea</h2>
+<h2>Where these protocols sit</h2>
 
-<p>For small requests, distance costs more than bandwidth. You pay in <strong>round trips</strong>: a message out, a reply back. Light in fibre covers about 200 km per millisecond, so a round trip over 8,000 km takes at least 2 × 8,000 ÷ 200 = 80 ms (real routes bend, so more).</p>
-
-<p>A fresh HTTPS request needs three round trips: open the connection, set up encryption, send the request. 3 × 80 = 240 ms, plus 30 ms on the server, is the 270 ms above. Most tricks in this module cut or shorten round trips.</p>
-
-<h2>What happens when you open a URL</h2>
-
-<x-tracer title="Opening https://shop.example.com from 8,000 km away">
+<x-arch caption="Clients reach the system over HTTP or WebSockets, and services call each other over gRPC.">
 <script type="application/json">
 {
-  "arch": {
-    "nodes": [
-      { "id": "browser", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
-      { "id": "resolver", "label": "DNS resolver", "kind": "dns", "col": 1, "row": 0 },
-      { "id": "auth", "label": "Authoritative DNS", "kind": "dns", "col": 2, "row": 0 },
-      { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
-      { "id": "app", "label": "App server", "kind": "service", "col": 2, "row": 1 }
-    ],
-    "edges": [
-      { "from": "browser", "to": "resolver", "label": "where is shop?" },
-      { "from": "resolver", "to": "auth" },
-      { "from": "browser", "to": "lb", "label": "TCP, TLS, HTTP" },
-      { "from": "lb", "to": "app" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "Nothing is cached, so the browser asks a nearby DNS resolver for the address of <code>shop.example.com</code>.",
-      "arch": { "active": ["browser", "resolver", ["browser", "resolver"]], "dim": ["lb", "app"] },
-      "vars": { "round trips to server": 0, "elapsed ms": 0 }
-    },
-    {
-      "caption": "The domain's authoritative servers return <code>203.0.113.10</code> with a TTL of 300 seconds. Say the lookup takes 40 ms.",
-      "arch": { "active": ["resolver", "auth", ["resolver", "auth"]], "dim": ["lb", "app"], "notes": { "auth": "TTL 300 s" } },
-      "vars": { "round trips to server": 0, "elapsed ms": 40 }
-    },
-    {
-      "caption": "Resolver and browser cache the answer for up to 300 seconds; the next visit skips DNS.",
-      "arch": { "active": [["resolver", "browser"]], "mark": ["browser"], "dim": ["lb", "app"], "notes": { "browser": "203.0.113.10" } },
-      "vars": { "round trips to server": 0, "elapsed ms": 40 }
-    },
-    {
-      "caption": "TCP handshake: SYN out, SYN-ACK back. 80 ms, and no page data yet.",
-      "arch": { "active": ["browser", "lb", ["browser", "lb"]], "dim": ["resolver", "auth", "app"], "notes": { "lb": "SYN-ACK" } },
-      "vars": { "round trips to server": 1, "elapsed ms": 120 }
-    },
-    {
-      "caption": "TLS 1.3 handshake: keys agreed, certificate checked. Another 80 ms. Encryption ends at the load balancer, which holds the certificate.",
-      "arch": { "active": ["browser", "lb", ["browser", "lb"]], "dim": ["resolver", "auth", "app"], "notes": { "lb": "TLS done" } },
-      "vars": { "round trips to server": 2, "elapsed ms": 200 }
-    },
-    {
-      "caption": "The encrypted <code>GET /</code> crosses the ocean. The load balancer forwards it to an app server 0.5 ms away, which takes 30 ms.",
-      "arch": { "active": ["lb", "app", ["browser", "lb"], ["lb", "app"]], "dim": ["resolver", "auth"], "notes": { "app": "30 ms" } },
-      "vars": { "round trips to server": 3, "elapsed ms": 270 }
-    },
-    {
-      "caption": "First byte after 40 + 80 + 80 + 80 + 30 = 310 ms. Only 30 ms was your code.",
-      "arch": { "active": [["app", "lb"], ["lb", "browser"]], "mark": ["browser"], "dim": ["resolver", "auth"] },
-      "vars": { "round trips to server": 3, "elapsed ms": 310 }
-    },
-    {
-      "caption": "<code>/cart</code> on the same connection: no DNS, no handshakes, so 80 + 30 = 110 ms. Reusing connections is the cheapest speed-up.",
-      "arch": { "active": ["browser", "lb", "app", ["browser", "lb"], ["lb", "app"]], "dim": ["resolver", "auth"], "notes": { "lb": "reused conn" } },
-      "vars": { "round trips to server": 4, "elapsed ms": 420 }
-    },
-    {
-      "caption": "Failure: <code>203.0.113.10</code> dies and you point DNS at a new address. Resolvers that cached the old one send users to the dead machine for up to 300 seconds, some clients longer.",
-      "arch": { "fail": ["lb", ["browser", "lb"]], "active": ["browser"], "dim": ["app", "auth"], "notes": { "resolver": "stale for 300 s" } },
-      "vars": { "round trips to server": 4, "stale answer left (s)": 300 }
-    }
+  "nodes": [
+    { "id": "client", "label": "Browser or app", "kind": "client", "col": 0, "row": 1 },
+    { "id": "dns", "label": "DNS", "kind": "dns", "col": 1, "row": 0 },
+    { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
+    { "id": "api", "label": "API servers", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "svc", "label": "Internal service", "kind": "service", "col": 3, "row": 1 }
+  ],
+  "edges": [
+    { "from": "client", "to": "dns", "label": "DNS lookup" },
+    { "from": "client", "to": "lb", "label": "HTTPS / WebSocket" },
+    { "from": "lb", "to": "api" },
+    { "from": "api", "to": "svc", "label": "gRPC" }
   ]
 }
 </script>
-</x-tracer>
+</x-arch>
 
-<p>So point DNS at something that survives a machine dying, such as a pair of load balancers sharing a floating IP.</p>
+<p>The protocols build on each other. TCP and UDP are transport protocols that move bytes between two machines. HTTP, gRPC and WebSockets are application protocols, and the first two run on top of TCP (HTTP/3 is the exception and runs over UDP, as described below). Before a client can connect at all, it uses DNS to turn a name into an IP address.</p>
 
-<h2>Four layers, briefly</h2>
+<h2>TCP and UDP</h2>
+
+<h3>TCP</h3>
+
+<p>TCP delivers a stream of bytes reliably and in order. Before any data moves, the two sides perform a handshake, which costs one round trip. After that, TCP numbers every segment, resends the ones that are lost, and slows down when the network is congested.</p>
+
+<p>TCP is the default for almost everything, because most data must arrive complete and in order: web pages, API calls, database traffic and file transfers. Its costs are the handshake and head-of-line blocking. When one packet is lost, TCP holds back all the data behind it until the lost packet has been resent, even though the later data has already arrived. On a lossy mobile network this shows up as pauses.</p>
+
+<h3>UDP</h3>
+
+<p>UDP sends independent packets with no handshake, no ordering, no resending and no congestion control. A packet can be lost, duplicated or arrive out of order, and the application is told nothing. In return there is no connection setup and no waiting for lost data.</p>
+
+<p>UDP fits traffic where a late packet is worth nothing: voice and video calls, live game state and live streams. Resending an old video frame only delays the frames that follow it, so it is better to drop it. Anyone who picks UDP must handle loss in the application, for example with their own retries for the messages that matter.</p>
+
+<h2>HTTP</h2>
+
+<p>HTTP is the request and response protocol of the web. The client sends a request with a method, a path and headers, and the server sends back a status code and a body. Each request is independent, so the server keeps no state between requests, which makes it easy to add servers behind a <a href="/system-design/load-balancing.html">load balancer</a>. HTTP works with browsers, caches, CDNs and every programming language, and it is the right default for any API that clients call. The server cannot start a message on its own; the client must always ask first.</p>
+
+<p>The three versions differ in how they use the connection:</p>
 
 <ul>
-<li><strong>DNS</strong> turns a name into an IP address, cached at every layer for the record's TTL. GeoDNS answers by the resolver's location, sending users to the nearest region.</li>
-<li><strong>TCP</strong> gives a reliable, ordered byte stream. The price is the handshake and <strong>head-of-line blocking</strong>: one lost packet holds up everything behind it. <strong>UDP</strong> has neither handshake nor guarantees; use it when late data is worthless (voice, video calls, game state).</li>
-<li><strong>TLS</strong> encrypts the connection and proves the server's identity: one round trip to set up with TLS 1.3, two with 1.2. Most designs <strong>terminate TLS at the load balancer</strong>, so app servers need no certificates.</li>
-<li><strong>HTTP</strong>/1.1 sends one request at a time per connection. HTTP/2 runs many streams over one TCP connection, though a lost packet stalls them all. HTTP/3 runs over QUIC, built on UDP: streams are independent and setup with encryption takes one round trip.</li>
+<li><strong>HTTP/1.1</strong> handles one request at a time on a connection. Browsers open several connections in parallel to work around this, and each new connection pays for a TCP handshake and a TLS handshake.</li>
+<li><strong>HTTP/2</strong> sends many requests at once over a single TCP connection, as separate streams, and compresses headers. It still suffers from TCP head-of-line blocking, because one lost packet stalls every stream on the connection.</li>
+<li><strong>HTTP/3</strong> runs over QUIC, which is built on UDP. Each stream recovers from loss independently, and the transport and encryption handshakes are combined, so a new connection needs fewer round trips.</li>
 </ul>
 
-<h2>HTTP, gRPC or WebSockets</h2>
+<h2>gRPC</h2>
 
-<x-tradeoffs caption="Three ways for programs to talk">
+<p>gRPC is a framework for calling functions on another service. You define the service and its messages in a schema file, and a tool generates client and server code in each language. Messages are sent in a compact binary format over HTTP/2, so they are smaller and faster to parse than JSON. gRPC also supports streaming, in which the client, the server or both send a sequence of messages on one call.</p>
+
+<p>Pick gRPC for calls between your own services, especially when there are many calls, many languages, or a need for strict contracts. The generated clients catch mismatched fields at build time. It is a poor choice for a public API, because browsers cannot call it directly and need a translation proxy, and because the binary messages are harder to inspect with simple tools.</p>
+
+<p>At scale, gRPC has a load balancing problem. A gRPC client keeps one long-lived HTTP/2 connection and sends all its calls through it. A layer 4 balancer chooses a server once per connection, so each client stays on one server and the load becomes uneven. The fix is a layer 7 balancer that understands HTTP/2 and spreads individual calls, or client-side balancing in which the client holds connections to several servers.</p>
+
+<h2>WebSockets</h2>
+
+<p>A WebSocket is a long-lived, two-way connection between a client and a server. It starts as an ordinary HTTP request that asks to upgrade, and after the server agrees, both sides can send messages at any time without further requests. This is what lets a server push data the moment it exists.</p>
+
+<p>Pick WebSockets when updates must reach the client immediately and often, and when the client also sends frequently: chat, multiplayer games, live collaborative editing and trading screens. For updates that only flow from server to client, <a href="/system-design/realtime-communication.html">server-sent events or long polling</a> are simpler and are covered in the realtime communication lesson.</p>
+
+<p>Every open WebSocket is state held on a server, and this causes the scaling problems. A server can hold only so many connections, so you need many servers and a way to deliver a message to the server that holds the recipient's connection, usually through a publish and subscribe system. Deploying a new version drops the connections, and when thousands of clients reconnect at once they can overload the servers, so clients should reconnect after a random delay. Load balancers and proxies close idle connections, so the client and server must send periodic heartbeat messages.</p>
+
+<x-tradeoffs caption="Summary of the options">
 <script type="application/json">
 {
   "options": [
     {
-      "name": "HTTP with JSON (REST)",
-      "good": "Works everywhere: browsers, phones, caches, CDNs. Easy to debug.",
-      "bad": "Bigger text payloads. The server cannot push.",
-      "pick": "Public and client-facing APIs.",
+      "name": "TCP",
+      "good": "Reliable and ordered delivery, handled for you.",
+      "bad": "Handshake cost, and one lost packet delays everything behind it.",
+      "pick": "Anything that must arrive complete. It is the base for most other choices.",
       "default": true
     },
     {
+      "name": "UDP",
+      "good": "No handshake and no waiting for lost data.",
+      "bad": "Loss, duplicates and reordering are the application's problem.",
+      "pick": "Live audio, video and game state, where late data is useless."
+    },
+    {
+      "name": "HTTP",
+      "good": "Works with browsers, caches, CDNs and any language, and it is stateless.",
+      "bad": "The server cannot push, and JSON is larger than binary formats.",
+      "pick": "Client-facing and public APIs."
+    },
+    {
       "name": "gRPC",
-      "good": "Compact binary messages, typed schemas, generated clients, streaming, over HTTP/2.",
-      "bad": "Browsers need a proxy. Harder to inspect by hand.",
-      "pick": "High-volume calls between your own services."
+      "good": "Compact binary messages, generated clients and streaming.",
+      "bad": "Needs a proxy for browsers, and long-lived connections balance unevenly.",
+      "pick": "Calls between your own services."
     },
     {
       "name": "WebSocket",
-      "good": "One long-lived connection where either side sends any time.",
-      "bad": "Every open connection is server state, which complicates scaling and deploys.",
-      "pick": "Two-way realtime: chat, multiplayer, live editing."
+      "good": "Either side can send at any time over one connection.",
+      "bad": "Each connection is server state, which complicates scaling and deploys.",
+      "pick": "Frequent two-way realtime messages, such as chat."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>The default: "REST for clients, gRPC between services." For server push, see <a href="/system-design/realtime-communication.html">Realtime Communication</a>.</p>
+<h2>DNS and TLS</h2>
 
-<h2>Numbers worth remembering</h2>
+<h3>DNS</h3>
 
-<ul>
-<li>Every 1,000 km adds at least 10 ms of round trip.</li>
-<li>Round trip in one data center: about 0.5 ms. Across a continent (4,000 km): 40 ms or more. Across an ocean (8,000 km): 80 ms or more.</li>
-<li>First byte on a new HTTPS connection: 3 round trips with TLS 1.3, 4 with TLS 1.2. Reused connection: 1.</li>
-<li>1 Gbit/s is 125 MB/s, because a byte is 8 bits.</li>
-</ul>
+<p>DNS translates a name such as <code>shop.example.com</code> into an IP address. The client asks a resolver, which asks the domain's authoritative servers if it does not already have the answer. Every answer carries a time to live (TTL), and the browser, the operating system and the resolver all cache it until the TTL runs out. DNS can also return different addresses depending on where the client is, which sends users to the nearest region.</p>
 
-<x-estimate title="Time to first byte for a new visitor">
-<script type="application/json">
-{
-  "question": "A user 6,000 km from your only region opens your site, DNS already cached. How long until the first byte arrives?",
-  "givens": ["Light in fibre: about 200 km per ms", "TLS 1.3: 3 round trips including the request", "The server takes 20 ms"],
-  "unit": "duration",
-  "answer": "200 ms",
-  "accept": ["100 ms", "600 ms"],
-  "steps": ["One way: 6,000 ÷ 200 = 30 ms, so a round trip is 60 ms", "TCP + TLS + request: 3 × 60 = 180 ms", "Plus the server: 180 + 20 = 200 ms"],
-  "note": "A server twice as fast saves 10 ms. A nearby region saves most of the 180."
-}
-</script>
-</x-estimate>
+<p>Caching is why DNS changes are slow to take effect. If you change a record, clients that cached the old answer keep using the old address until their copy expires, and some resolvers ignore short TTLs and keep it longer. So DNS is not a good way to fail over from a crashed machine. Point the name at something that stays up, such as a load balancer, and lower the TTL ahead of a planned move.</p>
+
+<h3>TLS</h3>
+
+<p>TLS encrypts a connection and proves the server's identity with a certificate, so nobody on the path can read or change the traffic. HTTPS is HTTP over TLS. The handshake costs one extra round trip with TLS 1.3 and two with TLS 1.2, and it is repeated for every new connection, which is why reusing connections is cheap and opening new ones is not.</p>
+
+<p>Most designs terminate TLS at the load balancer. The balancer holds the certificates and decrypts the traffic, so the app servers do not need them, and the balancer can read the request in order to route it. Traffic inside the private network is then often plain. If policy requires encryption inside as well, the balancer connects to the servers over TLS again, or services authenticate each other with mutual TLS.</p>
+
+<h2>Why the first request from a distant user is slow</h2>
+
+<p>Each new connection needs round trips before any data moves: a DNS lookup, the TCP handshake, the TLS handshake and then the request itself. Over a long distance each round trip is slow, and the speed of your servers barely matters. The fixes are to reuse connections, to terminate connections at edge locations close to users, to serve static content from a <a href="/system-design/cdns.html">CDN</a>, and to combine several API calls into one.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring networking up when distance matters: users on several continents, a latency target, mobile clients, or server push. Say: "Every round trip costs at least 80 ms from there, so I want fewer round trips, not faster servers."</p>
+<p>Choose a protocol from the shape of the traffic. Say whether the data must arrive complete and in order, who starts the messages, and who the caller is, then give the protocol and the reason in one or two sentences. For example: "Clients call a REST API over HTTPS because it works from browsers and is easy to cache, services call each other over gRPC for the typed contracts and smaller messages, and notifications to open apps go over a WebSocket." Nobody expects more depth than this unless they ask.</p>
 
-<x-interview title="A slow app far from the servers">
-<x-interviewer>Users about 8,000 km from our only region say the app is slow. What do you do?</x-interviewer>
-<x-you>First I'd check where the time goes. If the server takes 30 ms but users wait a second, it's round trips: at least 80 ms each, and a new connection plus sequential API calls adds up fast.</x-you>
-<x-interviewer>So what's the fix?</x-interviewer>
-<x-you>Cheapest first: static files on a CDN, connections terminated at edge locations near users, and one batched call for the home screen instead of five. If that's not enough, a read replica region near them, since most traffic is reads.</x-you>
-<x-coach>It measures, counts round trips and orders fixes by cost. "Add more servers" does nothing for distance.</x-coach>
-</x-interview>
-
-<p>Expected follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"TCP or UDP for a video call?"</strong> UDP, or a protocol built on it. Resending a late frame only adds delay.</li>
-<li><strong>"Is traffic behind the load balancer encrypted?"</strong> Often not. If policy requires it, use mutual TLS between services.</li>
-<li><strong>"Why not fail over by changing DNS?"</strong> Cached answers live until the TTL runs out. DNS shifts traffic between regions over minutes, too slowly for a machine failure.</li>
+<li><strong>"TCP or UDP for a video call?"</strong> UDP, or a protocol built on it. A lost packet that is resent arrives too late to be played, so waiting for it only adds delay. The application can tolerate a small glitch but not a growing delay.</li>
+<li><strong>"Why not use gRPC for the public API?"</strong> Browsers cannot call gRPC directly, and outside developers expect simple, inspectable requests that work with ordinary tools and caches. gRPC is a better fit between your own services, where you control both ends.</li>
+<li><strong>"How would you push updates to a user's phone?"</strong> If the app is open and updates are frequent, keep a WebSocket. If updates only flow from the server, server-sent events are simpler. For a closed app, use the phone platform's push notification service.</li>
+<li><strong>"How do you scale WebSocket servers?"</strong> Each connection is held by one server, so add servers behind a load balancer and use a publish and subscribe system to route a message to the server holding the recipient. Keep state outside the connection and reconnect clients with a random delay.</li>
+<li><strong>"Why did my DNS change not take effect?"</strong> Resolvers and browsers cached the old answer and keep it until the TTL expires. Lower the TTL before a planned change, and do not use DNS alone for failover.</li>
+<li><strong>"Where do you terminate TLS?"</strong> At the load balancer, so servers do not manage certificates and the balancer can inspect requests for routing. If the traffic inside the network must also be encrypted, re-encrypt to the servers or use mutual TLS between services.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Sequential calls over a long link">
-<p>Five API calls one after another, at 80 ms per round trip, wait 400 ms before any server work. Call in parallel, or add one endpoint that returns what the screen needs.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Treating DNS as instant">
-<p>A changed record moves nobody until cached answers expire. Lower the TTL a day before a planned move.</p>
-</x-callout>
+<x-interview title="Choosing protocols for a chat app" tone="strong">
+<x-interviewer>Which protocols would you use for this chat application?</x-interviewer>
+<x-you>The app calls a REST API over HTTPS for sign-in, history and settings, because those are ordinary request and reply calls that work from any client. Messages in an open conversation go over a WebSocket so that the server can push them as soon as they arrive.</x-you>
+<x-interviewer>And between your backend services?</x-interviewer>
+<x-you>I'd use gRPC. The services are all ours, the calls are frequent, and generated clients keep the message formats consistent. Because gRPC connections are long-lived, I'd put a layer 7 balancer in front or balance on the client so that the calls spread across servers.</x-you>
+<x-interviewer>What happens when a chat server restarts?</x-interviewer>
+<x-you>Its WebSocket connections drop. Clients reconnect after a random delay, and since the conversation state is stored outside the connection, they can resume on any server.</x-you>
+<x-coach>Each choice comes with a reason tied to the traffic, and the answer names the one scaling problem that each choice brings.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "The user from the estimate (60 ms round trip, 20 ms server, DNS cached) reaches a server that only speaks TLS 1.2. How long until the first byte?",
+      "question": "A multiplayer game sends each player's position 30 times a second. Which transport fits best?",
       "options": [
-        { "text": "200 ms", "why": "That is TLS 1.3. TLS 1.2 needs one more round trip." },
-        { "text": "260 ms", "correct": true, "why": "TCP 1 + TLS 2 + request 1 = 4 round trips: 4 × 60 + 20 = 260 ms." },
-        { "text": "320 ms", "why": "That adds a DNS round trip, but DNS was cached." },
-        { "text": "80 ms", "why": "That is a reused connection." }
+        { "text": "TCP, so every position arrives in order", "why": "A resent old position arrives after a newer one exists, and TCP holds back the newer data while it waits." },
+        { "text": "UDP, with the game handling any loss", "correct": true, "why": "A lost position is replaced by the next one within milliseconds, so waiting for it is wasted delay." },
+        { "text": "HTTP polling every second", "why": "One update a second is too slow, and every poll adds request overhead." }
       ]
     },
-
     {
-      "question": "You moved a service to a new IP. The DNS record's TTL is 3,600 seconds. Twenty minutes later some users still reach the old address. Why?",
+      "question": "Your services call each other over gRPC, but one server receives most of the calls from each client. What is the likely cause?",
       "options": [
-        { "text": "DNS changes take a full day to spread", "why": "There is no fixed delay, only how long the old answer is cached." },
-        { "text": "Their resolvers cached the old answer and may keep it for an hour", "correct": true, "why": "A TTL of 3,600 seconds allows an hour of caching." },
-        { "text": "The server's TLS certificate is still valid", "why": "Certificates do not decide which address a name resolves to." }
+        { "text": "gRPC does not support more than one server", "why": "It does. The problem is how connections are balanced, not the protocol." },
+        { "text": "A layer 4 balancer picked a server once per long-lived connection", "correct": true, "why": "All calls on the connection go to that server. A layer 7 balancer or client-side balancing spreads individual calls." },
+        { "text": "The messages are in a binary format", "why": "The format affects size and parsing speed, not which server receives a call." }
+      ]
+    },
+    {
+      "question": "You change a DNS record to a new address, but some users still reach the old one an hour later. Why?",
+      "options": [
+        { "text": "Their resolvers cached the old answer and have not yet reached its expiry", "correct": true, "why": "Cached answers are used until the TTL ends, and some resolvers keep them longer than the TTL." },
+        { "text": "TLS certificates take an hour to update", "why": "Certificates do not decide which address a name resolves to." },
+        { "text": "DNS changes are pushed to clients in batches", "why": "DNS is pull-based. Clients only ask again after their cached answer expires." }
       ]
     }
   ]
@@ -212,4 +194,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Next, the box that received every request in the tracer: <a href="/system-design/load-balancing.html">Load Balancing</a>. To see distance shape a whole design, work through <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>.</p>
+<p>Read <a href="/system-design/load-balancing.html">Load Balancing</a> to see how requests are spread across servers, and <a href="/system-design/design-a-chat-app.html">Design a Chat App</a> to choose protocols for a full design.</p>

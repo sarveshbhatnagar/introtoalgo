@@ -1,131 +1,121 @@
 <!--
 {
   "title": "CDNs",
-  "description": "Serve static files and media from servers near your users: edge caching, push vs pull, cache keys, invalidation, signed URLs and what belongs on a CDN.",
-  "minutes": 12,
+  "description": "How a CDN serves files from caches near users, how caching headers and invalidation work, how private content is handled, and what interviewers ask.",
+  "minutes": 18,
   "tags": ["cdn", "caching", "building blocks", "latency"]
 }
 -->
-<p>A shop serves product images from one region. At peak, pages load 5,000 images a second at about 200 KB each: 5,000 × 200 KB = 1 GB/s, or 8 Gbit/s, all leaving one set of servers. Users 8,000 km away wait at least 80 ms per round trip for each image, though every shopper gets the same bytes.</p>
+<p>A content delivery network (CDN) is a group of caching servers, called <strong>edges</strong>, placed in many cities around the world. A user's request goes to a nearby edge. If the edge has a copy of the file it answers immediately, and if not, it fetches the file from your own servers (the <strong>origin</strong>) and keeps a copy for the next user. A CDN cuts latency for users who are far from your servers and takes most of the traffic for images, video and scripts away from the origin.</p>
 
-<h2>The idea</h2>
+<p>Without a CDN, every user downloads every file from the origin. Distant users wait for a long round trip on each request, and the origin needs bandwidth for every download. A CDN is a <a href="/system-design/caching.html">cache</a>, so its copies sit in hundreds of places and cannot all be updated instantly.</p>
 
-<p>A content delivery network (CDN) is a set of caching servers, called <strong>edges</strong>, in many cities. Users reach a nearby edge. If it has the file, it answers; if not, it fetches it once from your servers (the <strong>origin</strong>) and keeps a copy.</p>
+<h2>Where a CDN sits</h2>
 
-<p><strong>Latency:</strong> light in fibre covers about 200 km per ms (<a href="/system-design/networking-essentials.html">Networking Essentials</a>), so an edge 500 km away costs 2 × 500 ÷ 200 = 5 ms per round trip, not 80. <strong>Load:</strong> if edges answer 95% of requests, the origin sends 1 GB/s × 0.05 = 50 MB/s.</p>
-
-<p>The cost is that of any <a href="/system-design/caching.html">cache</a>: copies in hundreds of places that you cannot update instantly.</p>
-
-<h2>A file's life on a pull CDN</h2>
-
-<x-tracer title="Misses, hits, a stale image and an origin outage">
+<x-arch caption="Browsers talk to a nearby edge, and only cache misses travel on to the origin.">
 <script type="application/json">
 {
-  "arch": {
-    "nodes": [
-      { "id": "u1", "label": "Shopper in Paris", "kind": "client", "col": 0, "row": 0 },
-      { "id": "u2", "label": "Shopper in Seoul", "kind": "client", "col": 0, "row": 2 },
-      { "id": "e1", "label": "Edge: Paris", "kind": "cdn", "col": 1, "row": 0 },
-      { "id": "e2", "label": "Edge: Seoul", "kind": "cdn", "col": 1, "row": 2 },
-      { "id": "origin", "label": "Origin storage", "kind": "blob-store", "col": 2, "row": 1 }
-    ],
-    "edges": [
-      { "from": "u1", "to": "e1" },
-      { "from": "u2", "to": "e2" },
-      { "from": "e1", "to": "origin", "label": "on miss" },
-      { "from": "e2", "to": "origin", "label": "on miss" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "A Paris shopper asks for <code>/img/p42.jpg</code>. DNS or anycast sends her to the Paris edge, a few ms away.",
-      "arch": { "active": ["u1", "e1", ["u1", "e1"]], "dim": ["u2", "e2"] },
-      "vars": { "origin requests": 0 }
-    },
-    {
-      "caption": "Miss: the edge has never seen this file. It fetches it from the origin, paying the long round trip once.",
-      "arch": { "active": ["e1", "origin", ["e1", "origin"]], "dim": ["u2", "e2"], "notes": { "e1": "miss" } },
-      "vars": { "origin requests": 1 }
-    },
-    {
-      "caption": "The origin replies with <code>Cache-Control: max-age=86400</code>. The edge keeps the image for a day and sends it on.",
-      "arch": { "active": [["origin", "e1"], ["e1", "u1"]], "mark": ["u1", "e1"], "dim": ["u2", "e2"], "notes": { "e1": "cached 24 h" } },
-      "vars": { "origin requests": 1 }
-    },
-    {
-      "caption": "The next Paris shopper gets a hit in about 5 ms. The origin never hears of it.",
-      "arch": { "active": ["u1", "e1", ["u1", "e1"]], "dim": ["u2", "e2", "origin"], "notes": { "e1": "hit" } },
-      "vars": { "origin requests": 1 }
-    },
-    {
-      "caption": "A Seoul shopper asks for the same file. Edges do not share caches, so Seoul misses too.",
-      "arch": { "active": ["u2", "e2", "origin", ["u2", "e2"], ["e2", "origin"]], "dim": ["u1"], "notes": { "e2": "miss" } },
-      "vars": { "origin requests": 2 }
-    },
-    {
-      "caption": "A new photo is uploaded under the same name. Paris keeps serving the old one until its 24 hours run out.",
-      "arch": { "active": ["u1", "e1", ["u1", "e1"]], "mark": ["origin"], "dim": ["u2", "e2"], "notes": { "e1": "stale", "origin": "new p42.jpg" } },
-      "vars": { "origin requests": 2 }
-    },
-    {
-      "caption": "The fix: link to <code>/img/p42.v2.jpg</code>. A new name is a new cache key, so every edge misses once and fetches the new photo.",
-      "arch": { "active": ["e1", "origin", ["e1", "origin"]], "dim": ["u2", "e2"], "notes": { "e1": "miss: v2" } },
-      "vars": { "origin requests": 3 }
-    },
-    {
-      "caption": "The origin goes down. Cached files still load; misses fail, unless the CDN may serve an expired copy on error.",
-      "arch": { "fail": ["origin"], "active": ["u1", "u2", "e1", "e2", ["u1", "e1"], ["u2", "e2"]], "notes": { "e1": "hit", "e2": "hit" } },
-      "vars": { "origin requests": 3 }
-    }
+  "nodes": [
+    { "id": "browser", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "dns", "label": "DNS", "kind": "dns", "col": 1, "row": 0 },
+    { "id": "edge", "label": "CDN edge", "kind": "cdn", "col": 1, "row": 1, "stack": true },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 0, "stack": true },
+    { "id": "store", "label": "Object storage", "kind": "blob-store", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "browser", "to": "dns", "label": "which edge?" },
+    { "from": "browser", "to": "edge", "label": "HTTPS" },
+    { "from": "edge", "to": "store", "label": "files on a miss" },
+    { "from": "edge", "to": "app", "label": "dynamic requests" }
   ]
 }
 </script>
-</x-tracer>
+</x-arch>
 
-<p>Step 5 is why hit rates disappoint: every edge fills its own cache. An <strong>origin shield</strong>, one middle cache all edges ask first, means the origin sees one miss per file instead of one per edge.</p>
+<h2>How a user reaches a nearby edge</h2>
 
-<h2>Push or pull</h2>
+<h3>DNS-based routing</h3>
 
-<x-tradeoffs caption="Who puts files on the edge">
+<p>The site's hostname is a CNAME that points at the CDN's DNS service. When a user's resolver looks it up, the CDN's DNS server returns the address of an edge that is close to the resolver and has spare capacity. There are two limits. The CDN sees the location of the resolver, not of the user, so someone using a distant public resolver may be sent to the wrong region. And because answers are cached for their TTL, a routing change takes that long to reach users.</p>
+
+<h3>Anycast</h3>
+
+<p>With anycast, many edges announce the same IP address over BGP, and the network delivers each packet to the closest location by routing distance. No DNS decision is needed, and when a location fails and stops announcing the address, traffic moves to the next closest one without waiting for a TTL. The cost is less control over who is served where.</p>
+
+<h2>Pull and push CDNs</h2>
+
+<p>With a <strong>pull</strong> CDN you publish files only to your origin. Each edge fetches a file the first time someone asks for it. Edges do not share caches, so the first request in each region is a miss that goes to the origin. Pull is the right choice for almost every site. Its weakness is that a launch of new content sends a burst of misses to the origin.</p>
+
+<p>With a <strong>push</strong> CDN you upload files to the CDN yourself, and it copies them to its edges before anyone asks. Nothing misses, so a large release does not hit the origin. The cost is that you manage uploads and deletions, and you pay to store every file everywhere whether or not it is requested. Push is worth it for large files with a known release time, such as a game patch, where every edge would otherwise pull gigabytes from the origin at once.</p>
+
+<h2>The cache key</h2>
+
+<p>The <strong>cache key</strong> decides which requests share one stored copy. By default it is made of the host, the path and the query string, and the aim is to include exactly the parts of a request that change the response.</p>
+
+<p>If the key contains too much, the hit rate drops. With a tracking parameter such as <code>?utm_source=mail</code> in the key, every campaign link gets its own copy of the same image.</p>
+
+<p>If the key contains too little, users receive the wrong content. When the key ignores <code>?size=small</code>, everyone gets whichever size was cached first. A server that returns different bytes depending on <code>Accept-Encoding</code> lists that header in <code>Vary</code>, and the CDN then stores one copy for each value. A header with many distinct values, such as <code>User-Agent</code>, makes the cache useless.</p>
+
+<h2>Cache-Control headers</h2>
+
+<p>The origin tells every cache how to treat a response with the <code>Cache-Control</code> header. The directives that matter for a CDN are these.</p>
+
+<ul>
+<li><code>max-age=N</code> lets any cache, including the browser, reuse the response for N seconds without asking the origin.</li>
+<li><code>s-maxage=N</code> applies only to shared caches such as a CDN and overrides <code>max-age</code> for them. It lets a CDN keep a response for an hour while browsers keep it for a minute.</li>
+<li><code>private</code> allows only the user's own browser to store the response, so a CDN must not.</li>
+<li><code>no-store</code> forbids every cache from keeping the response. It is not the same as <code>no-cache</code>, which allows storing but requires a check with the origin before each reuse.</li>
+</ul>
+
+<p>When a copy has expired, the cache does not have to download the file again. It sends a conditional request with the validator it saved (<code>ETag</code> or <code>Last-Modified</code>), and an unchanged file comes back as a short <code>304 Not Modified</code> response with no body.</p>
+
+<h2>Updating cached content</h2>
+
+<h3>Versioned file names</h3>
+
+<p>You put a content hash in the file name, such as <code>app.3f9a1c.js</code>, and cache the file for a year. A new release has a new name, so the old copy is never wrong and nothing has to be removed. Only the HTML page that links to the file must change, and that page gets a short lifetime. This method does not work for URLs that people have bookmarked or that other sites link to.</p>
+
+<h3>TTL expiry</h3>
+
+<p>You do nothing, and the copies expire when their lifetime ends. This suits content that may be a little stale. After a change, users can see the old version for up to the whole TTL.</p>
+
+<h3>Purge</h3>
+
+<p>You ask the CDN to remove a path, a prefix or everything with a given tag, and the next request fetches the new version. Use it for corrections and fixed URLs. A purge reaches all edges within seconds to a minute, not instantly, and it throws away a warm cache, so a broad purge sends every edge to the origin at once.</p>
+
+<h2>Origin shield and tiered caching</h2>
+
+<x-arch caption="With a shield, edges ask one middle cache first, so the origin sees one miss per file instead of one per edge.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "Pull",
-      "good": "Nothing to manage: edges fetch on first request and drop unused files.",
-      "bad": "The first request per edge is slow; a big launch sends a miss burst to the origin.",
-      "pick": "Almost always.",
-      "default": true
-    },
-    {
-      "name": "Push",
-      "good": "Files are in place before anyone asks; no miss storm.",
-      "bad": "You manage uploads and deletes, and pay to store every file everywhere.",
-      "pick": "Large files with a known release moment: a game patch, a video premiere."
-    }
+  "nodes": [
+    { "id": "edges", "label": "Edges in many cities", "kind": "cdn", "col": 0, "row": 1, "stack": true },
+    { "id": "shield", "label": "Origin shield", "kind": "cdn", "col": 1, "row": 1 },
+    { "id": "origin", "label": "Origin", "kind": "blob-store", "col": 2, "row": 1 }
+  ],
+  "edges": [
+    { "from": "edges", "to": "shield", "label": "miss" },
+    { "from": "shield", "to": "origin", "label": "miss" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<h2>Cache keys and invalidation</h2>
+<p>Because each edge fills its own cache, a new file causes one origin request for every edge that receives a request for it. An <strong>origin shield</strong> is one designated cache, usually near the origin, that all edges ask on a miss. The origin then sees at most one request per file, and simultaneous requests for the same file are merged. <strong>Tiered caching</strong> is the same idea with more levels: edges ask regional caches, and regional caches ask the origin.</p>
 
-<p>The <strong>cache key</strong> decides which requests share a copy. By default it is roughly host, path and query string. Keep only the parts that change the bytes:</p>
-<ul>
-<li><strong>Too much</strong> and the hit rate collapses: with <code>?utm_source=mail</code> in the key, every campaign link caches its own copy.</li>
-<li><strong>Too little</strong> and users get the wrong content: if the key ignores <code>?size=small</code>, everyone gets whichever size was cached first.</li>
-</ul>
+<h2>Serving stale content</h2>
 
-<p>Three ways to change a cached file, best first:</p>
-<ul>
-<li><strong>Versioned names.</strong> Put a content hash in the name (<code>app.3f9a1c.js</code>) and cache it for a year. A new version is a new URL; nothing to purge. Give the HTML that links to it a short TTL.</li>
-<li><strong>TTL.</strong> Let copies expire. Simple, but old content can live for the whole TTL.</li>
-<li><strong>Purge.</strong> Ask the CDN to drop a path everywhere. Slow to spread, then every edge misses at once.</li>
-</ul>
+<p><code>stale-while-revalidate=N</code> lets the edge answer with an expired copy for up to N seconds while it fetches a fresh one in the background. The user never waits for the origin, and the origin gets one refresh request instead of a burst.</p>
 
-<h2>Signed URLs for private files</h2>
+<p><code>stale-if-error=N</code> lets the edge serve an expired copy for up to N seconds when the origin returns errors or cannot be reached. During an origin outage the site keeps working for everything that was cached.</p>
 
-<p>Paid videos and private files can use a CDN too. A <strong>signed URL</strong> carries an expiry time and a signature over path and expiry, often an HMAC with a secret your app and the CDN share. The edge checks both on its own, without calling your servers.</p>
+<h2>Dynamic content</h2>
+
+<p>A CDN also speeds up responses that cannot be cached. The user's TLS handshake takes several round trips, and with an edge nearby it completes with that edge instead of the distant origin, which is called <strong>edge TLS termination</strong>. The edge also keeps long-lived connections open to the origin and reuses them, so a request does not pay a new TCP and TLS setup.</p>
+
+<h2>Private content: signed URLs and signed cookies</h2>
+
+<p>Private files such as paid videos can be served by a CDN if the edge can check permission itself. A <strong>signed URL</strong> contains an expiry time and a signature over the path and the expiry, usually an HMAC made with a secret that your application and the CDN share. The application checks that the user may see the file and creates the URL, and the edge recomputes the signature and refuses a mismatch or an expired time.</p>
 
 <x-code single title="A signed URL">
 <pre lang="text">
@@ -135,81 +125,69 @@ https://cdn.example.com/videos/v881/seg-0042.ts
 </pre>
 </x-code>
 
-<p>Keep expiry to minutes. For a video of hundreds of segments, one signed cookie for the folder saves signing each.</p>
+<p>A signed URL works for anyone who has it until it expires, so keep the lifetime to minutes for sensitive files. The signature must not be part of the cache key, or the hit rate falls to zero. A <strong>signed cookie</strong> covers a whole path prefix, which suits a video with hundreds of segments: the application sets it once, and the edge validates it on every request for that folder.</p>
 
-<h2>What goes on a CDN</h2>
+<h2>What must never be cached</h2>
 
-<ul>
-<li><strong>Yes:</strong> images, scripts, styles, fonts, video, downloads, and public responses that are the same for everyone, even for a few seconds (a live score).</li>
-<li><strong>No:</strong> per-user pages, and anything every reader must see up to the second.</li>
-</ul>
+<p>A shared cache must never store a response that depends on who is asking. If an account page or an API response with private data is cached under a shared key, the next visitor receives someone else's data. Mark such responses <code>private</code> or <code>no-store</code> and do not rely on the CDN's defaults.</p>
 
-<p>Uncached requests gain too: users handshake with a nearby edge that keeps warm connections to your origin.</p>
+<h2>Failures and using a second CDN</h2>
 
-<h2>Numbers worth remembering</h2>
+<h3>The origin fails</h3>
 
-<ul>
-<li>Origin load = total requests × (1 − hit rate).</li>
-<li>Video bandwidth = viewers × bitrate. 8 bits per byte.</li>
-</ul>
+<p>Cached files carry on being served until their lifetime ends, and <code>stale-if-error</code> extends that to expired files. Dynamic requests and uncached files fail, so the origin needs its own redundancy.</p>
 
-<x-estimate title="Origin bandwidth for a live event">
-<script type="application/json">
-{
-  "question": "How much bandwidth must the origin serve for this stream?",
-  "givens": ["20,000 viewers watching at once", "5 Mbit/s per viewer", "The CDN serves 98% of the bytes from edges"],
-  "unit": "bytes/s",
-  "answer": "250 MB/s",
-  "accept": ["80 MB/s", "1 GB/s"],
-  "steps": ["Total: 20,000 × 5 Mbit/s = 100,000 Mbit/s = 100 Gbit/s", "Origin share: 100 Gbit/s × 0.02 = 2 Gbit/s", "In bytes: 2 Gbit/s ÷ 8 = 250 MB/s"],
-  "note": "Without the CDN: 100 Gbit/s. For live video each edge fetches each segment about once, so origin load follows edges, not viewers."
-}
-</script>
-</x-estimate>
+<h3>The CDN fails</h3>
+
+<p>If the provider has an outage, every user is affected. A site that cannot accept that runs <strong>two CDNs</strong> and uses DNS health checks to send everything to the survivor, and failover takes as long as the DNS TTL. Traffic is split, so each CDN has a lower hit rate. When one fails, the other has a cold cache for the extra traffic, and the origin can be overloaded by the burst of misses. Signing and purge APIs differ between providers, so you maintain both. A second CDN is justified only when downtime would be very costly.</p>
+
+<h3>Cost</h3>
+
+<p>CDN providers charge mainly for the data sent to users, plus smaller charges for requests. A CDN usually lowers the total bill, because a high hit rate cuts the bandwidth you pay for at the origin. With a low hit rate you pay the CDN and the origin for the same request, so a clean cache key, longer lifetimes and a shield are also the way to control cost.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring in a CDN for static files, media, or users across regions. Say what goes on it and how it is invalidated: "Images and video are most of our bytes and the same for everyone, so they go on a CDN. Names carry a content hash, so I cache them for a year and never purge."</p>
+<p>Bring in a CDN when a large share of the bytes are static files or media, or when users are spread across regions. For example: "Images and video are most of our bytes and are the same for everyone, so they go on a pull CDN. File names contain a content hash, so I cache them for a year and never purge. The HTML has a short lifetime."</p>
 
-<x-interview title="Protecting paid videos">
-<x-interviewer>Videos are for paying subscribers only. Can they still go on a CDN?</x-interviewer>
-<x-you>Yes. The app checks the subscription and hands out a signed URL or cookie that expires in minutes. Edges verify it themselves, so the origin only sees misses.</x-you>
-<x-interviewer>What if someone shares the URL?</x-interviewer>
-<x-you>It works for anyone until it expires, hence the short expiry. If sharing is a real threat, I'd sign in the viewer's IP too, so it fails on other networks.</x-you>
-<x-coach>A weak answer says "the CDN checks the user's login", which sends every request back to the origin and undoes the CDN.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How does a user reach the nearest edge?"</strong> DNS that answers by the resolver's location, or anycast: one IP announced from many places, routed to the closest.</li>
-<li><strong>"What if the CDN goes down?"</strong> Fail over by DNS to a second CDN. The origin alone rarely survives 100% of the traffic.</li>
-<li><strong>"Why is the hit rate low?"</strong> Too many cache keys (tracking parameters, cookies), short TTLs, or a long tail of files over many edges. An origin shield helps the last.</li>
+<li><strong>"How does a user get to the nearest edge?"</strong> With DNS routing, the CDN's name server answers with the address of an edge near the user's resolver. With anycast, many locations announce the same IP and the network sends the user to the closest one. DNS depends on the resolver's location and on TTLs, while anycast fails over quickly.</li>
+<li><strong>"How do you update an image that is already cached?"</strong> Give the new file a new name, which makes it a new cache key, and link to it from a page with a short lifetime. A purge works for fixed URLs but is not instant and causes a burst of misses.</li>
+<li><strong>"The hit rate is 60% and the origin is struggling. What do you check?"</strong> Look first at the cache key for tracking parameters, cookies and <code>Vary</code> headers that split copies. Then check the lifetimes, and add an origin shield if a long tail of files is spread across many edges.</li>
+<li><strong>"How do you serve private videos through a CDN?"</strong> The application checks the subscription and issues a signed URL or signed cookie that expires in minutes. A weak answer has the CDN call the application on every request, which undoes the CDN.</li>
+<li><strong>"What happens when the CDN or the origin goes down?"</strong> If the origin fails, edges keep serving cached files, and <code>stale-if-error</code> covers expired ones. If the CDN fails, DNS can send traffic to a second CDN, but that one starts with a cold cache and can overload the origin, so the origin needs a shield and some headroom.</li>
+<li><strong>"What do you never cache?"</strong> Anything that depends on the user, such as an account page or an API response with personal data, is marked <code>private</code> or <code>no-store</code>, because a shared cache would otherwise hand one user's data to the next visitor. Values that must be exact, such as a balance at checkout, also stay out of the CDN.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Caching a personalized page">
-<p>Cache a per-user response under a shared key and the next visitor sees someone else's page. Mark per-user responses <code>Cache-Control: private</code> or <code>no-store</code>.</p>
-</x-callout>
+<x-interview title="Putting a video service behind a CDN" tone="strong">
+<x-interviewer>Your video catalogue is large and subscribers are spread across the world. How do you serve it?</x-interviewer>
+<x-you>I would put the video segments and thumbnails on a pull CDN with an origin shield. Segment names never change, so they get a long lifetime and need no purging.</x-you>
+<x-interviewer>The videos are for paying subscribers only. Can they still be cached?</x-interviewer>
+<x-you>Yes. The app checks the subscription and sets a signed cookie for that video's path that expires in minutes. The edge checks the signature itself, and the signature is not part of the cache key.</x-you>
+<x-interviewer>What if the CDN has an outage?</x-interviewer>
+<x-you>DNS health checks would move traffic to a second CDN. Its cache starts cold, so the shield and some origin capacity are needed.</x-you>
+<x-coach>Each answer gives a choice with its reason, and the last one names a cost of the second CDN.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "A CDN gets 2,000 image requests a second. Its hit rate rises from 90% to 99%. How many requests a second reach the origin now?",
+      "question": "You deploy a new JavaScript bundle. The old bundle was cached at the CDN for a year. How do you make users load the new one?",
       "options": [
-        { "text": "200", "why": "That is the 90% case: 2,000 × 0.1." },
-        { "text": "20", "correct": true, "why": "2,000 × (1 − 0.99) = 20. A tenfold cut." },
-        { "text": "1,980", "why": "That is the number of hits, served by the edges." }
+        { "text": "Purge the old file's path on every release", "why": "It works at the CDN, but it is slow, it causes a burst of misses, and browsers that cached the file for a year keep the old copy." },
+        { "text": "Use a new file name that contains a hash, and give the HTML that links to it a short lifetime", "correct": true, "why": "A new name is a new cache key, so nothing stale can be served and no purge is needed." },
+        { "text": "Lower the bundle's TTL to one minute", "why": "Users could still see the old bundle for a minute, and the CDN would return to the origin every minute for a file that never changes." }
       ]
     },
     {
-      "question": "A software update is 2 GB and goes live for millions of users at 10:00. Push or pull?",
+      "question": "A public product page is the same for everyone. You want browsers to reuse it for 1 minute but the CDN to keep it for 1 hour. Which header does that?",
       "options": [
-        { "text": "Pull", "why": "At 10:00 every edge would miss at once and pull 2 GB from the origin." },
-        { "text": "Push", "correct": true, "why": "Large file, known release time: place it on the edges beforehand." }
+        { "text": "<code>Cache-Control: max-age=3600</code>", "why": "Browsers would also keep it for an hour." },
+        { "text": "<code>Cache-Control: max-age=60, s-maxage=3600</code>", "correct": true, "why": "<code>s-maxage</code> applies only to shared caches such as the CDN, and <code>max-age</code> applies to the browser." },
+        { "text": "<code>Cache-Control: private, max-age=60</code>", "why": "<code>private</code> forbids shared caches from storing the page, so the CDN would not keep it at all." }
       ]
     }
   ]
@@ -219,4 +197,4 @@ https://cdn.example.com/videos/v881/seg-0042.ts
 
 <h2>What to practise next</h2>
 
-<p>CDNs suit data that changes rarely. For data that must reach users the moment it changes, read <a href="/system-design/realtime-communication.html">Realtime Communication</a>. To see a CDN carry most of a system's bytes, work through <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>.</p>
+<p>Read <a href="/system-design/caching.html">Caching</a> for the strategies and failure cases that also apply to CDN caches, and <a href="/system-design/networking-essentials.html">Networking Essentials</a> for DNS, TCP and TLS. To see a CDN carry most of a system's bytes, work through <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>.</p>

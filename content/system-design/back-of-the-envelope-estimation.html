@@ -1,21 +1,45 @@
 <!--
 {
   "title": "Back-of-the-Envelope Estimation",
-  "description": "A short set of anchors to memorize, so daily users become requests per second, storage, bandwidth and servers with no long division.",
-  "minutes": 10,
+  "description": "How to turn daily users into requests per second, storage, bandwidth and server counts with a few rounded anchors, and what interviewers expect.",
+  "minutes": 14,
   "tags": ["interview", "estimation", "numbers"]
 }
 -->
-<p>A candidate designing a photo-sharing app is told "10 million daily users, 10 requests each". They spend four minutes dividing 100 million by 86,400 to get 1,157.4 requests a second. A candidate who knows one anchor says "10 million a day is about 100 a second, times 10 is 1,000" in five seconds and moves on to the design.</p>
+<p>Back-of-the-envelope estimation is a quick calculation, done with rounded numbers, that turns a product's size ("10 million daily users") into the load the system must handle: requests per second, storage, bandwidth and the number of servers. Interviewers ask for it so that the design is based on the size of the problem. The answer decides whether one database is enough, whether images need a CDN and whether a cache is worth adding.</p>
 
-<p>Memorize the anchors on this page and scale them by 10s. Every figure is rounded: you want the right order of magnitude, then a sentence that starts "so...".</p>
+<p>Without a quick way to estimate, candidates either skip the numbers and design for an unknown load, or spend several minutes on exact long division, such as 100 million divided by 86,400 to get 1,157.4. The estimate only needs the right order of magnitude, so the method on this page is to memorise a few anchors, scale them by factors of 10, and finish each result with the design decision it leads to.</p>
 
-<h2>Per day to per second</h2>
+<h2>Where estimates feed into a design</h2>
 
-<p>A day is 86,400 seconds; call it 100,000. That gives the anchor everything else hangs on.</p>
+<x-arch caption="Each part of the system gets one estimate: request rate for the servers, writes for the database, hot data for the cache, and photo bytes for storage and bandwidth.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "users", "label": "Users", "kind": "client", "col": 0, "row": 1 },
+    { "id": "app", "label": "API servers (how many)", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "cache", "label": "Cache (memory)", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "db", "label": "Database (writes)", "kind": "database", "col": 2, "row": 1 },
+    { "id": "blob", "label": "Photo storage (size)", "kind": "blob-store", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "users", "to": "app", "label": "requests/s, bandwidth" },
+    { "from": "app", "to": "cache", "label": "hot data" },
+    { "from": "app", "to": "db", "label": "writes/s, rows" },
+    { "from": "app", "to": "blob", "label": "bytes stored" }
+  ]
+}
+</script>
+</x-arch>
 
-<x-callout type="key" title="The one to remember">
-<p><strong>1 million a day is about 10 a second.</strong> Every 10 times more a day is 10 times more a second.</p>
+<p>The sections below cover the four calculations in the order an interviewer expects them: requests per second, then storage, then bandwidth, then servers and cache memory. Every number comes from a given or from an assumption you state out loud.</p>
+
+<h2>Requests per second</h2>
+
+<p>The starting point is converting a daily count into a per-second rate. A day has 86,400 seconds, which you round to 100,000. Dividing by 100,000 is dividing by 10 and then by 10,000, which gives the anchor that the rest of the page uses.</p>
+
+<x-callout type="key" title="The anchor to remember">
+<p>1 million events a day is about 10 per second, and every factor of 10 more per day is a factor of 10 more per second.</p>
 </x-callout>
 
 <table>
@@ -28,11 +52,9 @@
 </tbody>
 </table>
 
-<p>The exact figures are about 15% higher (1 million a day is 11.6 a second). Say once that you rounded down. For monthly numbers: <strong>1 billion a month is about 400 a second</strong>.</p>
+<p>The exact value is about 15% higher, because 1 million a day is really 11.6 a second. That is well inside the error of the other assumptions, so it is enough to say once that you rounded down. For monthly figures the matching anchor is that 1 billion a month is about 400 per second.</p>
 
-<h2>Daily users to requests per second</h2>
-
-<p>Multiply the anchor by how many requests each user makes a day. Find your row and column and read the average rate.</p>
+<p>To get the request rate, multiply the per-second rate of the users by the number of requests each user makes in a day. The table shows the average rate for the common combinations.</p>
 
 <table>
 <thead><tr><th>Daily users</th><th>1 request each</th><th>10 each</th><th>100 each</th></tr></thead>
@@ -44,15 +66,13 @@
 </tbody>
 </table>
 
-<ul>
-<li><strong>The one to keep: 10 million daily users at 10 requests each is about 1,000 a second.</strong> Scale from there: 100 requests each is 10,000 a second; so is 100 million users at 10 each.</li>
-<li><strong>Peak is about 3 times average</strong> for a consumer app. It is an assumption; say so.</li>
-<li><strong>Reads to writes is about 10 to 1</strong> unless told otherwise. For the write rate, move one column to the left.</li>
-</ul>
+<p>The single value worth remembering is that 10 million daily users making 10 requests each is about 1,000 requests per second. The other cells follow by multiplying by 10. You will also need two assumptions, and you should state both because the interviewer may want different values. The first is that peak traffic is about 3 times the average for a consumer app, which is a rule of thumb and varies by product. The second is that reads outnumber writes by about 10 to 1 unless the problem says otherwise, so the write rate is the request rate divided by 10.</p>
 
-<h2>Count times size</h2>
+<p>The usual mistake here is to size the system for the average. Servers and databases fail at the peak, so the peak is the number that every later calculation should use.</p>
 
-<p>Storage, cache memory and bandwidth are all a count multiplied by a size. Three products cover most of it.</p>
+<h2>Storage</h2>
+
+<p>Storage is the number of items multiplied by the size of one item. The table gives the three products that cover almost every case, using 1 KB for a row or message and 1 MB for a photo.</p>
 
 <table>
 <thead><tr><th>Count</th><th>× 1 KB (a row, a message)</th><th>× 1 MB (a photo)</th></tr></thead>
@@ -63,61 +83,9 @@
 </tbody>
 </table>
 
-<ul>
-<li><strong>Storage per year:</strong> multiply a day's worth by about 400 (really 365). 1 million rows a day at 1 KB is 1 GB a day, about 400 GB a year. 1 million photos a day at 1 MB is 1 TB a day, about 400 TB a year.</li>
-<li><strong>Copies:</strong> durable storage keeps 3 copies, so multiply by 3. 400 TB a year becomes about 1 PB.</li>
-<li><strong>Cache memory:</strong> the same table. 10 million hot items at 1 KB is 10 GB, which fits on one cache node.</li>
-<li><strong>Bandwidth:</strong> 1,000 responses a second at 1 MB is 1 GB/s. Links are sold in bits, so multiply by 8: 8 Gbit/s.</li>
-</ul>
+<p>To get the storage for a year, multiply the daily amount by about 400. The real factor is 365, and 400 is easier to multiply and errs on the side of having too much disk. Then multiply by 3 for the copies, because durable storage normally keeps three replicas. One million 1 KB rows a day is 1 GB a day and about 400 GB a year, or 1.2 TB with copies. One million 1 MB photos a day is 1 TB a day, about 400 TB a year, and about 1 PB with copies.</p>
 
-<h2>Servers</h2>
-
-<p>These capacities vary with hardware and workload, so state them as assumptions. <a href="/system-design/numbers-to-know.html">Numbers to know</a> has the longer list, with latencies.</p>
-
-<table>
-<thead><tr><th>One machine</th><th>Handles about</th></tr></thead>
-<tbody>
-<tr><td>Stateless API server</td><td>1,000 requests a second</td></tr>
-<tr><td>Relational database primary</td><td>a few thousand writes a second</td></tr>
-<tr><td>In-memory cache node</td><td>100,000 simple reads a second</td></tr>
-</tbody>
-</table>
-
-<p><strong>Every 1,000 average requests a second needs about 4 API servers</strong>: 3,000 at peak, on servers kept at 70% load, is 3,000 ÷ 700 ≈ 4.3. So 10 million daily users at 10 requests each is a fleet of about 5 servers.</p>
-
-<h2>Sample loads, already worked out</h2>
-
-<p>These rows assume 10 requests per user a day, reads to writes at 10 to 1 (so 1 write per user a day), a peak of 3 times average, and API servers that handle 1,000 requests a second and run at 70% load.</p>
-
-<table>
-<thead><tr><th>Daily users</th><th>Average requests</th><th>Peak requests</th><th>Writes</th><th>API servers</th></tr></thead>
-<tbody>
-<tr><td>100 thousand</td><td>10/s</td><td>30/s</td><td>1/s</td><td>1 (run 2)</td></tr>
-<tr><td>1 million</td><td>100/s</td><td>300/s</td><td>10/s</td><td>1 (run 2)</td></tr>
-<tr><td>10 million</td><td>1,000/s</td><td>3,000/s</td><td>100/s</td><td>5</td></tr>
-<tr><td>100 million</td><td>10,000/s</td><td>30,000/s</td><td>1,000/s</td><td>45</td></tr>
-<tr><td>1 billion</td><td>100,000/s</td><td>300,000/s</td><td>10,000/s</td><td>430</td></tr>
-</tbody>
-</table>
-
-<p>Storage for the same loads, if each write stores one item. This is one copy; multiply by 3 for the copies you keep.</p>
-
-<table>
-<thead><tr><th>Daily users</th><th>1 KB items, a day</th><th>1 KB items, a year</th><th>1 MB items, a day</th><th>1 MB items, a year</th></tr></thead>
-<tbody>
-<tr><td>100 thousand</td><td>100 MB</td><td>40 GB</td><td>100 GB</td><td>40 TB</td></tr>
-<tr><td>1 million</td><td>1 GB</td><td>400 GB</td><td>1 TB</td><td>400 TB</td></tr>
-<tr><td>10 million</td><td>10 GB</td><td>4 TB</td><td>10 TB</td><td>4 PB</td></tr>
-<tr><td>100 million</td><td>100 GB</td><td>40 TB</td><td>100 TB</td><td>40 PB</td></tr>
-<tr><td>1 billion</td><td>1 TB</td><td>400 TB</td><td>1 PB</td><td>400 PB</td></tr>
-</tbody>
-</table>
-
-<p>If your case differs, scale the row: 100 requests per user is 10 times the request figures, and a 10 KB item is 10 times the 1 KB column.</p>
-
-<h2>Read the answers off</h2>
-
-<p>Answer these from the anchors, without long division.</p>
+<p>The result matters because it decides where the data lives. Hundreds of gigabytes fit on one database server. A petabyte does not belong in a database at all, so the photos go to <a href="/system-design/blob-storage.html">blob storage</a> and the database keeps a small row with a reference to each photo.</p>
 
 <x-estimate title="Photo storage for one year">
 <script type="application/json">
@@ -128,10 +96,16 @@
   "answer": "1 PB",
   "accept": ["300 TB", "3 PB"],
   "steps": ["Anchor: 1 million × 1 MB = 1 TB a day", "Per year: 1 TB × 400 ≈ 400 TB", "Three copies: 400 TB × 3 = 1,200 TB, about 1 PB"],
-  "note": "A petabyte a year rules out keeping photos in a database. They go to blob storage; the database keeps a small row per photo."
+  "note": "A petabyte a year rules out keeping photos in a database. They go to blob storage, and the database keeps a small row per photo."
 }
 </script>
 </x-estimate>
+
+<h2>Bandwidth</h2>
+
+<p>Bandwidth is the request rate multiplied by the size of each response. 1,000 responses a second at 1 MB each is 1 GB per second. Network links are sold in bits per second, so multiply by 8: 1 GB per second is 8 Gbit/s. Because that is an average, a peak of 3 times the average needs about 24 Gbit/s.</p>
+
+<p>The decision it drives is usually whether to use a <a href="/system-design/cdns.html">CDN</a>. A few Gbit/s is already more than you want your own API servers to send, so large files such as images and video are served from a CDN or from blob storage and not through the application servers. If the figure is a few megabytes per second, there is nothing to decide, and you should say so and move on.</p>
 
 <x-estimate title="Photo bandwidth">
 <script type="application/json">
@@ -147,23 +121,71 @@
 </script>
 </x-estimate>
 
+<h2>Servers and cache memory</h2>
+
+<p>The number of servers is the peak request rate divided by what one server can handle. The capacities below depend on hardware and on how heavy each request is, so present them as assumptions and not as facts. <a href="/system-design/numbers-to-know.html">Numbers to know</a> has a longer list that includes latencies.</p>
+
+<table>
+<thead><tr><th>One machine</th><th>Handles about</th></tr></thead>
+<tbody>
+<tr><td>Stateless API server</td><td>1,000 requests a second</td></tr>
+<tr><td>Relational database primary</td><td>a few thousand writes a second</td></tr>
+<tr><td>In-memory cache node</td><td>100,000 simple reads a second</td></tr>
+</tbody>
+</table>
+
+<p>Servers are not run at full capacity, because a server at 100% load has no room for a spike or for the loss of a neighbour, so plan for about 70%. Each 1,000 requests a second on average becomes 3,000 at peak, and 3,000 ÷ 700 is about 4.3, which rounds up to 5. That gives a rule of thumb that every 1,000 average requests a second needs about 4 or 5 API servers, and also means that 10 million daily users at 10 requests each is a fleet of about 5 servers. The table applies the same arithmetic to several sizes, assuming 10 requests per user a day, 1 write for every 10 reads, a peak of 3 times and 70% load.</p>
+
+<table>
+<thead><tr><th>Daily users</th><th>Average requests</th><th>Peak requests</th><th>Writes</th><th>API servers</th></tr></thead>
+<tbody>
+<tr><td>100 thousand</td><td>10/s</td><td>30/s</td><td>1/s</td><td>1 (run 2)</td></tr>
+<tr><td>1 million</td><td>100/s</td><td>300/s</td><td>10/s</td><td>1 (run 2)</td></tr>
+<tr><td>10 million</td><td>1,000/s</td><td>3,000/s</td><td>100/s</td><td>5</td></tr>
+<tr><td>100 million</td><td>10,000/s</td><td>30,000/s</td><td>1,000/s</td><td>43</td></tr>
+<tr><td>1 billion</td><td>100,000/s</td><td>300,000/s</td><td>10,000/s</td><td>430</td></tr>
+</tbody>
+</table>
+
+<p>Two servers are listed for the small cases even though one would handle the load, because a service with a single server goes down whenever that server does. The write column matters for the database: 10,000 writes a second is beyond one relational primary, which leads to <a href="/system-design/sharding-and-partitioning.html">sharding</a>, while 100 writes a second is not worth discussing.</p>
+
+<p>Cache memory is the same count-times-size calculation, applied only to the hot data. If 10 million items are read often and each is 1 KB, they need 10 GB, which fits in memory on one cache node. The question to ask is how much data is read often, because the whole dataset is usually far too large and does not need to be cached. See <a href="/system-design/caching.html">Caching</a> for how that data is kept.</p>
+
+<h2>Nuances interviewers probe</h2>
+
+<h3>Peak versus average</h3>
+
+<p>The average rate is what you compute first, but it sizes nothing, because the system has to survive the busiest period. Apply a peak factor of about 3 and say that it is an assumption. For products with sharp spikes, such as ticket sales, a sale launch or a live event, the peak can be 10 or 100 times the average, and the interviewer may give you that number. If they do, use it and do not substitute your own rule.</p>
+
+<h3>Forgetting copies</h3>
+
+<p>Storage without replication is about a third of the disk you will buy, so apply the factor of 3 for copies out loud.</p>
+
+<h3>How precise to be</h3>
+
+<p>Estimates built on guesses about user behaviour are accurate to within a factor of 2 or 3, and that is enough to choose an architecture. Extra precision is wasted unless a result lands close to a real limit, such as 900 requests a second against a server that handles 1,000. In that case, say that the margin is thin and plan for a second server.</p>
+
 <h2>In the interview</h2>
 
-<p>Estimate after clarifying and before the API, as in <a href="/system-design/a-framework-for-any-design.html">the framework</a>. Compute only what can change the design, usually peak rate, storage and bandwidth, and end each number with the decision it drives.</p>
+<p>Estimate after clarifying the requirements and before designing the API, as described in <a href="/system-design/a-framework-for-any-design.html">the framework</a>. Compute only the numbers that can change the design, which are usually the peak request rate, storage and bandwidth, and say for each one what it means for the design. A number that does not lead to a decision should be skipped.</p>
+
+<p>Questions to expect:</p>
+
+<ul>
+<li><strong>"How many requests per second is that?"</strong> Convert the daily count with the anchor that 1 million a day is about 10 a second, multiply by the requests per user, and then give the peak as about 3 times the average. State the assumptions you made along the way, and finish with how many servers that is.</li>
+<li><strong>"How much storage do you need?"</strong> Multiply the items per day by the size of one item, multiply by 400 for a year, and by 3 for copies. Then say where that amount can live, for example that a few terabytes fit on a database cluster but a petabyte needs blob storage.</li>
+<li><strong>"How many servers do you need?"</strong> Divide the peak rate by what one server handles at about 70% load, round up, and add a spare so that one failure does not cause an outage. If the interviewer gives a different capacity per server, use theirs.</li>
+<li><strong>"Does this need a CDN?"</strong> Multiply the peak request rate by the response size to get bandwidth. If the result is several Gbit/s of large files, yes, because the CDN takes that traffic away from the origin. If it is small, a CDN is an optimisation and not a requirement.</li>
+<li><strong>"How accurate is your estimate?"</strong> It is accurate to within a factor of 2 or 3, which is enough to choose the architecture. You only recompute more carefully when a number lands close to a real limit.</li>
+</ul>
 
 <x-interview title="Estimating out loud" tone="strong">
 <x-interviewer>Assume 10 million daily users. How much traffic is that?</x-interviewer>
-<x-you>Can I assume 10 requests each? 10 million a day is about 100 a second, so that's 1,000 a second, and I'll assume 3,000 at peak. Around 5 API servers at 70% load. So the API tier is not the hard part.</x-you>
+<x-you>Can I assume each user makes 10 requests a day? 10 million requests a day is about 100 a second, so 100 million requests a day is about 1,000 a second. I will assume the peak is 3 times that, so 3,000 a second, which needs around 5 API servers at 70% load. That means the API tier is not the hard part of this design.</x-you>
 <x-interviewer>Then what is?</x-interviewer>
-<x-you>The photos. If 1 million are uploaded a day at 1 MB, that is a petabyte a year with copies. 1,000 views a second is 1 GB a second out. The design is mostly about blob storage and the CDN.</x-you>
-<x-coach>No division on the whiteboard. Every number comes from an anchor and leads to a decision.</x-coach>
+<x-you>The photos are. If 1 million are uploaded a day at 1 MB each, that is about a petabyte a year with three copies. If users view 1,000 photos a second, that is 1 GB a second going out. So the design is mostly about blob storage and a CDN.</x-you>
+<x-coach>The candidate states the assumptions, uses rounded anchors without long division, and ends each number with a design decision.</x-coach>
 </x-interview>
-
-<p>If the interviewer asks how sure you are: "Within a factor of 2 or 3, which is enough to choose the architecture." Be more careful only when a number lands close to a real limit, such as 900 requests a second against a server that handles 1,000.</p>
-
-<x-callout type="mistake" title="Forgetting peak and copies">
-<p>Average rates size nothing: systems fall over at peak. Storage without replication is a third of the disk you will buy. Apply the 3 times for peak and the 3 times for copies, out loud.</p>
-</x-callout>
 
 <x-quiz>
 <script type="application/json">
@@ -192,12 +214,20 @@
         { "text": "8 Gbit/s", "correct": true, "why": "1 GB/s × 8 bits per byte = 8 Gbit/s, before any peak factor." },
         { "text": "125 Mbit/s", "why": "That divides by 8 instead of multiplying." }
       ]
+    },
+    {
+      "question": "Average load is 1,000 requests a second and one server handles 1,000. Why is one server not enough?",
+      "options": [
+        { "text": "Because 1 million a day is really 11.6 a second", "why": "That rounding changes the result by about 15%, which is not the reason." },
+        { "text": "Because peak load is about 3 times the average and servers should not run at full load", "correct": true, "why": "3,000 requests a second at peak, on servers kept at about 70% load, needs about 5 servers." },
+        { "text": "Because every request is stored three times", "why": "Copies multiply storage, not the number of API servers." }
+      ]
     }
   ]
 }
 </script>
 </x-quiz>
 
-<h2>What to practice next</h2>
+<h2>What to practise next</h2>
 
-<p>Next, turn the requirements into endpoints in <a href="/system-design/api-design.html">API Design</a>. For the estimates in a full case, see <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>, where bandwidth drives everything.</p>
+<p>Next, turn the requirements into endpoints in <a href="/system-design/api-design.html">API Design</a>. For estimates inside a full case, see <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>, where bandwidth drives most of the design.</p>

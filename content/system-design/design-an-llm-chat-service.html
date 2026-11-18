@@ -1,44 +1,43 @@
 <!--
 {
   "title": "Design an LLM Chat Service",
-  "description": "Design a consumer AI chat product: streamed replies that survive reconnects, scarce GPU capacity, token budgets, context assembly, safety and cost.",
+  "description": "How to design an LLM chat service: streaming replies, sharing a fixed GPU pool, building context and safety checks.",
   "minutes": 27,
   "kind": "design",
   "tags": ["case study", "llm", "streaming", "gpu capacity", "rate limiting"]
 }
 -->
-<p>Maya types "Plan three days in Lisbon" and the answer starts appearing word by word in under a second. She closes the app halfway, opens it on the train, and the reply is there, finished.</p>
+<p>An LLM chat service lets a user send a message to a language model and read the reply as it is generated. Interviewers ask for it because the model servers behave differently from ordinary web servers: the GPUs are expensive and slow to add, each reply takes several seconds, and every request carries the whole conversation so far.</p>
 
-<p>It looks like a chat app with a bot, but the "other person" is a pool of GPUs that is expensive, slow to grow and easy to overload; each reply takes seconds; and each request carries the conversation so far. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before reading on.</p>
+<p>The design has to deliver a long reply over a connection that can drop, share a fixed GPU pool between free and paid users, fit a long conversation into the model's limited input and run safety checks. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and you should try each "Your turn" box before reading the answer.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a chat assistant product on top of a language model.</x-interviewer>
-<x-you>I'll assume the model exists and I build the product around it: send, stream the reply, keep history. Do I run the model servers, or call an API?</x-you>
+<x-you>I will assume the model exists and I build the product around it. Do we run the model servers ourselves, or call an outside API?</x-you>
 <x-interviewer>You run the model servers on your own GPUs.</x-interviewer>
-<x-you>How many users? Free and paid tiers?</x-you>
-<x-interviewer>10 million daily users, about 10 messages each. Both tiers.</x-interviewer>
-<x-you>Then GPU capacity is the scarce resource. Priorities: first words fast, a reply survives a dropped connection, paid users keep working under overload, nobody uses up the cluster alone, and every input and output passes a safety check. I'll leave out uploads, tools and web search.</x-you>
-<x-coach>Asking who runs the GPUs matters: with an outside API, capacity is a quota problem. Naming the scarce resource early shows where the depth goes.</x-coach>
+<x-you>How many users are there, and are there free and paid tiers?</x-you>
+<x-interviewer>There are 10 million daily users who send about 10 messages each, and both tiers exist.</x-interviewer>
+<x-you>Then GPU capacity is the scarce resource. My priorities are fast first words, replies that survive a dropped connection, paid users who keep working during overload, and a safety check on every input and output. I will leave out file uploads, tools and web search.</x-you>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> start a conversation, send a message, stream the reply, stop it, list and reopen past conversations, edit a message or regenerate a reply.</li>
-<li><strong>Non-functional:</strong> first words within 1 second for most requests; streaming at reading speed or faster; replies survive reconnects; no user message lost; free users throttled before paid; safety checks on everything.</li>
-<li><strong>Out of scope:</strong> training the model, file uploads, tool use and web search, voice.</li>
+<li><strong>Functional requirements:</strong> a user can start a conversation, send a message, read the streamed reply, stop it, reopen past conversations, and edit a message or regenerate a reply.</li>
+<li><strong>Non-functional requirements:</strong> the first words appear within 1 second for most requests, a reply survives a reconnect, no user message is lost, free users are throttled before paid users, and all input and output passes safety checks.</li>
+<li><strong>Out of scope:</strong> training the model, file uploads, tool use, web search and voice.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>Count in <a href="/ai/tokens.html">tokens</a>, not requests: a 5-token and a 2,000-token reply are one request each but cost 400 times apart. These figures are assumptions; measure your own hardware.</p>
+<p>Model cost depends on the number of <a href="/ai/tokens.html">tokens</a> processed, so the estimate counts tokens. The figures below are assumptions.</p>
 
 <ul>
-<li><strong>Messages:</strong> 10 million users × 10 = 100 million a day ÷ 86,400 ≈ 1,200 a second, about 3,500 at a peak of 3x.</li>
-<li><strong>Tokens per request:</strong> about 2,000 in (instructions plus history) and 500 out. A free user's budget of 10 such messages a day is 25,000 tokens; input counts because long conversations cost GPU time too.</li>
-<li><strong>Token rate:</strong> 3,500 × 500 = 1.75 million output tokens a second at peak, plus 3,500 × 2,000 = 7 million input tokens to read.</li>
-<li><strong>Open streams:</strong> at 50 tokens a second, a 500-token reply takes 10 seconds. In flight = arrival rate × duration = 3,500 × 10 = 35,000 streams at peak.</li>
-<li><strong>Storage:</strong> 400 B message + 2,000 B reply + 600 B metadata = 3 KB per exchange: 300 GB a day, about 110 TB a year.</li>
+<li><strong>Message rate:</strong> 10 million users sending 10 messages is 100 million messages a day. Divided by 86,400 seconds, that is about 1,200 messages a second on average and about 3,500 at a peak of 3 times the average.</li>
+<li><strong>Tokens per request:</strong> a request has about 2,000 input tokens (instructions plus history) and 500 output tokens. A free user's daily budget of 25,000 tokens covers about 10 such messages, and input tokens count because they cost GPU time too.</li>
+<li><strong>Token rate at peak:</strong> 3,500 × 500 is 1.75 million output tokens a second.</li>
+<li><strong>Open streams:</strong> a model replica generates about 50 tokens a second per stream, so a 500-token reply takes 10 seconds. The streams open at once are the arrival rate times the duration: 3,500 × 10 = 35,000 at peak.</li>
+<li><strong>Storage:</strong> one exchange needs about 400 B for the message, 2,000 B for the reply and 600 B of metadata, which is 3 KB. That is 300 GB a day and about 110 TB a year.</li>
 </ul>
 
 <x-estimate title="How many GPU replicas at peak">
@@ -49,18 +48,18 @@
   "unit": "count",
   "answer": "900",
   "accept": ["300", "3000"],
-  "steps": ["Peak output: 3,500 × 500 = 1,750,000 tokens a second", "One replica: 40 × 50 = 2,000 tokens a second", "1,750,000 ÷ 2,000 = 875, call it 900; the average of 1,200 a second needs 300"],
-  "note": "Check with streams: 35,000 ÷ 40 = 875. Reading 7 million prompt tokens a second also takes GPU time, so plan headroom."
+  "steps": ["Peak output: 3,500 × 500 = 1,750,000 tokens a second", "One replica: 40 × 50 = 2,000 tokens a second", "1,750,000 ÷ 2,000 = 875, which rounds to 900; the average of 1,200 messages a second needs about 300"],
+  "note": "The streams give the same answer: 35,000 ÷ 40 = 875."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="3" title="Define the API">
 <x-task>
-<p>Write endpoints to send a message and stream the reply. What happens when the connection drops halfway, and what does an overloaded server return?</p>
+<p>Write the endpoints for sending a message and streaming the reply. What happens when the connection drops halfway through a reply, and what does an overloaded server return?</p>
 </x-task>
 <x-answer>
-<p>A <code>POST</code> answered with a server-sent event stream of numbered chunks, plus a resume endpoint taking the last id seen. A client message id makes retries safe. Overload is 429 with <code>Retry-After</code>.</p>
+<p>Sending a message is a <code>POST</code> that is answered with a server-sent event stream of numbered chunks, and a resume endpoint accepts the id of the last chunk the client saw. A client-generated message id makes retries safe. An overloaded server returns 429 with a <code>Retry-After</code> header.</p>
 </x-answer>
 </x-tryit>
 
@@ -72,8 +71,8 @@ POST /conversations                          201 { "conversation_id": "c42" }
 
 POST /conversations/{id}/messages            Accept: text/event-stream
   body: { "content": "Plan three days in Lisbon",
-          "client_msg_id": "m-7f3a",          retry-safe
-          "parent_id": "a19" }                which reply this follows
+          "client_msg_id": "m-7f3a",          makes a retry safe
+          "parent_id": "a19" }                the reply this message follows
   200 event stream:
     event: start  data: { "user_msg_id": "u20", "reply_id": "a21" }
     id: 1   event: delta  data: { "text": "Day one:" }
@@ -91,14 +90,14 @@ GET  /conversations/{id}/messages?before=...
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>server-sent events over WebSockets</strong>. A streaming reply is one-way; the user's message is an ordinary <code>POST</code>. Server-sent events are plain HTTP, pass existing proxies, and define resume: a reconnecting client sends <code>Last-Event-ID</code>. A WebSocket buys two-way traffic you do not need (see <a href="/system-design/realtime-communication.html">real-time communication</a>).</p>
+<p>The API decision worth arguing is <strong>server-sent events instead of WebSockets</strong>. Streaming a reply sends data in one direction only. Server-sent events are plain HTTP, so they pass through existing proxies, and they define resuming, because a reconnecting browser sends the <code>Last-Event-ID</code> header. A WebSocket would add two-way traffic that this product does not need (see <a href="/system-design/realtime-communication.html">real-time communication</a>).</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch conversations and messages. How do you represent "regenerate this reply" and "edit my earlier message", and where do tokens live while a reply streams?</p>
+<p>Sketch the conversation and message records. How do you represent "regenerate this reply" and "edit my earlier message", and where do the tokens live while a reply is still streaming?</p>
 </x-task>
 <x-answer>
-<p>Messages form a tree: a regenerated reply or edited message is a new sibling under the same parent. Tokens in flight live in a short-lived stream buffer; the finished reply is stored once.</p>
+<p>Messages form a tree, so a regenerated reply or an edited message becomes a new sibling under the same parent. Tokens that are still being generated live in a short-lived stream buffer, and the finished reply is stored once in the message table.</p>
 </x-answer>
 </x-tryit>
 
@@ -109,10 +108,10 @@ GET  /conversations/{id}/messages?before=...
 conversations              -- partition key: user_id
   user_id, conversation_id       PRIMARY KEY
   title          TEXT
-  updated_at     TIMESTAMP       -- list newest first
-  summary        TEXT NULL       -- of older turns, see deep dives
+  updated_at     TIMESTAMP       -- used to list newest first
+  summary        TEXT NULL       -- summary of older turns, see deep dives
   summary_upto   message_id NULL
-  current_leaf   message_id      -- the path being shown
+  current_leaf   message_id      -- the branch the user is viewing
 
 messages                   -- partition key: conversation_id
   conversation_id, message_id    PRIMARY KEY   -- time-ordered ids
@@ -127,21 +126,20 @@ usage                      -- one row per user per day
 </pre>
 </x-code>
 
-<p>Append a message, read a conversation in order, list conversations by recency: no joins, append-only, 110 TB a year. A <strong>wide-column store</strong> (such as Cassandra) keyed by conversation fits, as in <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>. The stream buffer is an in-memory log per reply (a Redis stream, say) that expires 10 minutes after the reply finishes.</p>
+<p>The access patterns are to append a message, to read one conversation in order and to list a user's conversations by recency. None needs a join, and the data grows by about 110 TB a year. A <strong>wide-column store</strong> such as Cassandra, keyed by conversation, fits this pattern, as it does in <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>. The stream buffer is an in-memory log for each reply that expires 10 minutes after the reply finishes.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes between Maya's phone and the GPUs. Where are budgets checked and context built, what picks the replica, and how do tokens come back?</p>
+<p>Sketch the components between the user's phone and the GPUs. Where are token budgets checked and context built, what chooses the replica, and how do tokens travel back to the phone?</p>
 </x-task>
 <x-answer>
-<p>A gateway checks the token budget; a chat service saves the message, builds context and runs safety checks; an inference router queues by tier and places requests on replicas; tokens return through a stream buffer.</p>
+<p>A gateway checks the token budget. A chat service saves the message, builds the context and runs the safety checks. An inference router queues requests by tier and places them on replicas, and the tokens return through a stream buffer.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-
-<x-arch caption="The chat service builds the request and owns the reply; the router keeps GPUs full without a queue longer than users will wait; tokens return through a buffer the client can resume from.">
+<x-arch caption="The chat service builds the request and owns the reply, the router keeps the GPUs busy without letting the queue grow too long, and tokens return through a buffer that the client can resume from.">
 <script type="application/json">
 {
   "nodes": [
@@ -170,7 +168,7 @@ usage                      -- one row per user per day
 </script>
 </x-arch>
 
-<x-tracer title="One message: save, assemble, queue, stream, reconnect, and two failures">
+<x-tracer title="One message from save to stream, a reconnect, and two failures">
 <script type="application/json">
 {
   "arch": {
@@ -199,56 +197,56 @@ usage                      -- one row per user per day
   },
   "steps": [
     {
-      "caption": "Maya, a free user, sends a message in c42. The gateway reserves 3,000 tokens of her daily 25,000: the context estimate plus the 1,000-token reply cap.",
-      "arch": { "active": ["app", "gw", "budget", ["app", "gw"], ["gw", "budget"]], "dim": ["store", "safety", "router", "gpu", "buffer"], "notes": { "budget": "used 9,000" } },
-      "vars": { "budget left": "16,000" }
+      "caption": "A free user sends a message. She has 16,000 tokens left of her 25,000 daily budget, and the gateway reserves 3,000 of them: the 2,000-token context estimate plus a 1,000-token reply cap.",
+      "arch": { "active": ["app", "gw", "budget", ["app", "gw"], ["gw", "budget"]], "dim": ["store", "safety", "router", "gpu", "buffer"], "notes": { "budget": "reserved 3,000" } },
+      "vars": { "budget left": "13,000" }
     },
     {
-      "caption": "The chat service saves her message first, keyed by <code>client_msg_id</code>: never lost, and a retried POST finds it.",
+      "caption": "The chat service saves the message first, keyed by <code>client_msg_id</code>, so it cannot be lost and a retried POST finds it.",
       "arch": { "active": ["chat", "store", ["gw", "chat"], ["chat", "store"]], "dim": ["safety", "router", "gpu", "buffer", "budget"], "notes": { "store": "u20 saved" } },
-      "vars": { "budget left": "16,000" }
+      "vars": { "budget left": "13,000" }
     },
     {
-      "caption": "It builds the context: system instructions, the summary of older turns, and recent turns. 2,100 tokens.",
+      "caption": "The chat service builds the context from the instructions, the summary and the recent turns: 2,100 tokens.",
       "arch": { "active": ["chat", "store", ["chat", "store"]], "dim": ["safety", "router", "gpu", "buffer", "budget"] },
       "vars": { "context": "2,100 tokens" }
     },
     {
-      "caption": "A fast input classifier checks the message before any GPU time is spent: pass.",
+      "caption": "A fast input classifier checks the message before any GPU time is spent, and this one passes.",
       "arch": { "active": ["safety", ["chat", "safety"]], "mark": ["safety"], "dim": ["router", "gpu", "buffer", "budget"] },
       "vars": { "context": "2,100 tokens" }
     },
     {
-      "caption": "The router queues it as free tier, then sends it to c42's last replica, which likely holds the prompt prefix and has a free slot.",
+      "caption": "The router queues the request as free tier and sends it to the replica that served this conversation last, which probably still holds the prompt prefix.",
       "arch": { "active": ["router", "gpu", ["chat", "router"], ["router", "gpu"]], "dim": ["store", "safety", "budget"], "notes": { "router": "wait 0.3 s" } },
       "vars": { "context": "2,100 tokens", "queue wait": "0.3 s" }
     },
     {
-      "caption": "The replica reads the prompt in one pass, then generates. Numbered chunks land in the buffer; the chat service checks each sentence and forwards it. First words at about 0.8 s.",
+      "caption": "The replica reads the prompt and starts generating. Numbered chunks land in the buffer, and the chat service checks each sentence before forwarding it, so the first words arrive at about 0.8 seconds.",
       "arch": { "active": ["gpu", "buffer", "chat", "app", ["gpu", "buffer"], ["buffer", "chat"], ["chat", "gw"], ["gw", "app"]], "dim": ["store", "budget", "router"], "notes": { "buffer": "chunk 42" } },
       "vars": { "first words": "0.8 s", "chunks sent": 42 }
     },
     {
-      "caption": "Maya's phone switches networks at chunk 180 and drops; the replica keeps writing.",
+      "caption": "The phone loses its connection at chunk 180, and the replica keeps writing chunks into the buffer.",
       "arch": { "active": ["gpu", "buffer", ["gpu", "buffer"]], "fail": ["app", ["gw", "app"]], "dim": ["store", "budget", "router", "safety"], "notes": { "app": "offline", "buffer": "chunk 230" } },
       "vars": { "client saw": 180, "generated": 230 }
     },
     {
-      "caption": "The phone reconnects with <code>Last-Event-ID: 180</code>, maybe to another chat server, which replays 181 to 230 from the buffer, then follows live.",
+      "caption": "The phone reconnects with <code>Last-Event-ID: 180</code>, possibly to another chat server, which replays chunks 181 to 230 and then follows the live stream.",
       "arch": { "active": ["app", "gw", "chat", "buffer", ["app", "gw"], ["gw", "chat"], ["chat", "buffer"], ["chat", "gw"], ["gw", "app"]], "dim": ["store", "budget", "router", "safety"] },
       "vars": { "client saw": 230, "generated": 230 }
     },
     {
-      "caption": "Done at 520 tokens. The reply is saved once; the budget settles at 2,620 actual tokens, refunding 380.",
+      "caption": "The reply finishes at 520 tokens and is saved once, and the budget refunds 380 of the 3,000 reserved tokens.",
       "arch": { "active": ["store", "budget", ["chat", "store"], ["gw", "budget"]], "mark": ["app", "store"], "dim": ["router", "gpu", "safety"], "notes": { "store": "a21 complete" } },
-      "vars": { "tokens": "2,100 in + 520 out", "budget left": "16,380" }
+      "vars": { "tokens": "2,100 in + 520 out", "budget left": "13,380" }
     },
     {
-      "caption": "Another reply's replica dies at token 300. The router sends the prompt plus those 300 tokens, ahead of new requests, to another replica, which continues from 301: a pause, not a restart.",
+      "caption": "In another reply, the replica dies at token 300. The router sends the prompt plus those 300 tokens to another replica ahead of new requests, and generation continues from token 301.",
       "arch": { "fail": ["gpu"], "active": ["router", ["chat", "router"], ["router", "gpu"]], "dim": ["store", "budget", "safety", "app"], "notes": { "gpu": "replica lost", "router": "resume at 301" } }
     },
     {
-      "caption": "Peak hour: the free queue's expected wait passes 10 seconds. New free requests get 429 and a retry time; paid requests keep flowing.",
+      "caption": "At peak the free queue's expected wait passes 10 seconds, so new free requests get a 429 response while paid requests keep flowing.",
       "arch": { "active": ["gw", "router", ["gw", "app"]], "fail": [["gw", "chat"]], "dim": ["store", "safety", "buffer", "budget"], "notes": { "gw": "429 free tier", "router": "free wait 11 s" } }
     }
   ]
@@ -258,76 +256,74 @@ usage                      -- one row per user per day
 
 <h2>Deep dives</h2>
 
-<h3>Streaming that survives reconnects</h3>
+<h3>Streaming a reply so that it survives reconnects</h3>
 
-<p><strong>Separate generating a reply from delivering it.</strong> If the reply lived only in the HTTP connection, every drop would lose a half-finished answer and its GPU time.</p>
+<p>A reply takes about 10 seconds to generate, and mobile connections drop often. If generation is tied to the HTTP connection, a dropped connection loses the half-finished reply and wastes the GPU time already spent on it.</p>
 
-<ul>
-<li><strong>Generation</strong> writes numbered chunks into the reply's buffer, whoever is listening.</li>
-<li><strong>Delivery</strong> is any chat server reading from the client's last sequence number.</li>
-<li><strong>Retries:</strong> a <code>POST</code> retried with the same <code>client_msg_id</code> attaches to the existing stream, never making two replies (see <a href="/system-design/idempotency-and-retries.html">idempotency</a>).</li>
-<li><strong>Stop:</strong> an explicit stop frees the batch slot at once; a disconnect does not, since users expect the reply when they return.</li>
-<li><strong>Server crash:</strong> the buffer still has every chunk; another server sees the reply stuck in <code>streaming</code> with no heartbeat and finishes it as a continuation.</li>
-</ul>
+<p>The fix is to separate generating a reply from delivering it. Generation writes numbered chunks into a per-reply buffer, whether or not anyone is listening. Delivery is any chat server forwarding chunks from that buffer. A reconnecting client sends the number of the last chunk it saw, and whichever server receives the request replays everything after it and then follows the live stream.</p>
 
-<h3>GPU capacity: batching, admission and tiers</h3>
+<p>Three details matter. First, a retried <code>POST</code> with the same <code>client_msg_id</code> attaches to the existing reply instead of creating a second one (see <a href="/system-design/idempotency-and-retries.html">idempotency</a>). Second, a stop request frees the replica's batch slot immediately, but a disconnect does not, because the user usually returns for the reply. Third, if a chat server crashes, the buffer still holds every chunk, so another server that finds the reply stuck in the <code>streaming</code> state with no heartbeat can finish delivering it.</p>
 
-<p>You cannot autoscale out of a peak: new GPU capacity takes minutes and may not exist. So manage a fixed pool:</p>
+<h3>Sharing a fixed GPU pool</h3>
 
-<ul>
-<li><strong>Continuous batching.</strong> Each step, a replica produces one token for every stream in its batch, so 40 streams cost little more per step than one. A fixed batch waits for its longest reply; continuous batching adds requests between steps and frees a slot the moment a reply ends. The limit is memory: each stream keeps per-token state (the attention key/value cache), so an 8,000-token conversation takes about four times the room of a 2,000-token one. Long prompts are read in pieces between steps so they do not stall the batch.</li>
-<li><strong>Admission control.</strong> The router queues per tier and estimates the wait as queued tokens ÷ pool throughput. Past 10 seconds for the free tier, new free requests get 429: a fast "busy, try in 30 seconds" beats a timeout after the GPU time was spent.</li>
-<li><strong>Rate limits in tokens.</strong> A per-user <a href="/system-design/rate-limiting.html">token bucket</a> counts tokens, not requests: one 8,000-token request costs what four 2,000-token ones do. Reserve input plus the output cap, then refund the difference.</li>
-<li><strong>Priority tiers.</strong> The router fills free slots from the paid queue first, keeping a fixed share for free requests so they slow but do not starve.</li>
-</ul>
+<p>You cannot autoscale out of a traffic peak, because new GPU capacity takes minutes to start and may not exist, so the system must decide who is served when demand exceeds a fixed pool. Four mechanisms work together.</p>
+
+<p><strong>Continuous batching</strong> is how one replica serves many streams. In each step the replica produces one token for every stream in its batch, so 40 streams cost little more per step than one. Continuous batching adds new requests between steps and frees a slot the moment a reply ends, instead of waiting for the longest reply in a fixed batch. The limit is memory: each stream keeps per-token state in the attention key/value cache, so an 8,000-token conversation takes about four times the memory of a 2,000-token one.</p>
+
+<p><strong>Admission control</strong> limits how much work enters the pool. The router keeps a queue per tier and estimates the wait as the queued tokens divided by the pool's throughput. When the estimated wait for the free tier passes 10 seconds, new free requests receive a 429 response with a retry time. An immediate "busy" answer is better than a timeout that arrives after the user has waited.</p>
+
+<p><strong>Token-based rate limits</strong> keep any one user from taking the pool. A per-user <a href="/system-design/rate-limiting.html">token bucket</a> counts tokens and not requests. The gateway reserves the input tokens plus the output cap when the request arrives and refunds the difference when the reply ends.</p>
+
+<p><strong>Priority tiers</strong> decide who is served first. The router fills free slots from the paid queue first but reserves a fixed share for free requests, so free users slow down but are not starved.</p>
 
 <x-tradeoffs caption="What to do when demand exceeds the GPU pool">
 <script type="application/json">
 {
   "options": [
-    { "name": "Queue everything", "good": "Nobody is refused.", "bad": "Waits grow without limit; users give up and resend, adding load.", "pick": "Never as the only control." },
-    { "name": "Shed by tier when the wait is too long", "good": "Load stays at what the pool can serve; paid users protected; fast, clear errors.", "bad": "Free users see refusals at peak.", "pick": "The usual answer with tiers.", "default": true },
-    { "name": "Degrade the work", "good": "Everyone gets something: shorter replies or a smaller model.", "bad": "Quality drops without the user choosing.", "pick": "With shedding, for the free tier at peak." }
+    { "name": "Queue everything", "good": "No request is refused.", "bad": "Waits grow without limit, and users who give up and resend add even more load.", "pick": "Only as one part of the design, never as the only control." },
+    { "name": "Shed by tier when the wait is too long", "good": "Load stays at what the pool can serve, paid users are protected, and errors are fast and clear.", "bad": "Free users see refusals at peak.", "pick": "This is the right choice for a product with tiers.", "default": true },
+    { "name": "Degrade the work", "good": "Everyone gets some answer, for example a shorter reply or one from a smaller model.", "bad": "Quality drops without the user having chosen it.", "pick": "Together with shedding, for the free tier at peak." }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<h3>Building the context</h3>
+<h3>Building the context for each request</h3>
 
-<p>The model remembers nothing between requests: each carries the instructions and conversation so far inside a limited <a href="/ai/the-context-window.html">context window</a>. Longer prompts cost more, delay the first word, and can make answers worse (<a href="/ai/context-rot.html">context rot</a>), so budget each request, here 8,000 tokens: instructions 1,000, reply cap 1,000, summary up to 500, recent turns 5,500.</p>
+<p>The problem is that the model remembers nothing between requests, so each request must carry the instructions and the conversation so far inside a limited <a href="/ai/the-context-window.html">context window</a>. Longer prompts cost more, delay the first word and can make answers worse (see <a href="/ai/context-rot.html">context rot</a>), so each request gets a fixed budget. Here the budget is 8,000 tokens: 1,000 for instructions, 1,000 for the reply, 500 for a summary and 5,500 for recent turns.</p>
 
-<p>A 40-turn conversation at about 600 tokens a turn is 24,000 tokens; most cannot be sent. Older turns go into a <strong>rolling summary</strong>: when recent turns pass about 4,500 tokens, a background job folds the oldest 2,000 into the summary with a small model, storing the id of the last message covered. Retrieval over old turns (<a href="/system-design/design-a-rag-system.html">Design a RAG System</a>) can recover a dropped detail; <a href="/ai/context-engineering.html">context engineering</a> covers the prompt side.</p>
+<p>A 40-turn conversation at about 600 tokens a turn is 24,000 tokens, so most of it cannot be sent. There are three ways to handle that.</p>
 
-<p>Order matters for cost. A model server can reuse work on a recent prompt prefix, but only if it matches token for token from the start. So put fixed instructions first, then the summary, then the turns; between summary refreshes turns are only appended, so consecutive requests share a long prefix. The router sends a conversation back to its last replica (<a href="/system-design/consistent-hashing.html">consistent hashing</a> on the conversation id, with a fallback when full) so the prefix is not read again. Caching whole replies rarely pays: contexts almost never match after the first turn.</p>
+<p><strong>Truncation</strong> drops the oldest turns. It is trivial to build, but the model forgets everything early in the conversation, including the user's original goal.</p>
 
-<h3>Safety in the path</h3>
+<p>A <strong>rolling summary</strong> keeps the gist of the old turns. When the recent turns pass about 4,500 tokens, a background job folds the oldest 2,000 tokens into the stored summary with a small model and records the last message it covered. This keeps the main facts for the price of an occasional extra model call, although the summary can lose details.</p>
 
-<p>Two checks, placed for cost and latency (see <a href="/ai/guardrails.html">guardrails</a>):</p>
+<p><strong>Retrieval over old turns</strong> indexes every turn and adds the most relevant ones to the prompt. It can recover a detail that a summary dropped, but it needs an index and adds latency (see <a href="/system-design/design-a-rag-system.html">Design a RAG System</a>). A rolling summary is the right default for most chat products, with retrieval added only when users expect exact recall of old details.</p>
 
-<ul>
-<li><strong>Input, before the queue.</strong> A small classifier checks the message, so a blocked request costs no GPU time. Treat pasted text as data, not instructions (see <a href="/ai/prompt-injection.html">prompt injection</a>).</li>
-<li><strong>Output, while streaming.</strong> Checking only the finished reply shows unchecked text for 10 seconds; checking every token is too slow. Hold each sentence until it passes, a fraction of a second. Mark passed chunks in the buffer, so a resume replays only checked text. If a later sentence fails, stop generation and send a <code>retract</code> event to replace what the client showed.</li>
-</ul>
+<p>Prompt order affects cost. A model server can reuse the work it did on a recent prompt prefix, but only if the new prompt matches the old one token for token from the start. For that reason the prompt puts the fixed instructions first, then the summary, then the turns, so that consecutive requests share a long prefix between summary refreshes. The router also sends a conversation back to the replica that served it last, using <a href="/system-design/consistent-hashing.html">consistent hashing</a> on the conversation id.</p>
 
-<p>If the safety service is down, fail closed: pause new generations rather than ship unchecked output. A classifier outage then becomes a product outage, so run it redundantly.</p>
+<h3>Where to run the safety checks</h3>
 
-<x-callout type="mistake" title="Running safety checks after the GPU">
-<p>Checking the input only after generation wastes GPU time on requests you will refuse anyway. Cheap checks go before the expensive step.</p>
-</x-callout>
+<p>Every message and every reply must be checked (see <a href="/ai/guardrails.html">guardrails</a>), but a check in the wrong place either delays every user or lets harmful text reach the screen.</p>
+
+<p>The <strong>input check</strong> runs before the request enters the queue. A small, fast classifier reads the message, so a blocked request uses no GPU time.</p>
+
+<p>For the <strong>output check</strong> there are three placements. Checking only the finished reply is simple, but the user has already read up to 10 seconds of unchecked text. Checking every token is too slow and too noisy for a classifier to judge. The compromise is to hold each sentence back until it passes the classifier, which adds a fraction of a second. Only chunks that passed are replayed to a resuming client. If a later sentence fails, the service stops generation and sends a <code>retract</code> event that makes the client replace what it showed.</p>
+
+<p>If the safety service is down, the system fails closed and pauses new generations. This turns a classifier outage into a product outage, so the classifier runs redundantly.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, 35,000 messages a second at peak, the web tier and store scale out as usual. The GPU pool needs about 9,000 replicas, which you may not be able to buy or power. Beyond the controls above, the levers are fewer tokens per reply, smaller models for more requests, and routing load to regions where it is night.</p>
+<p>At 10 times the load, or 35,000 messages a second at peak, the gateway, chat service and store scale out. The GPU pool is the real limit: it would need about 8,750 replicas, which may be impossible to buy or power. The remaining levers are shorter replies and smaller models.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A GPU replica</td><td>Its 40 streams stop mid-reply.</td><td>Resend each prompt plus tokens so far to other replicas, ahead of new requests.</td></tr>
-<tr><td>A chat server</td><td>Its client connections drop.</td><td>Clients resume elsewhere; orphaned replies finish from the buffer.</td></tr>
-<tr><td>The stream buffer</td><td>In-flight chunks are lost; resume fails.</td><td>Replicate it; at worst, mark those replies failed for users to regenerate.</td></tr>
-<tr><td>The safety service</td><td>New generations pause (fail closed).</td><td>Redundancy, as above.</td></tr>
-<tr><td>The conversation store</td><td>New messages cannot be saved.</td><td>Refuse new messages rather than answer and lose them.</td></tr>
+<tr><td>A GPU replica</td><td>The 40 streams on it stop in the middle of their replies.</td><td>The router resends each prompt plus its tokens so far to other replicas, ahead of new requests.</td></tr>
+<tr><td>A chat server</td><td>The client connections on it drop.</td><td>Clients resume on another server, and orphaned replies are finished from the buffer.</td></tr>
+<tr><td>The stream buffer</td><td>Chunks that are in flight are lost and resuming fails.</td><td>Replicate the buffer, and if it is lost anyway, mark those replies failed so users can regenerate.</td></tr>
+<tr><td>The safety service</td><td>New generations pause because the system fails closed.</td><td>Run the classifiers redundantly.</td></tr>
+<tr><td>The conversation store</td><td>New messages cannot be saved.</td><td>Refuse new messages, because answering an unsaved message would lose it.</td></tr>
 </tbody>
 </table>
 
@@ -336,42 +332,40 @@ usage                      -- one row per user per day
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>A web server calls the model; history in a database; streaming once prompted.</td></tr>
-<tr><td>Mid</td><td>Server-sent events, stored conversations, request rate limits, truncated history, a queue before the model.</td></tr>
-<tr><td>Senior</td><td>Counts in tokens, sizes the GPU pool, separates generation from delivery, explains batching and its memory limit, sheds load by tier, budgets context for prefix reuse, and places safety checks by cost.</td></tr>
+<tr><td>Junior</td><td>A web server calls the model and keeps the history in a database.</td></tr>
+<tr><td>Mid-level</td><td>The answer streams with server-sent events, rate-limits requests, truncates history and queues requests in front of the model.</td></tr>
+<tr><td>Senior</td><td>The answer counts in tokens, sizes the GPU pool, separates generation from delivery, explains batching and its memory limit, sheds load by tier, and places safety checks by cost.</td></tr>
 </tbody>
 </table>
 
-<x-interview title="Peak hour" tone="weak">
-<x-interviewer>It's peak hour and GPUs are full. What happens?</x-interviewer>
-<x-you>Autoscale the GPU servers and put a queue in front.</x-you>
-<x-coach>GPU capacity takes minutes to add and may not exist; an unbounded queue turns overload into timeouts after the GPU time is spent.</x-coach>
-</x-interview>
-
 <x-interview title="Peak hour" tone="strong">
-<x-interviewer>It's peak hour and GPUs are full. What happens?</x-interviewer>
-<x-you>The pool is fixed for the next few minutes, so I decide who waits. The router queues by tier and estimates the wait from queued tokens. Past 10 seconds for free users, the gateway returns 429 with a retry time; paid users keep their share. Budgets are in tokens, because cost scales with tokens.</x-you>
+<x-interviewer>It is peak hour and the GPUs are full. What happens?</x-interviewer>
+<x-you>The pool is fixed for the next few minutes, so I have to decide who waits. The router keeps a queue per tier and estimates the wait from queued tokens. When the estimate for free users passes 10 seconds, the gateway returns 429 with a retry time, and paid users keep their slots.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How do you measure whether you are meeting the latency goal?</h3>
-<p>Track time to first token and tokens per second, split into queue wait and model time, per tier. Rising queue wait with flat model time means capacity or shedding, not faster code.</p>
+<p>Track the time to the first token and the tokens per second for each tier, and split the first figure into queue wait and model time. If queue wait rises while model time stays flat, the problem is capacity and not code speed.</p>
 
-<h3>How does "regenerate" work?</h3>
-<p>It adds a sibling of the old reply under the same parent and reruns the context; the current leaf points to the new one, and the old stays reachable. Sampling makes them differ (see <a href="/ai/sampling-and-temperature.html">sampling and temperature</a>).</p>
+<h3>How does regenerating a reply work?</h3>
+<p>The service adds a new sibling of the old reply under the same parent message and runs the context-building step again. The current leaf then points to the new reply, and the old one stays reachable as another branch.</p>
+
+<h3>What happens when the user presses stop?</h3>
+<p>The client calls the stop endpoint, and the router frees the replica's batch slot at once. The text generated so far is saved with the status <code>stopped</code>. The user is charged only for the tokens actually produced, so the gateway refunds the rest of the reserved budget.</p>
 
 <h3>How would you add memory across conversations?</h3>
-<p>Extract a few facts per user after conversations and add relevant ones within the context budget. Users must be able to see and delete them (see <a href="/ai/memory.html">memory</a>).</p>
+<p>After a conversation ends, a background job extracts a few facts about the user and stores them, and the most relevant ones are added to later prompts within the context budget. Users must be able to see and delete these facts (see <a href="/ai/memory.html">memory</a>).</p>
+
 
 <x-checklist title="Self-review: LLM chat service">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked who runs the model and about tiers", "I named GPU capacity as the scarce resource", "I set a time-to-first-words target"] },
-    { "title": "Numbers and interfaces", "items": ["I counted in tokens, not just requests", "I sized the GPU pool and open streams", "I chose server-sent events with numbered chunks", "Sending a message is safe to retry"] },
-    { "title": "Design and depth", "items": ["I separated generating a reply from delivering it", "I explained continuous batching and why long contexts cut concurrency", "I shed load by tier and limited users by tokens", "I budgeted context with a summary and a stable prefix", "Cheap safety checks run before the GPU; output is checked while streaming"] },
-    { "title": "Failure", "items": ["I covered a replica dying mid-reply", "I chose fail closed for safety and named its cost"] }
+    { "title": "Before drawing", "items": ["I asked who runs the model and whether there are tiers", "I named GPU capacity as the scarce resource", "I set a target for the time to the first words"] },
+    { "title": "Numbers and interfaces", "items": ["I counted in tokens and not only in requests", "I sized the GPU pool and the number of open streams", "I chose server-sent events with numbered chunks", "I made sending a message safe to retry"] },
+    { "title": "Design and depth", "items": ["I separated generating a reply from delivering it", "I explained continuous batching and why long contexts reduce concurrency", "I shed load by tier and limited users by tokens", "I budgeted the context with a summary and a stable prefix", "I ran cheap safety checks before the GPU and checked the output while it streams"] },
+    { "title": "Failure", "items": ["I covered a replica dying in the middle of a reply", "I chose to fail closed for safety and named what that costs"] }
   ]
 }
 </script>

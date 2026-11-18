@@ -1,64 +1,60 @@
 <!--
 {
   "title": "Design Typeahead Search",
-  "description": "Design search-box autocomplete: top suggestions per prefix, trie versus precomputed table, offline popularity builds, and a latency budget met by caching.",
-  "minutes": 28,
+  "description": "How to design search-box autocomplete, including precomputed top-five lists per prefix, offline popularity rebuilds, and caching to stay under 100 ms.",
+  "minutes": 26,
   "kind": "design",
   "tags": ["case study", "trie", "caching", "cdn", "batch processing"]
 }
 -->
-<p>You type "pi" into a search box and a list drops down: "pizza near me", "pie crust recipe", "pilates". Each keystroke is a request, the answer must beat the next keystroke, and the list must reflect what millions of people search for.</p>
+<p>Typeahead search shows a list of suggested queries below a search box and updates the list as the user types each character. For a prefix such as "pi" the service returns the most popular past queries that start with it. The service must answer before the next keystroke, within about 100 ms.</p>
 
-<p>The obvious answer, a trie on a server, is half right. The real work is precomputing answers offline and spending a 100 ms budget across the client, the network and an edge cache. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. If tries are new, read <a href="/algorithms/tries.html">Tries</a> first.</p>
+<p>The obvious design is a trie on a server, which is only half of the answer. The hard parts are avoiding a search through a huge subtree on every request, keeping popularity current without slowing the serving path, and using caches to meet the latency target. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and the data structure is explained in <a href="/algorithms/tries.html">Tries</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design the autocomplete for a search box.</x-interviewer>
-<x-you>Do we suggest past queries ranked by popularity, not documents? How many?</x-you>
-<x-interviewer>Past queries by popularity. Show five.</x-interviewer>
-<x-you>How fresh must popularity be? And are suggestions personal?</x-you>
-<x-interviewer>A day is fine; trending within an hour would be nice. Not personalised.</x-interviewer>
-<x-you>How many users, and how fast?</x-you>
-<x-interviewer>50 million daily users, about 6 searches each. It should feel instant.</x-interviewer>
-<x-you>I'll take "instant" as under 100 ms from keystroke to list for most users. English first, prefix matches only, no spelling correction, and offensive suggestions removable quickly.</x-you>
-<x-coach>Turning "instant" into 100 ms gives the design a budget to spend. "A day" of freshness allows an offline build.</x-coach>
+<x-you>Do we suggest past queries ranked by popularity, or documents? And how many suggestions do we show?</x-you>
+<x-interviewer>Past queries ranked by popularity, and we show five.</x-interviewer>
+<x-you>How fresh does the popularity data have to be, and are the suggestions personal to each user?</x-you>
+<x-interviewer>A day old is fine, although trending queries within an hour would be nice. The suggestions are not personalised.</x-interviewer>
+<x-you>How many users do we have, and how fast does it need to be?</x-you>
+<x-interviewer>There are 50 million daily users who each search about 6 times a day, and it should feel instant.</x-interviewer>
+<x-you>I will treat instant as under 100 ms from keystroke to list for most users. I will support English and prefix matching only, with no spelling correction, and offensive suggestions must be removable quickly.</x-you>
+<x-coach>Turning "instant" into 100 ms gives the design a budget to spend, and a day of allowed staleness means popularity can be built offline.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> for a prefix, return the 5 most popular past queries starting with it, weighted to recent searches; bad suggestions can be removed.</li>
-<li><strong>Non-functional:</strong> under 100 ms for most users; very high availability (an empty list is the fallback, the search box never breaks); popularity at most a day old, trending within an hour as a stretch.</li>
-<li><strong>Out of scope:</strong> personalisation, spelling correction, other languages, searching documents (see <a href="/system-design/search-systems.html">Search Systems</a>).</li>
+<li><strong>Functional:</strong> for a prefix, return the 5 most popular past queries that start with it, weighting recent searches more, and let operators remove a bad suggestion.</li>
+<li><strong>Non-functional:</strong> under 100 ms for most users, very high availability with an empty list as the fallback, popularity at most a day old, and trending queries within an hour as a stretch goal.</li>
+<li><strong>Out of scope:</strong> personalisation, spelling correction, other languages, and searching documents (see <a href="/system-design/search-systems.html">Search Systems</a>).</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<ul>
-<li><strong>Searches:</strong> 50 million × 6 = 300 million a day.</li>
-<li><strong>Suggestion requests:</strong> a 20-character query could send 20 requests, but people pick a suggestion early, the client skips quick bursts of keystrokes (debouncing), and its cache answers repeats. Assume 6 per search: 1.8 billion a day, 1.8 × 10<sup>9</sup> ÷ 86,400 s ≈ 21,000 a second. With a 3x peak, about 62,500 a second.</li>
-<li><strong>Query log:</strong> 300 million × 100 bytes ≈ 30 GB a day for the offline build.</li>
-</ul>
+<p>The users run 50 million × 6 = 300 million searches a day. A 20-character query could send 20 suggestion requests, but people pick a suggestion early, the client waits for a short pause in typing before it sends a request (debouncing), and the client's own cache answers repeated prefixes. We assume 6 suggestion requests per search, which is 1.8 billion a day. Dividing by about 86,400 seconds gives about 21,000 a second on average, and a 3 times peak is about 62,500 a second. The query log grows by about 30 GB a day (300 million × 100 bytes).</p>
 
 <x-estimate title="Memory for every prefix's top five">
 <script type="application/json">
 {
-  "question": "We keep the 10 million most popular queries. Storing a top-5 list for every prefix of every query, how much memory does the table need at most?",
+  "question": "We keep the 10 million most popular queries. If we store a top-5 list for every prefix of every query, how much memory does the table need at most?",
   "givens": ["10 million queries kept", "Queries average 20 characters", "About 150 bytes per prefix entry (the prefix plus five suggestions)"],
   "unit": "bytes",
   "answer": "30 GB",
   "accept": ["10 GB", "100 GB"],
-  "steps": ["Each query has up to 20 prefixes: 10<sup>7</sup> × 20 = 2 × 10<sup>8</sup> prefixes at most", "2 × 10<sup>8</sup> × 150 B = 3 × 10<sup>10</sup> B = 30 GB"],
-  "note": "An upper bound: queries share prefixes, so the real count is lower. Even the bound fits in one server's memory (60 GB while a new version loads beside the old), so every server can hold the whole table."
+  "steps": ["Each query has up to 20 prefixes, so there are at most 10<sup>7</sup> × 20 = 2 × 10<sup>8</sup> prefixes", "2 × 10<sup>8</sup> × 150 B = 3 × 10<sup>10</sup> B = 30 GB"],
+  "note": "Queries share prefixes, so the real number is lower. Even this bound fits in the memory of one server."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the suggestion endpoint. What makes it cacheable by a CDN?</p>
+<p>Write the suggestion endpoint. What makes its responses cacheable by a CDN?</p>
 </x-task>
 <x-answer>
-<p>A plain <code>GET</code> with the prefix in the query string and a <code>Cache-Control</code> header, nothing personal, and a prefix normalised by the client (lowercase, trimmed) so equal prefixes share one cache entry.</p>
+<p>The endpoint is a plain <code>GET</code> with the prefix in the query string and a <code>Cache-Control</code> header. The response contains nothing personal, and the client normalises the prefix (lowercase, trimmed) so that equal prefixes share one cache entry.</p>
 </x-answer>
 </x-tryit>
 
@@ -75,18 +71,18 @@ GET /v1/suggest?q=pi&limit=5
 
   q is empty            200 with an empty list
   q longer than 50      400 Bad Request
-  service overloaded    503; the client shows no list and the user keeps typing
+  service overloaded    503, and the client shows no list while the user keeps typing
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>making the response public and cacheable</strong>. No cookie, no user id: everyone typing "pi" in the same hour hits one cached response at the edge. A user id would make every response unique and kill the cache. The cost is no personalisation in the API; the client merges your recent searches instead. A one-hour <code>max-age</code> is fine for data rebuilt daily.</p>
+<p>The API decision worth arguing is making the response public and cacheable. The request carries no cookie and no user id, so everyone who types "pi" in the same hour can be served from one cached response at the edge. A user id would make every response unique and defeat the cache. The cost is that the API cannot personalise, so the client merges the user's recent searches itself.</p>
 
 <x-tryit variant="turn" minutes="2" title="Model the data">
 <x-task>
-<p>What do the serving and offline sides each store? Which is read 62,500 times a second?</p>
+<p>What do the serving side and the offline side each store? Which of them is read 62,500 times a second?</p>
 </x-task>
 <x-answer>
-<p>Serving holds one read-only table, prefix → five best suggestions, rebuilt each build. Offline holds daily query counts, read only by the build. The hot path never computes anything.</p>
+<p>The serving side holds one read-only table that maps a prefix to its five best suggestions, and it is replaced on every build. The offline side holds daily query counts that only the build job reads. The hot path never computes anything.</p>
 </x-answer>
 </x-tryit>
 
@@ -96,7 +92,7 @@ GET /v1/suggest?q=pi&limit=5
 <pre lang="sql">
 -- serving: read-only, rebuilt each build, held in memory on every server
 prefix_top5
-  prefix       VARCHAR(20)   PRIMARY KEY   -- "pi"
+  prefix       VARCHAR(50)   PRIMARY KEY   -- "pi"
   suggestions  [ (query, score) x 5 ]       -- about 150 bytes a row with the key
   version      DATE
 
@@ -111,20 +107,20 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 </pre>
 </x-code>
 
-<p>Serving is a single-key lookup on a table that never changes between builds: an <strong>in-memory hash map</strong> loaded from a file on every server, with no database on the hot path. If it outgrew memory, the next step is a <strong>key-value store</strong> partitioned by prefix. The offline counts are large, append-only and scanned in bulk, so they belong in files in <a href="/system-design/blob-storage.html">blob storage</a> or a data warehouse.</p>
+<p>The serving table is only ever read by a single key, and it does not change between builds. It therefore fits an in-memory hash map that is loaded from a file on every suggest server, with no database on the hot path. If the table ever outgrew memory, the next step would be a key-value store partitioned by prefix. The offline counts are large, append-only and scanned in bulk, so they belong in files in <a href="/system-design/blob-storage.html">blob storage</a> or in a data warehouse.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch two paths: a keystroke that becomes a list, and a search that later changes the list. Where do caches sit?</p>
+<p>Sketch the path of a keystroke and the path of a search that later changes the list. Where do the caches sit?</p>
 </x-task>
 <x-answer>
-<p>Read path: the client's cache, a CDN edge, then identical suggest servers holding the table in memory. Write path: searches are logged; a batch job counts and ranks them and writes a versioned table to blob storage; servers load it and swap. The paths share only that file.</p>
+<p>On the read path, the client's cache comes first, then a CDN edge, then identical suggest servers that hold the table in memory. On the write path, searches are logged, a batch job counts and ranks them, and it writes a versioned table to blob storage, which the servers load and swap in.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="Keystrokes go through the edge to suggest servers that hold the whole table in memory. Searches feed an offline build that publishes a new table as a file.">
+<x-arch caption="Keystrokes go through the edge to suggest servers that hold the whole table in memory, and searches feed an offline build that publishes a new table as a file.">
 <script type="application/json">
 {
   "nodes": [
@@ -178,53 +174,53 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
   },
   "steps": [
     {
-      "caption": "Mia types \"pi\" and pauses for 30 ms. Her app normalises it to <code>pi</code> and checks its own cache: nothing yet.",
+      "caption": "Mia types \"pi\" and pauses for 30 ms. Her app normalises the prefix to <code>pi</code> and checks its own cache, which has no entry yet.",
       "arch": { "active": ["client"], "dim": ["search", "logs", "build", "snap"], "notes": { "client": "local miss" } },
       "vars": { "ms used": 30 }
     },
     {
-      "caption": "It sends <code>GET /v1/suggest?q=pi</code> to the nearest edge. No cached <code>pi</code> from the last hour: a miss.",
+      "caption": "The app sends <code>GET /v1/suggest?q=pi</code> to the nearest edge location, which has no cached copy of <code>pi</code>.",
       "arch": { "active": ["edge", ["client", "edge"]], "dim": ["search", "logs", "build", "snap"], "notes": { "edge": "miss" } },
       "vars": { "ms used": 40 }
     },
     {
-      "caption": "A suggest server does one in-memory lookup, well under a millisecond, and returns the five for <code>pi</code>. The blocklist removes nothing.",
+      "caption": "A suggest server finds the five suggestions for <code>pi</code> with one in-memory lookup.",
       "arch": { "active": ["suggest", ["edge", "suggest"]], "dim": ["search", "logs", "build", "snap"], "notes": { "suggest": "lookup pi" } },
       "vars": { "ms used": 70 }
     },
     {
-      "caption": "The answer returns with <code>max-age=3600</code>; the edge and the app keep copies. A miss at both caches fits in 100 ms only because the origin region is near.",
+      "caption": "The answer returns with <code>max-age=3600</code>, and the edge and the app keep a copy. This double miss fits in 100 ms only because the servers are nearby.",
       "arch": { "active": [["suggest", "edge"], ["edge", "client"]], "mark": ["client", "edge"], "dim": ["search", "logs", "build", "snap"] },
       "vars": { "ms used": 90 }
     },
     {
-      "caption": "Another user near the same edge types \"pi\" a minute later. Edge hit: no suggest server involved.",
+      "caption": "A minute later another user near the same edge types \"pi\". The edge has the answer, so no suggest server is involved.",
       "arch": { "active": ["client", "edge", ["client", "edge"], ["edge", "client"]], "dim": ["suggest", "block", "search", "logs", "build", "snap"], "notes": { "edge": "hit" } },
       "vars": { "ms used": 60 }
     },
     {
-      "caption": "Mia types \"z\", then deletes it. The <code>pi</code> list comes from her app's cache: no network.",
+      "caption": "Mia types \"z\" and deletes it, and her app answers <code>pi</code> from its own cache.",
       "arch": { "active": ["client"], "mark": ["client"], "dim": ["edge", "suggest", "block", "search", "logs", "build", "snap"], "notes": { "client": "local hit" } },
       "vars": { "ms used": 30 }
     },
     {
-      "caption": "She submits \"pizza near me\". The search service runs it and logs the query to a stream.",
+      "caption": "She submits the search \"pizza near me\". The search service runs it and writes the query to a log stream.",
       "arch": { "active": ["search", "logs", ["client", "search"], ["search", "logs"]], "dim": ["edge", "suggest", "block", "build", "snap"] }
     },
     {
-      "caption": "Overnight, the build adds the day's 300 million searches to the decayed counts, drops blocked queries and computes every prefix's top five.",
+      "caption": "Overnight, the build job adds the day's 300 million searches to the decayed counts and computes the top five for every prefix.",
       "arch": { "active": ["build", ["logs", "build"]], "dim": ["client", "edge", "search", "block"], "notes": { "build": "rank 10M queries" } }
     },
     {
-      "caption": "It writes a new versioned file, <code>2026-11-15</code>. Nothing is overwritten, so a bad build rolls back by loading the previous file.",
+      "caption": "The job writes a new versioned file, <code>2026-11-15</code>, and overwrites nothing, so a bad build can be rolled back.",
       "arch": { "active": ["snap", ["build", "snap"]], "dim": ["client", "edge", "search", "logs", "block"], "notes": { "snap": "v 2026-11-15" } }
     },
     {
-      "caption": "Each server loads the file into spare memory, then swaps one pointer. Requests never see a half-loaded table.",
+      "caption": "Each suggest server loads the file into spare memory and then switches one pointer, so requests never see a half-loaded table.",
       "arch": { "active": ["suggest", ["snap", "suggest"]], "mark": ["suggest"], "dim": ["client", "edge", "search", "logs", "build", "block"], "notes": { "suggest": "now 2026-11-15" } }
     },
     {
-      "caption": "If tomorrow's build fails, servers keep this table. Suggestions are a day staler but still valid.",
+      "caption": "If tomorrow's build fails, the servers keep serving this table. The suggestions become a day staler, but they are still valid.",
       "arch": { "fail": ["build"], "active": ["suggest", "client", "edge", ["client", "edge"], ["edge", "suggest"]], "dim": ["snap", "search", "logs", "block"], "notes": { "suggest": "still 2026-11-15" } }
     }
   ]
@@ -234,54 +230,26 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 
 <h2>Deep dives</h2>
 
-<h3>A trie, or a precomputed top five per prefix</h3>
+<h3>Finding the top five suggestions for a prefix</h3>
 
-<p>A <a href="/algorithms/tries.html">trie</a> puts all queries starting with "pi" under one node, reached in one step per character. The trap: the subtree under "p" may hold a million queries, too many to search per keystroke. Search once, at build time, and store each node's top five on it.</p>
+<p>A <a href="/algorithms/tries.html">trie</a> stores every past query on a path of letters, so all queries that start with "pi" sit under one node, reached in one step per character. Finding the five best completions below that node is the problem. The subtree under a short prefix such as "p" can hold millions of queries, and short prefixes are the most frequent requests. There are three ways to deal with this.</p>
+
+<p><strong>Plain trie with a search per request.</strong> The server walks to the prefix node, visits every query below it and keeps the five with the highest counts. It is small and exact, but the work grows with the subtree, so the common short prefixes are the slowest requests.</p>
+
+<p><strong>Trie with the top five stored on every node.</strong> The build calculates the top five once, and each node keeps its own list by merging its own query with the lists of its children, so it never looks deeper than its children. A request walks one node per character and reads the list. The cost is a custom structure to load and shard.</p>
+
+<p><strong>Hash map from prefix to top five.</strong> The same build writes every node's list into a map keyed by the prefix string, so a request is one lookup in any key-value store. The cost is memory, because every prefix is stored in full. The estimate shows this is at most 30 GB.</p>
 
 <x-tracer title="Top two per prefix: searching at request time versus storing the answer">
 <script type="application/json">
 {
   "steps": [
-    {
-      "caption": "Five past queries with their counts. Each edge is one letter; a node's name is the prefix that reaches it.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"} }
-    },
-    {
-      "caption": "Request time, plain trie: the user types \"ca\". Walk root → c → ca: 3 nodes.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["root", "c", "ca"], "highlightEdges": [["root", "c"], ["c", "ca"]], "dim": ["d", "do", "dog"], "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"} },
-      "vars": { "nodes visited": 3 }
-    },
-    {
-      "caption": "Visit every node below \"ca\" to collect completions: 4 more. Under \"p\" on a real site, millions, on every keystroke.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["car", "cat", "care", "cart"], "dim": ["d", "do", "dog"], "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"} },
-      "vars": { "nodes visited": 7 }
-    },
-    {
-      "caption": "Sort by count, keep the top 2: car (50), cat (40). Correct, but the work grew with the subtree, not the prefix.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "mark": ["car", "cat"], "dim": ["d", "do", "dog", "care", "cart"], "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"} },
-      "vars": { "nodes visited": 7 }
-    },
-    {
-      "caption": "Build time instead, from the bottom: leaves \"care\" and \"cart\" each hold a list of just themselves.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["care", "cart"], "labels": {"care": "care", "cart": "cart"} }
-    },
-    {
-      "caption": "\"car\" merges its own query (50) with its children's lists (cart 30, care 25) and keeps the best 2: car, cart. It looks no deeper than its children.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["car"], "mark": ["care", "cart"], "labels": {"care": "care", "cart": "cart", "car": "car, cart", "cat": "cat", "dog": "dog"} }
-    },
-    {
-      "caption": "\"ca\" merges car's list (car 50, cart 30) with cat's (cat 40): car, cat. \"c\" copies its only child; \"do\" and \"d\" get dog.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["ca", "c"], "mark": ["car", "cat"], "labels": {"care": "care", "cart": "cart", "car": "car, cart", "cat": "cat", "ca": "car, cat", "c": "car, cat", "do": "dog", "dog": "dog", "d": "dog"} }
-    },
-    {
-      "caption": "The root merges \"c\" (car 50, cat 40) with \"d\" (dog 60): dog, car. Every node now holds its own answer.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["root"], "labels": {"root": "dog, car", "care": "care", "cart": "cart", "car": "car, cart", "cat": "cat", "ca": "car, cat", "c": "car, cat", "do": "dog", "dog": "dog", "d": "dog"} }
-    },
-    {
-      "caption": "Request time now: walk to \"ca\" and read its list. 3 nodes, however big the subtree. Put each list in a hash map by prefix and it is one lookup.",
-      "graph": { "nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["root", "c"], "mark": ["ca"], "highlightEdges": [["root", "c"], ["c", "ca"]], "dim": ["d", "do", "dog", "car", "cat", "care", "cart"], "labels": {"ca": "car, cat"} },
-      "vars": { "nodes visited": 3 }
-    }
+    {"caption": "The trie holds five past queries with their search counts. Each edge is one letter, and each node stands for the prefix that leads to it.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"}}},
+    {"caption": "Without stored answers, a request for \"ca\" walks root, c, ca, which is 3 nodes.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["root", "c", "ca"], "highlightEdges": [["root", "c"], ["c", "ca"]], "dim": ["d", "do", "dog"], "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"}}, "vars": {"nodes visited": 3}},
+    {"caption": "The server then visits every node below \"ca\" to collect the completions, which is 4 more nodes.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["car", "cat", "care", "cart"], "dim": ["d", "do", "dog"], "labels": {"car": "50", "cat": "40", "dog": "60", "care": "25", "cart": "30"}}, "vars": {"nodes visited": 7}},
+    {"caption": "The node \"car\" merges its own query (50) with the lists of its children (cart 30, care 25) and keeps car and cart.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["car"], "mark": ["care", "cart"], "labels": {"care": "care", "cart": "cart", "car": "car, cart", "cat": "cat", "dog": "dog"}}},
+    {"caption": "The node \"ca\" merges the list of car (car 50, cart 30) with the list of cat (cat 40) and keeps car and cat.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["ca", "c"], "mark": ["car", "cat"], "labels": {"care": "care", "cart": "cart", "car": "car, cart", "cat": "cat", "ca": "car, cat", "c": "car, cat", "do": "dog", "dog": "dog", "d": "dog"}}},
+    {"caption": "A request for \"ca\" now reads the stored list after 3 nodes however large the subtree is, or after one lookup if the lists are kept in a hash map.", "graph": {"nodes": [{"id": "root", "x": 50, "y": 5}, {"id": "c", "x": 30, "y": 25}, {"id": "d", "x": 75, "y": 25}, {"id": "ca", "x": 30, "y": 45}, {"id": "do", "x": 75, "y": 45}, {"id": "car", "x": 15, "y": 65}, {"id": "cat", "x": 45, "y": 65}, {"id": "dog", "x": 75, "y": 65}, {"id": "care", "x": 5, "y": 85}, {"id": "cart", "x": 25, "y": 85}], "edges": [["root", "c"], ["root", "d"], ["c", "ca"], ["d", "do"], ["ca", "car"], ["ca", "cat"], ["do", "dog"], ["car", "care"], ["car", "cart"]], "directed": true, "highlight": ["root", "c"], "mark": ["ca"], "highlightEdges": [["root", "c"], ["c", "ca"]], "dim": ["d", "do", "dog", "car", "cat", "care", "cart"], "labels": {"ca": "car, cat"}}, "vars": {"nodes visited": 3}}
   ]
 }
 </script>
@@ -291,153 +259,96 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 <script type="application/json">
 {
   "options": [
-    {
-      "name": "Plain trie, search the subtree per request",
-      "good": "Small; always exact; easy to update.",
-      "bad": "Work grows with the subtree; short prefixes, the most common, are slowest.",
-      "pick": "Small vocabularies, like a few thousand product names."
-    },
-    {
-      "name": "Trie with top five stored on each node",
-      "good": "One step per character. Shared prefixes stored once.",
-      "bad": "A custom structure to serialise, load and shard.",
-      "pick": "Memory is tight and prefixes share a lot."
-    },
-    {
-      "name": "Hash map: prefix → top five",
-      "good": "One lookup in any key-value store or plain map; easy to shard by prefix hash.",
-      "bad": "Each prefix stored in full: more memory than the trie.",
-      "pick": "Serving, when it fits in memory. My choice, built from a trie offline.",
-      "default": true
-    }
+    { "name": "Plain trie, search per request", "good": "It is small and exact.", "bad": "Short prefixes are the slowest requests.", "pick": "Use it when the vocabulary is small enough that a subtree search is cheap." },
+    { "name": "Trie with the top five on each node", "good": "A lookup takes one step per character.", "bad": "It is a custom structure to load and shard.", "pick": "Use it when memory is too tight to store every prefix as its own entry." },
+    { "name": "Hash map from prefix to top five", "good": "A lookup is a single read, and it shards by prefix hash.", "bad": "Every prefix is stored in full.", "pick": "Use it when the table fits in memory. This is my choice, built from a trie offline.", "default": true }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>The 30 GB bound fits in memory, so every server holds the whole map, unsharded. If it stops fitting, shard by prefix hash, never by first letter: far more queries start with "s" than "x".</p>
+<p>Every server holds the whole map. If it stopped fitting, I would shard by a hash of the prefix and not by first letter, because far more queries start with "s" than with "x".</p>
 
-<h3>Updating popularity offline</h3>
+<h3>Keeping popularity up to date</h3>
 
-<p>Counting on the hot path means a write per search and re-sorting up to 20 prefix lists. Do it in a daily batch instead.</p>
+<p>There are three ways to feed new searches into the table. Updating counts live means every search increments a counter and re-sorts the lists of up to 20 prefixes, which puts writes and locking on the fastest path and leaves no file to inspect or roll back.</p>
 
-<p>Weight each day's count by 0.8 per day of age. A query searched 1,000 times a week ago scores 1,000 × 0.8<sup>7</sup> ≈ 210; one searched 300 times today scores 300 and ranks higher. Also drop rare queries (mostly typos and private details like names or addresses) and anything blocklisted.</p>
+<p>A daily offline rebuild appends searches to a log and builds a new table once a day. A query that starts trending this morning appears tomorrow, which is acceptable here. Every build is a file that can be inspected and rolled back, and the serving path never writes. This is my base design.</p>
 
-<x-tradeoffs caption="Keeping popularity fresh">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Daily offline rebuild",
-      "good": "Simple, testable, easy to roll back: each build is a file you can inspect.",
-      "bad": "A query trending this morning appears tomorrow.",
-      "pick": "A day of staleness is fine. My base design.",
-      "default": true
-    },
-    {
-      "name": "Update counts live in the serving table",
-      "good": "Fresh within seconds.",
-      "bad": "Writes and locking on the hot path; no file to inspect or roll back.",
-      "pick": "Rarely; the cost lands on the fastest path."
-    },
-    {
-      "name": "Daily rebuild plus a trending overlay",
-      "good": "A stream job publishes spiking queries from the last hour, merged in at serve time.",
-      "bad": "Two systems, and the merge rule needs tuning.",
-      "pick": "Trends needed within an hour. My extension."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>A trending overlay adds a stream job that compares each query's count in the last hour with its normal rate and publishes the spiking queries every few minutes. The suggest servers merge them into the daily results. It gives freshness within an hour, but it needs a second system and a tuned merge rule, so I offer it as an extension.</p>
 
-<h3>The latency budget and where caching happens</h3>
+<p>The rebuild also decides the ranking. Weighting each day's count by 0.8 for every day of age lets recent searches win: a query searched 1,000 times a week ago scores 1,000 × 0.8<sup>7</sup>, which is about 210, so a query searched 300 times today ranks above it. The build also drops rare queries, which are mostly typos and private details, and everything on the blocklist.</p>
 
-<p>Light in fibre travels about 200 km per millisecond, so a server 6,000 km away costs at least 2 × 6,000 ÷ 200 = 60 ms per round trip. A plan for a user near an edge:</p>
+<h3>Meeting the 100 ms budget with caches</h3>
 
-<table>
-<thead><tr><th>Step</th><th>Budget</th></tr></thead>
-<tbody>
-<tr><td>Wait for a pause in typing (debounce)</td><td>30 ms</td></tr>
-<tr><td>Round trip to a nearby edge</td><td>15 to 30 ms</td></tr>
-<tr><td>Edge to suggest server and back, on a miss</td><td>30 ms if the region is near</td></tr>
-<tr><td>Lookup on the server</td><td>under 1 ms</td></tr>
-<tr><td>Draw the list</td><td>10 ms</td></tr>
-</tbody>
-</table>
+<p>For a user near an edge location the budget is about 30 ms of debouncing, 15 to 30 ms to the edge and back, 30 ms from the edge to a suggest server and back on a miss, under 1 ms for the lookup and 10 ms to draw the list. An edge hit therefore takes 55 to 70 ms, and a miss to a nearby region takes 85 to 100 ms. A miss to a distant region goes over budget, so there are three layers of caching and the servers run in several regions.</p>
 
-<p>An edge hit lands at 55 to 70 ms, a miss to a nearby region at 85 to 100 ms, a miss to a far region blows the budget. Caching does most of the work:</p>
+<p>The client keeps every response for the session, so backspacing never costs a request. It discards replies whose prefix no longer matches the text in the box. If the list for "pi" has fewer than five entries it is complete, so the client can filter it to answer "piz" without a request.</p>
 
-<ul>
-<li><strong>In the client.</strong> Keep every response for the session, so backspacing costs nothing. Drop out-of-order replies whose prefix no longer matches the box. If the "pi" list had fewer than five entries, it is complete: filter it for "piz" without asking.</li>
-<li><strong>At the edge.</strong> Short prefixes are few and hot: only 26 + 26<sup>2</sup> + 26<sup>3</sup> = 18,278 letter prefixes of up to three characters. Assume the edge answers 60%: 62,500 a second at peak becomes 25,000 at the servers. See <a href="/system-design/cdns.html">CDNs</a>.</li>
-<li><strong>On the server.</strong> The table is already in memory.</li>
-</ul>
+<p>The edge caches the responses because the API is public. There are only 26 + 26<sup>2</sup> + 26<sup>3</sup> = 18,278 letter prefixes of up to three characters, and they draw a large share of the requests. We assume the edge answers 60% of all requests, so the 62,500 a second at peak become 25,000 a second at the suggest servers. See <a href="/system-design/cdns.html">CDNs</a> for how edge caching works.</p>
 
-<p>Run suggest servers in several regions so misses stay near.</p>
+<h3>Removing a bad suggestion quickly</h3>
+
+<p>Filtering only in the daily build would leave an offensive suggestion visible for up to a day. Instead, each suggest server refreshes a small blocklist every minute and filters results against it at serve time. The edge may still hold the old response for an hour, so the operator also purges that prefix from the CDN. The next build drops the query for good.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (625,000 requests a second at peak), the edge takes 60%, leaving 250,000 a second. Suggest servers share nothing; at an assumed 10,000 a second each (the HTTP stack, not the lookup, is the limit), that is 25 servers plus spares. The build is the slower wall: 300 GB of log a day needs a distributed batch job split by query. Many languages get a table each, sharded by prefix hash when one outgrows memory.</p>
+<h3>What breaks first at 10 times the traffic</h3>
 
-<table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
-<tbody>
-<tr><td>An edge location</td><td>Users go to the next nearest one, a little slower.</td><td>The CDN handles it; watch origin load.</td></tr>
-<tr><td>A suggest server</td><td>Requests fail until health checks remove it.</td><td>Identical servers take its share.</td></tr>
-<tr><td>All suggest servers in a region</td><td>Misses go to another region, over budget.</td><td>The client shows no list on timeout; search still works.</td></tr>
-<tr><td>The build job</td><td>No new table tonight.</td><td>Keep yesterday's; alert if the table is over 2 days old.</td></tr>
-<tr><td>The log stream</td><td>Some searches are not counted.</td><td>A few lost hours barely change the ranking.</td></tr>
-</tbody>
-</table>
+<p>At 10 times the traffic the peak is 625,000 requests a second. The edge still answers 60%, so 250,000 a second reach the suggest servers. They share nothing, so you add more of them: at about 10,000 requests a second each, limited by the HTTP stack and not the lookup, that is 25 servers plus spares. The build breaks first, because 300 GB of log a day needs a distributed batch job.</p>
 
-<x-callout type="mistake" title="Searching the trie on every keystroke">
-<p>Collecting and sorting everything under a short prefix is slow, and short prefixes are the most frequent requests. Precompute the top five per prefix.</p>
-</x-callout>
+<h3>A suggest server, a region or an edge location fails</h3>
 
+<p>When one suggest server dies, requests to it fail until the health check removes it, and the other identical servers take its share. If a whole region is down, misses go to another region and exceed the budget, so the client gives up on a timeout and shows no list while search keeps working. If an edge location fails, users move to the next nearest one, which has a cold cache and sends more misses to the servers for a while.</p>
+
+<h3>The build job or the log stream fails</h3>
+
+<p>If the build fails, the servers keep serving yesterday's table, and an alert fires when the table is more than 2 days old. If the log stream loses a few hours of searches, the ranking barely changes.</p>
 
 <h2>What a strong answer sounds like</h2>
+
+<p>The table below shows how answers differ by level.</p>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Searches a trie per request; updates counts on each search.</td></tr>
-<tr><td>Mid</td><td>Stores the top five per node, rebuilds offline, adds a cache, debounces.</td></tr>
-<tr><td>Senior</td><td>Turns "instant" into a 100 ms budget and spends it; makes responses edge-cacheable on purpose; builds versioned tables offline with decay and filtering; removes bad suggestions at serve time; sizes the table and skips sharding.</td></tr>
+<tr><td>Junior</td><td>It searches a trie on every request and updates counts on every search.</td></tr>
+<tr><td>Mid</td><td>It stores the top five per node, rebuilds offline, adds a cache and debounces.</td></tr>
+<tr><td>Senior</td><td>It spends a 100 ms budget, makes responses edge-cacheable on purpose, builds versioned tables with decay, and removes bad suggestions at serve time.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="An offensive suggestion" tone="strong">
 <x-interviewer>An offensive suggestion is showing for a common prefix. How fast can you remove it?</x-interviewer>
-<x-you>Within about a minute. Each server refreshes the blocklist every minute and filters results at serve time. The edge may hold the old response for an hour, so I'd purge that prefix from the CDN. App copies go when the session ends. The next build drops the query for good.</x-you>
-<x-coach>Filtering only at build time takes a day. The strong answer knew where every copy of the data lives.</x-coach>
+<x-you>I can remove it within about a minute. Each suggest server refreshes the blocklist every minute and filters results at serve time. The edge may hold the old response for an hour, so I would also purge that prefix from the CDN. App copies go away with the session, and the next build drops the query for good.</x-you>
+<x-coach>Filtering only at build time would take a day. The strong answer knows where every copy of the data is stored and removes each one.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>How would you personalise suggestions?</h3>
-<p>The client stores the user's recent searches and puts matches first; the shared path stays cacheable.</p>
+<h3>How would you personalise the suggestions?</h3>
+<p>The client stores the user's recent searches and puts the matching ones first. The shared response stays anonymous, so the edge can still cache it.</p>
 
-<h3>How do you show trends within an hour?</h3>
-<p>A stream job compares each query's last-hour count with its usual rate and publishes spiking queries every few minutes. Servers merge them in at serve time, and the edge TTL drops to a few minutes for short prefixes.</p>
-
-<h3>How do you handle typos?</h3>
-<p>Fuzzy matching per keystroke is expensive. Mine misspellings from the logs (typed X, then searched Y) and add them as prefixes pointing to Y's list.</p>
-
-<h3>What about other languages?</h3>
-<p>A table per language, chosen by locale, which joins the cache key. Normalisation (accents, scripts without spaces) lives in one library shared by build and client.</p>
+<h3>How would you show trending queries within an hour?</h3>
+<p>A stream job compares each query's last-hour count with its usual rate and publishes the spiking queries every few minutes. The suggest servers merge them into the daily results, and the edge time to live drops to a few minutes for short prefixes.</p>
 
 <h3>Why not use a search engine's prefix queries?</h3>
-<p>Fine for a small catalogue. At 62,500 requests a second, ranking per query costs far more than a map lookup for answers that change daily.</p>
+<p>A search engine suits a small catalogue. At 62,500 requests a second, ranking on every request costs far more than a map lookup, and the answers change only once a day.</p>
+
+<h3>How do you stop a bad table from reaching users?</h3>
+<p>The build compares the new table with the previous one, for example the number of prefixes and how many lists changed, and stops with an alert if the difference is far outside the normal range. Servers also load the file into spare memory first, so a corrupt file fails to load while the old table keeps serving.</p>
+
+<h3>How would you handle spelling mistakes and other languages?</h3>
+<p>Prefix matching cannot fix a typo, because a misspelled prefix matches nothing. A separate spelling-correction step can map the typed prefix to likely intended prefixes, using the query log to learn common corrections, and then look those up in the same table. Each language gets its own table, built from its own log.</p>
 
 <x-checklist title="Self-review: typeahead search">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked what is suggested, how many, how fresh, and if personal", "I turned \"instant\" into a number of milliseconds"] },
-    { "title": "Numbers and interfaces", "items": ["I counted requests per keystroke, with debouncing", "I bounded the table size against memory", "I made the API anonymous and cacheable"] },
+    { "title": "Before drawing", "items": ["I asked what is suggested, how many, how fresh, and whether it is personal", "I turned \"instant\" into a number of milliseconds"] },
+    { "title": "Numbers and interfaces", "items": ["I counted requests per keystroke, allowing for debouncing", "I bounded the table size against memory", "I made the API anonymous and cacheable"] },
     { "title": "Design and depth", "items": ["I explained why searching the subtree per request is slow", "I precomputed the top five per prefix", "I rebuilt popularity offline with decay into versioned files", "I cached in the client and at the edge within the latency budget", "I described a trending overlay"] },
-    { "title": "Failure", "items": ["I kept serving the old table when the build fails", "I removed bad suggestions at serve time and purged the edge", "Search still works with no suggestions"] }
+    { "title": "Failure", "items": ["I kept serving the old table when the build fails", "I removed bad suggestions at serve time and purged the edge", "I said that search still works when there are no suggestions"] }
   ]
 }
 </script>

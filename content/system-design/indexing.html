@@ -1,58 +1,65 @@
 <!--
 {
   "title": "Indexing",
-  "description": "Make queries fast with the right index: B-trees and LSM-trees in plain words, composite column order, covering indexes, and what indexes cost on writes.",
-  "minutes": 12,
+  "description": "How database indexes speed up queries, how B-trees, LSM-trees and composite indexes work, what indexes cost on writes, and what interviewers ask.",
+  "minutes": 17,
   "tags": ["databases", "indexing", "building blocks", "performance"]
 }
 -->
-<p>An orders table has 50 million rows of about 200 bytes. The account page runs "orders for customer 42 since 1 March". With no index, the database reads every row to find the 3 that match: 50 × 10<sup>6</sup> × 200 B = 10 GB. At 500 MB/s that is 10 GB ÷ 0.5 GB/s = 20 seconds per page view. An index on <code>(customer_id, created_at)</code> cuts it to a few milliseconds.</p>
+<p>An index is a separate, sorted data structure that a database keeps next to a table so it can find rows by the value of one or more columns without reading the whole table. It is the main tool for making a query fast. The cost is that every insert, update and delete must also change each index on the table, and every index takes disk space and memory.</p>
 
-<h2>The idea</h2>
+<p>Without an index on the column in the <code>WHERE</code> clause, the database has to read every row and check it, a full table scan. That is acceptable for a few thousand rows, but on a table with tens of millions of rows a query that should return three rows reads gigabytes of data, and its time grows with the table.</p>
 
-<p>An index is a sorted copy of a few columns, each entry pointing to its row. Like a book's index: find the word, jump to the page.</p>
+<h2>Where an index sits</h2>
 
-<p>Sorted order is the trick: jump to the first match and read forward. The cost: every write updates every index, and indexes take disk and memory.</p>
-
-<h2>Two ways to keep an index sorted</h2>
-
-<h3>B-tree: update in place</h3>
-
-<p>A B-tree stores sorted keys in pages of a few kilobytes, a few hundred keys each, so the tree is wide and shallow (see <a href="/algorithms/balanced-trees.html">balanced trees</a>). With 500 keys per page, two levels cover 500 × 500 = 250,000 entries and three cover 125 million, so 50 million orders need 3 levels. The top two levels are about 200 pages (1 root plus 50 million ÷ 500 ÷ 500 = 200) and stay in memory, so a lookup costs one disk read for the leaf and one for the row.</p>
-
-<p>A write updates the leaf page in place, splitting it if full: a random disk write per index.</p>
-
-<h3>LSM-tree: append, merge later</h3>
-
-<p>A log-structured merge tree never edits in place. Writes go to a sorted table in memory (plus an append-only log for crashes), flushed as a new sorted file when full. Background <strong>compaction</strong> merges files and drops overwritten and deleted values.</p>
-
-<p>Sequential writes are fast. Reads pay: a key could be in memory or any of several files, checked newest first. A per-file Bloom filter answers "definitely not here", so most files are skipped.</p>
-
-<x-tradeoffs caption="Storage engines and indexes">
+<x-arch caption="With an index the database looks up the key in a sorted structure and reads only the matching rows. Without one it scans the whole table.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "B-tree",
-      "good": "Predictable fast reads and range scans. One place for each key.",
-      "bad": "Each write is a random page update per index. Pages are often part empty.",
-      "pick": "Read-heavy or mixed workloads; most relational databases. The usual answer.",
-      "default": true
-    },
-    {
-      "name": "LSM-tree",
-      "good": "Very high write rates; writes are sequential. Compresses well.",
-      "bad": "Reads may check several files. Background compaction uses disk and CPU and can cause latency spikes.",
-      "pick": "Write-heavy data: events, messages, metrics. Common in wide-column and key-value stores."
-    }
+  "nodes": [
+    { "id": "app", "label": "App server", "kind": "service", "col": 0, "row": 1 },
+    { "id": "index", "label": "Index (sorted keys)", "kind": "search", "col": 1, "row": 0 },
+    { "id": "table", "label": "Table rows", "kind": "database", "col": 2, "row": 1 }
+  ],
+  "edges": [
+    { "from": "app", "to": "index", "label": "1. look up key" },
+    { "from": "index", "to": "table", "label": "2. read the rows" },
+    { "from": "app", "to": "table", "label": "full scan", "style": "async" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<h2>Composite indexes: column order matters</h2>
+<p>The query planner decides for each query whether to use an index.</p>
 
-<p>An index on <code>(customer_id, created_at)</code> sorts by customer, and by date only within each customer. Like a phone book sorted by last name then first name: easy to find every "Garcia", useless for every "Maria".</p>
+<h2>How indexes are stored</h2>
+
+<p>Almost every index is kept in one of two structures. They differ in how they handle writes, and that difference decides which kind of database suits a workload.</p>
+
+<h3>B-tree</h3>
+
+<p>A B-tree stores sorted keys in pages of a few kilobytes, with hundreds of keys in each page. The tree is wide and shallow; see <a href="/algorithms/balanced-trees.html">balanced trees</a> for the general idea. With about 500 keys per page, three levels hold roughly 125 million entries, so a lookup in a large table reads about three pages. The top levels stay in memory, and because the keys are sorted, range queries and sorted output are cheap.</p>
+
+<p>A write finds the right leaf page and changes it in place. If the page is full it is split in two. Each index therefore costs one random page write per row change. B-trees are the default in most relational databases and suit read-heavy and mixed workloads, but under a very high write rate the random writes become the bottleneck.</p>
+
+<h3>LSM-tree</h3>
+
+<p>A log-structured merge tree (LSM-tree) never changes data in place. A write goes into a sorted table in memory and an append-only log used for crash recovery. When the in-memory table is full, it is written to disk as a new sorted, immutable file. A background process called <strong>compaction</strong> merges these files, and it throws away values that were overwritten or deleted.</p>
+
+<p>All disk writes are sequential, so an LSM-tree handles a much higher write rate than a B-tree on the same hardware. The cost falls on reads. A key may be in memory or in any of several files, so a read checks them from newest to oldest. A Bloom filter on each file says when a key is definitely not in it, so most files are skipped. Compaction uses disk and CPU in the background and can cause latency spikes if it falls behind. LSM-trees are common in wide-column and key-value stores for write-heavy data such as events and metrics.</p>
+
+<h2>Kinds of index</h2>
+
+<h3>Primary and secondary indexes</h3>
+
+<p>The primary index is built on the primary key. In many databases the table itself is stored in primary key order, so the leaf pages of the primary index hold the rows. This is a clustered index, and a table can have only one. A secondary index is built on any other column, such as <code>email</code> or <code>customer_id</code>. Its entries point back to the row by primary key or by physical location, so a lookup finds the entry first and then fetches the row.</p>
+
+<h3>Hash indexes</h3>
+
+<p>A hash index applies a hash function to the key and goes straight to the matching bucket. It answers equality lookups such as <code>WHERE token = 'abc'</code> in constant time. The hash scrambles the order of the keys, so it cannot serve range queries, <code>ORDER BY</code> or prefix matches. A B-tree handles equality almost as quickly and also handles everything else, so a hash index is worth choosing only when the access is purely by exact key.</p>
+
+<h3>Composite indexes and column order</h3>
+
+<p>A composite index covers several columns. An index on <code>(customer_id, created_at)</code> is sorted by customer first, and by date only within each customer, like a phone book sorted by last name and then first name. It is easy to find every customer named Garcia, and almost useless for finding everyone named Maria.</p>
 
 <x-tracer title="One composite index, two queries">
 <script type="application/json">
@@ -65,31 +72,31 @@
   "codeLang": "sql",
   "steps": [
     {
-      "caption": "Entries are sorted by customer, then date. Query 1 wants customer 42 since 1 March.",
+      "caption": "The entries are sorted by customer and then by date. The first query asks for customer 42 since 1 March.",
       "line": 2,
       "array": { "label": "index", "values": ["41|03-28", "42|02-11", "42|03-02", "42|03-15", "42|03-27", "43|01-04", "43|03-20"] },
       "vars": { "entries read": 0 }
     },
     {
-      "caption": "The tree jumps straight to the first entry at or after (42, 03-01), skipping 42|02-11.",
+      "caption": "The tree jumps to the first entry at or after (42, 03-01).",
       "line": 2,
       "array": { "label": "index", "values": ["41|03-28", "42|02-11", "42|03-02", "42|03-15", "42|03-27", "43|01-04", "43|03-20"], "pointers": { "start": 2 }, "highlight": [2], "dim": [0, 1] },
       "vars": { "entries read": 1, "matches": 1 }
     },
     {
-      "caption": "Read forward: two more matches, then customer 43 stops the scan. 4 entries read, 3 matches.",
+      "caption": "The scan reads forward, finds two more matches, and stops at the first entry for customer 43. It read 4 entries and found 3 matches.",
       "line": 2,
       "array": { "label": "index", "values": ["41|03-28", "42|02-11", "42|03-02", "42|03-15", "42|03-27", "43|01-04", "43|03-20"], "pointers": { "stop": 5 }, "highlight": [5], "mark": [2, 3, 4], "dim": [0, 1, 6] },
       "vars": { "entries read": 4, "matches": 3 }
     },
     {
-      "caption": "Query 2: every order since 1 March, any customer. Dates are sorted only within each customer, so matches are scattered.",
+      "caption": "The second query asks for every order since 1 March from any customer. Dates are sorted only inside each customer, so the matching entries are scattered.",
       "line": 3,
       "array": { "label": "index", "values": ["41|03-28", "42|02-11", "42|03-02", "42|03-15", "42|03-27", "43|01-04", "43|03-20"] },
       "vars": { "entries read": 0 }
     },
     {
-      "caption": "Nowhere to jump, so every entry is read: on this table, all 50 million, plus a row fetch per match. This query needs its own index starting with <code>created_at</code>.",
+      "caption": "There is no place to jump to, so the database reads every entry. This query needs its own index that starts with <code>created_at</code>.",
       "line": 3,
       "array": { "label": "index", "values": ["41|03-28", "42|02-11", "42|03-02", "42|03-15", "42|03-27", "43|01-04", "43|03-20"], "highlight": [0, 1, 2, 3, 4, 5, 6], "mark": [0, 2, 3, 4, 6] },
       "vars": { "entries read": 7, "matches": 5 }
@@ -99,80 +106,99 @@
 </script>
 </x-tracer>
 
-<p>The rule: <strong>equals</strong> columns first, then one <strong>range or sort</strong> column; getting this backwards is the classic mistake. An index on <code>(a, b, c)</code> serves <code>a</code>, <code>a, b</code> and <code>a, b, c</code>, but not <code>b</code> alone. Columns after a range help little, as they are no longer sorted inside it.</p>
+<p>The rule is to put the columns tested with equality first and then at most one column that is tested with a range or used for sorting. An index on <code>(a, b, c)</code> can serve queries on <code>a</code>, on <code>a</code> and <code>b</code>, and on all three, but not on <code>b</code> alone. This is the <strong>leftmost prefix</strong> rule.</p>
 
 <h3>Covering indexes</h3>
 
-<p>After finding 3 entries, the database still fetches 3 rows to read <code>total</code>, one random read each. With <code>(customer_id, created_at, total)</code>, the answer is in the index and the table is never touched: a <strong>covering index</strong>. On a hot 200-row page it saves 200 reads, for a bigger index.</p>
+<p>When a query needs only columns that are stored in the index, the database can answer it from the index alone and never read the table. This is a covering index. For the orders of customer 42, an index on <code>(customer_id, created_at, total)</code> holds the date and total, so the database skips one random row fetch for each result. It is worth it for a hot query that returns many rows, and the cost is a larger index.</p>
+
+<h3>Full-text and geospatial indexes</h3>
+
+<p>A B-tree cannot answer "which documents contain this word" or "which points are near this location". Full-text search uses an inverted index from each word to the documents containing it, covered in <a href="/system-design/search-systems.html">search systems</a>. Location queries use geohashes or quadtrees, covered in <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>.</p>
+
+<h2>When the database does not use an index</h2>
+
+<p>An index that exists is not always used, and "why is this query still slow?" is a common interview question. There are three typical causes, and each has a different fix.</p>
+
+<h3>Low selectivity</h3>
+
+<p>An index on <code>status</code>, with five possible values, returns a fifth of the table for <code>status = 'shipped'</code>. Following the index means one random row fetch per match, which is slower than reading the table sequentially once, so the planner scans the table and ignores the index. An index on a column helps when the condition matches a small share of the rows. For such a column, put it in a composite index behind a more selective column, or use a partial index that covers only a rare value such as <code>status = 'pending'</code>.</p>
+
+<h3>A function applied to the column</h3>
+
+<p>An index on <code>email</code> is sorted by the stored value. The condition <code>WHERE LOWER(email) = 'a@b.com'</code> asks about a different value, so the database cannot use the sort order and scans the table. <code>WHERE DATE(created_at) = '2026-03-01'</code> fails for the same reason, and so does comparing a column to a value of a different type. Either rewrite the condition so the column stands alone, as in <code>created_at &gt;= '2026-03-01' AND created_at &lt; '2026-03-02'</code>, or build an index on the expression itself if the database supports it.</p>
+
+<h3>A leading wildcard</h3>
+
+<p>An index on <code>name</code> helps <code>LIKE 'Gar%'</code>, because all matching names are next to each other in sorted order. It does not help <code>LIKE '%arcia'</code>, because a match can appear anywhere in the order. For substring search, use a full-text index instead.</p>
 
 <h2>What an index costs</h2>
 
-<p>A table with a primary key and 3 secondary indexes does 4 B-tree updates per insert: at 2,000 inserts a second, 2,000 × 4 = 8,000 page changes a second. If an index's upper levels do not fit in RAM, each lookup becomes several disk reads. Index the queries you run; drop indexes nothing uses.</p>
+<p>Every index is updated by every insert and delete on the table, and by every update that changes an indexed column. A table with a primary key and three secondary indexes does four index updates for each inserted row. On a B-tree each is a random page write, so write throughput falls as indexes are added. The indexes also take disk space and compete with table data for memory.</p>
 
-<h2>Numbers worth remembering</h2>
+<p>Drop indexes that no query uses. Building an index on a large live table reads the whole table, so it is normally run during a quiet period.</p>
 
-<ul>
-<li>B-tree lookup: 3 or 4 levels for hundreds of millions of rows, usually 1 or 2 disk reads with the top cached.</li>
-<li>Random read: about 0.1 ms on SSD, 10 ms on spinning disk. Sequential scan: hundreds of MB a second.</li>
-</ul>
+<h2>Secondary indexes in a partitioned database</h2>
 
-<x-estimate title="Size of one index">
-<script type="application/json">
-{
-  "question": "How big is an index on (customer_id, created_at) for the orders table?",
-  "givens": ["50 million orders", "customer_id, created_at and the row pointer are 8 bytes each", "About 40 bytes per entry with page overhead"],
-  "unit": "bytes",
-  "answer": "2 GB",
-  "accept": ["700 MB", "6 GB"],
-  "steps": ["8 + 8 + 8 = 24 bytes of data; round up to 40 for page overhead and free space", "50 × 10<sup>6</sup> × 40 B = 2 × 10<sup>9</sup> B = 2 GB"],
-  "note": "2 GB fits in one server's memory, so lookups stay fast. Ten such indexes would be 20 GB of RAM to keep hot."
-}
-</script>
-</x-estimate>
+<p>When a table is split across shards (see <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>), a secondary index has to decide where its entries live. There are two designs.</p>
+
+<h3>Local secondary index</h3>
+
+<p>Each shard keeps an index only for its own rows. Writes are cheap, because a row and its index entries are updated on the same shard in one operation. A query that filters by the indexed column does not know which shard holds the match, so it must ask every shard and merge the answers. This scatter-gather read is as slow as the slowest shard.</p>
+
+<h3>Global secondary index</h3>
+
+<p>The index is itself partitioned by the indexed value, so all entries for one email address sit on one index shard. A query by that column reads a single shard. The cost moves to writes: a row lives on one shard, but its index entries live on others, so one write touches several shards. These updates are usually asynchronous, so a read through the index may briefly miss a row that was just written. Choose a global index when reads by the indexed column are frequent and a short lag is acceptable.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring up indexes right after the access patterns: name the index for each hot query, with column order. When writes are heavy, say how many indexes you will pay for.</p>
+<p>Bring up indexes right after you list the access patterns of the design. For each hot query, name the index and its column order, and say what it costs. Choose a B-tree unless writes dominate, in which case pick a store built on an LSM-tree, and give the reason in one sentence.</p>
 
-<x-interview title="Indexing an order history">
-<x-interviewer>Users see their orders, newest first, 20 per page. How does that stay fast?</x-interviewer>
-<x-you>It filters by customer and sorts by date, so <code>(customer_id, created_at DESC)</code>. The database jumps to the customer and reads 20 entries in order: no sort, no scan. If the page shows only date and total, adding <code>total</code> makes it covering.</x-you>
-<x-interviewer>Support also searches orders by status. Add an index on status?</x-interviewer>
-<x-you>Alone, no. With maybe five statuses, "status = shipped" matches a huge share of rows; the index barely narrows anything. If support filters by status within a date range, I'd index <code>(status, created_at)</code>, or run those queries on a replica.</x-you>
-<x-coach>Each index serves a named query, with column order and cost argued.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do you index a 500 GB live table?"</strong> An online build: no blocked writes, but hours of extra I/O. Run it off-peak.</li>
-<li><strong>"How do secondary indexes work when data is sharded?"</strong> With a local index per shard, a query by that column asks every shard. A global index is partitioned by the indexed value: reads hit one shard, but each write updates another, usually asynchronously. See <a href="/system-design/sharding-and-partitioning.html">sharding</a>.</li>
+<li><strong>"Why not index every column?"</strong> Each index slows every write and takes space and memory. Index the columns in the filters and sort orders of real queries, and remove the rest.</li>
+<li><strong>"What order do the columns of a composite index go in?"</strong> Columns compared with equality come first and a range or sort column comes last. The index serves any leftmost prefix of its columns, so it cannot be used for a query that skips the first column. When two columns are both tested with equality, either order serves that query equally well, so choose the order that also lets the index serve other queries through its leftmost prefix.</li>
+<li><strong>"There is an index on the column and the query is still slow. Why?"</strong> Look at the query plan, and check for low selectivity, a function on the column, a leading wildcard or a type mismatch.</li>
+<li><strong>"B-tree or LSM-tree?"</strong> A B-tree gives fast, predictable reads and is the default. An LSM-tree turns random writes into sequential ones for a very high write rate, and pays with slower reads and compaction.</li>
+<li><strong>"How do secondary indexes work when the data is sharded?"</strong> A local index is cheap to write but forces queries to ask every shard. A global index sends a query to one shard but makes each write update other shards, usually asynchronously, so it can lag.</li>
+<li><strong>"A table has a very high write rate and many indexes. What do you do?"</strong> Remove every index that no query needs, because each one adds a write to every insert. If the write rate is still too high, move the data to a store built on an LSM-tree, which turns the index writes into sequential ones, and accept slower reads and background compaction.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Wrapping the column in a function">
-<p><code>WHERE LOWER(email) = 'a@b.com'</code> cannot use an index on <code>email</code>, which is sorted by the raw value. Store the normalised value, or index the expression if your database supports it.</p>
-</x-callout>
+<x-interview title="Indexing an order history" tone="strong">
+<x-interviewer>Users see their orders, newest first, 20 per page. How do you keep that fast?</x-interviewer>
+<x-you>The query filters by customer and sorts by date, so I would index <code>(customer_id, created_at DESC)</code>. The database jumps to that customer's section and reads 20 entries in order, with no scan and no separate sort. If the page shows only the date and the total, I would add <code>total</code> to the index so that it covers the query.</x-you>
+<x-interviewer>Support also searches orders by status. Should we add an index on status?</x-interviewer>
+<x-you>Not on its own. There are only a few statuses, so a value like shipped matches a large share of the table and the planner would scan anyway. If support always filters by status within a date range, I would use <code>(status, created_at)</code>. If they only look for rare open orders, a partial index on those rows is smaller.</x-you>
+<x-coach>Each index is tied to a named query, the column order is justified, and the answer says why the obvious index would not help.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "Index on <code>(country, city, signup_date)</code>. Which query can use it best?",
+      "question": "A table has an index on <code>(country, city, signup_date)</code>. Which query can use it best?",
       "options": [
-        { "text": "<code>WHERE city = 'Lyon'</code>", "why": "City is sorted only within each country, so Lyon is scattered." },
-        { "text": "<code>WHERE country = 'FR' AND city = 'Lyon' AND signup_date &gt;= '2026-01-01'</code>", "correct": true, "why": "Equals on the first two, range on the third: one jump, then a short scan." },
-        { "text": "<code>WHERE signup_date &gt;= '2026-01-01'</code>", "why": "The leading columns are unconstrained, so dates are scattered." }
+        { "text": "<code>WHERE city = 'Lyon'</code>", "why": "The index is sorted by country first, so the entries for Lyon are scattered across countries." },
+        { "text": "<code>WHERE country = 'FR' AND city = 'Lyon' AND signup_date &gt;= '2026-01-01'</code>", "correct": true, "why": "The first two columns are tested with equality and the last with a range, so the database makes one jump and then a short scan." },
+        { "text": "<code>WHERE signup_date &gt;= '2026-01-01'</code>", "why": "The leading columns are not constrained, so the matching dates are scattered through the index." }
       ]
     },
     {
-      "question": "A B-tree page holds 100 keys. How many levels index 1 million rows?",
+      "question": "The query is <code>WHERE LOWER(email) = 'a@b.com'</code> and there is an index on <code>email</code>. What is the best fix?",
       "options": [
-        { "text": "2", "why": "Two levels reach 100 × 100 = 10,000 entries." },
-        { "text": "3", "correct": true, "why": "100 × 100 × 100 = 1,000,000." },
-        { "text": "20", "why": "That is about log₂ of a million, a binary tree's depth. B-trees are far wider." }
+        { "text": "Add a second index on <code>email</code>", "why": "The new index has the same sort order, so the function still prevents its use." },
+        { "text": "Index the expression <code>LOWER(email)</code> or store the email already lower-cased", "correct": true, "why": "The index is then sorted by the same value that the query compares." },
+        { "text": "Switch the index to a hash index", "why": "A hash of the raw value still does not match the lower-cased value being compared." }
+      ]
+    },
+    {
+      "question": "A sharded table needs frequent lookups by <code>email</code>, which is not the shard key. A short delay before a new row appears in the lookup is acceptable. What fits best?",
+      "options": [
+        { "text": "A local secondary index on each shard", "why": "Each lookup would have to ask every shard." },
+        { "text": "A global secondary index partitioned by email", "correct": true, "why": "A lookup reads one shard, and the asynchronous index update is the cost the question allows." },
+        { "text": "A full table scan on every shard", "why": "That is the slowest option and does not use an index at all." }
       ]
     }
   ]
@@ -182,4 +208,4 @@
 
 <h2>What to practise next</h2>
 
-<p>An index makes one machine fast; <a href="/system-design/replication.html">replication</a>, next, keeps copies on several. Indexes for prefix lookups appear in <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a>.</p>
+<p>Read <a href="/system-design/replication.html">Replication</a> next to see how copies of a table are kept on several machines. <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a> uses prefix lookups on an index.</p>

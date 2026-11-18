@@ -1,43 +1,42 @@
 <!--
 {
   "title": "Design a Calendar",
-  "description": "Design a shared calendar: invites, recurring events stored as rules, time zones and daylight saving, free/busy across many people, reminders and sync.",
-  "minutes": 28,
+  "description": "How to design a shared calendar: repeating events, time zones and daylight saving, free/busy lookups, reminders, and sync, plus what interviewers ask.",
+  "minutes": 27,
   "kind": "design",
   "tags": ["case study", "recurrence", "time zones", "scheduling", "sync"]
 }
 -->
-<p>Ana in New York books a weekly Monday 9:00 meeting with Ben in London and Chen in Singapore. It reaches their phones in seconds at the right local time, reminds them ten minutes before, and stays at 9:00 for Ana after the March clock change.</p>
+<p>A calendar service stores events, lets users invite other people to them, and shows each user their own schedule on every device. The question is popular because the infrastructure is ordinary, while the data is not: a repeating event such as "every Monday, forever" cannot be stored as one row per occurrence, a time of day only makes sense together with a time zone, and finding a time when eight people are free means reading eight different users' schedules.</p>
 
-<p>The boxes are ordinary; the data is not. "Every Monday, forever" cannot be rows, local time is not UTC, and "when are these eight people free?" touches eight shards. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before reading on.</p>
+<p>The sections below follow the steps in <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
-<x-interviewer>Design a calendar service like those in office suites.</x-interviewer>
-<x-you>I'll assume the core is events, invites with replies, repeating events, free/busy for finding a slot, and reminders. Do we include meeting rooms or other providers' calendars?</x-you>
-<x-interviewer>Rooms are people with a calendar. Skip other providers.</x-interviewer>
-<x-you>How many users, and how many meetings each?</x-you>
-<x-interviewer>100 million users, 50 million active each day, about four meetings a day each.</x-interviewer>
-<x-you>Then reads dominate and reminders burst on the hour. Priorities: a saved event is never lost and shows on my devices at once; invitees may see it seconds later; no reminder skipped or over a minute late; every occurrence at the right local time.</x-you>
-<x-coach>Separating what must be instant (your write) from what may lag (others' copies) decides the design.</x-coach>
+<x-interviewer>Design a calendar service like the ones in office suites.</x-interviewer>
+<x-you>I will assume the core is events, invites with replies, repeating events, free/busy lookups for finding a common time, and reminders. Should I include meeting rooms or calendars from other providers?</x-you>
+<x-interviewer>Treat a room as a person with a calendar. Skip other providers.</x-interviewer>
+<x-you>How many users are there, and how many meetings does each one have?</x-you>
+<x-interviewer>100 million users, 50 million of them active each day, with about four meetings a day each.</x-interviewer>
+<x-you>Then reads will far outnumber writes, and reminders will arrive in bursts at the top of the hour. My priorities are these: a saved event must never be lost and must show on the owner's devices immediately, invitees may see it a few seconds later, no reminder may be skipped or be more than a minute late, and every occurrence of a repeating event must appear at the right local time.</x-you>
+<x-coach>Separating what must be instant (the owner's own write) from what may lag (other people's copies) is what shapes the whole design.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> create, edit and delete events; invites and replies; repeating events with per-occurrence changes; day, week and month views; free/busy for many people; reminders; sync to every device.</li>
-<li><strong>Non-functional:</strong> durable, read-your-writes for the owner; attendees see changes within 5 seconds; week view under 200 ms; reminders within 60 seconds, never skipped; correct local times.</li>
-<li><strong>Out of scope:</strong> other providers, video calls, room rules beyond "a room has a calendar".</li>
+<li><strong>Functional:</strong> create, edit and delete events; invites and replies; repeating events with changes to single occurrences; day, week and month views; free/busy lookups for several people; reminders; sync to every device.</li>
+<li><strong>Non-functional:</strong> events are durable; the owner reads their own writes; attendees see a change within 5 seconds; the week view loads in under 200 ms; reminders arrive within 60 seconds and are never skipped; local times are correct across daylight saving changes.</li>
+<li><strong>Out of scope:</strong> other providers' calendars, video calls.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>A day has 86,400 seconds; assume peaks of 3 times the average.</p>
+<p>A day has 86,400 seconds, and this estimate assumes the peak rate is 3 times the average. With 50 million active users:</p>
 
 <ul>
-<li><strong>Writes:</strong> 2 a day per active user: 100 million ÷ 86,400 ≈ 1,200 a second, 3,500 at peak.</li>
-<li><strong>Reads:</strong> 20 a day per active user: 1 billion ÷ 86,400 ≈ 12,000 a second, 35,000 at peak.</li>
-<li><strong>Free/busy:</strong> if half the 50 million daily new events use the scheduling view, about 870 lookups a second at peak; at 5 people each, 4,300 per-person lookups.</li>
-<li><strong>Reminders:</strong> 50 million × 4 meetings = 200 million a day, about 2,300 a second on average.</li>
+<li><strong>Writes:</strong> each active user makes 2 changes a day, so 100 million ÷ 86,400 is about 1,200 a second on average and 3,500 at peak.</li>
+<li><strong>Reads:</strong> each active user loads calendar views 20 times a day, so 1 billion ÷ 86,400 is about 12,000 a second on average and 35,000 at peak.</li>
+<li><strong>Reminders:</strong> 50 million users × 4 meetings is 200 million reminders a day, about 2,300 a second on average. If 3% of them fall due at the busiest top of the hour and must go out within 60 seconds, that is 6 million ÷ 60 = 100,000 a second, about 43 times the average.</li>
 </ul>
 
 <x-estimate title="Event storage per year">
@@ -48,33 +47,17 @@
   "unit": "bytes",
   "answer": "37 TB",
   "accept": ["10 TB", "120 TB"],
-  "steps": ["Bytes per event: 1,000 + 4 × 250 = 2,000 B", "Per day: 50 × 10<sup>6</sup> × 2,000 B = 100 GB", "Per year: 100 GB × 365 ≈ 37 TB, about 110 TB with 3 copies"],
-  "note": "Small for a sharded cluster. The hard parts are recurrence and fan-out."
-}
-</script>
-</x-estimate>
-
-<x-estimate title="The reminder burst">
-<script type="application/json">
-{
-  "question": "Meetings start on the hour, so reminders bunch up. What rate must the reminder pipeline sustain at the busiest moment?",
-  "givens": ["200 million reminders a day", "3% fall due at the busiest top of the hour", "Each must be delivered within 60 seconds of its time"],
-  "unit": "count/s",
-  "answer": "100 thousand/s",
-  "accept": ["30 thousand/s", "300 thousand/s"],
-  "choices": ["1 thousand/s", "10 thousand/s", "100 thousand/s", "1 million/s"],
-  "steps": ["200 × 10<sup>6</sup> × 0.03 = 6 million reminders due at the same instant", "6,000,000 ÷ 60 s = 100,000 a second", "That is 100,000 ÷ 2,300 ≈ 43 times the daily average"],
-  "note": "Size the reminder path for the burst, not the average."
+  "steps": ["Bytes per event: 1,000 + 4 × 250 = 2,000 B", "Per day: 50 × 10<sup>6</sup> × 2,000 B = 100 GB", "Per year: 100 GB × 365 ≈ 37 TB, or about 110 TB with 3 copies"]
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="3" title="Define the API">
 <x-task>
-<p>Write endpoints to create, read a week, edit one occurrence, reply, query free/busy and sync. How does a client avoid overwriting another edit?</p>
+<p>Write the endpoints to create an event, read one week, edit a single occurrence, reply to an invite, query free/busy and sync a device. How does a client avoid overwriting someone else's edit?</p>
 </x-task>
 <x-answer>
-<p>Times are local time plus a zone name. Reads take a window and return occurrences. Edits carry the version (<code>If-Match</code>) and a scope: this, following, or all. Sync is "changes since token".</p>
+<p>Times are sent as a local time plus a zone name. Reads take a time window and return occurrences. Edits carry the event's version in an <code>If-Match</code> header and a scope of this, following or all. Sync is a "changes since this token" call.</p>
 </x-answer>
 </x-tryit>
 
@@ -110,14 +93,14 @@ GET  /calendars/{cal}/changes?since=token
 </pre>
 </x-code>
 
-<p>The decision worth arguing is who expands repeating events. The view endpoint expands on the server, so a web page gets plain occurrences. Sync sends the raw rule and exceptions, so a phone can expand any month offline. Both must share one expansion library, or they disagree on edge cases.</p>
+<p>The decision worth arguing is who expands a repeating event. The view endpoint expands on the server, so a web page needs no calendar logic. The sync endpoint sends the raw rule and exceptions, so a phone can expand any month offline. Both must use the same expansion library.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records. How do you store "every Monday, forever" with one Monday cancelled and another moved? How do you find Ben's events this week with one index lookup?</p>
+<p>Sketch the records. How do you store "every Monday, forever" when one Monday is cancelled and another is moved? How do you find Ben's events for this week with one index lookup?</p>
 </x-task>
 <x-answer>
-<p>The rule once, plus exceptions keyed by original start. Each attendee gets an entry on their own shard with the event's span ("forever" is a far-future date), so one index on the span's end finds every event.</p>
+<p>Store the rule once, and store the changed occurrences as exceptions keyed by their original start time. Give each attendee an entry on their own shard that records the event's overall time span, using a far-future date for "forever", so one index on the span's end finds every event that could appear this week.</p>
 </x-answer>
 </x-tryit>
 
@@ -155,22 +138,22 @@ changes                      -- per calendar, for device sync
 </pre>
 </x-code>
 
-<p>The hot read is "Ben's events overlapping this week": <code>WHERE calendar_id = ? AND span_end_utc &gt; week_start AND span_start_utc &lt; week_end</code>. The index skips everything that ended earlier, so years of history cost nothing; what remains is this week's events plus a few dozen open-ended series to expand. Entries copy the times, rule and exceptions, so the read stays on Ben's shard.</p>
+<p>The most frequent read is "Ben's events that overlap this week", which is <code>WHERE calendar_id = ? AND span_end_utc &gt; week_start AND span_start_utc &lt; week_end</code>. The index skips everything that ended earlier. Each entry copies the event's times, rule and exceptions, so this read stays on Ben's own shard.</p>
 
-<p>A <strong>relational database, sharded by calendar</strong>, fits: an edit changes event, exceptions and change log in one transaction, and the read is an indexed range scan.</p>
+<p>A relational database sharded by calendar fits this data, because an edit changes the event, its exceptions and the change log in one transaction.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch where an edit is written, how it reaches attendees and devices, and where free/busy and reminders live.</p>
+<p>Sketch where an edit is written, how it reaches the attendees and their devices, and where free/busy and reminders are handled.</p>
 </x-task>
 <x-answer>
-<p>One transaction on the organizer's shard, then a change stream to workers that update attendees, nudge devices and plan reminders. Free/busy reads a per-person cache.</p>
+<p>The edit is one transaction on the organizer's shard. A change stream then feeds workers that update the attendees' entries, nudge their devices and plan reminders. Free/busy lookups read a per-person cache.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="One synchronous write to the organizer's shard; fan-out to attendees, devices and reminders happens behind a change stream, so 40 guests do not mean 40 writes before Ana's save returns.">
+<x-arch caption="The write to the organizer's shard is synchronous, and the updates to attendees, devices and reminders happen behind a change stream, so inviting 40 guests does not delay the organizer's save.">
 <script type="application/json">
 {
   "nodes": [
@@ -234,45 +217,40 @@ changes                      -- per calendar, for device sync
   },
   "steps": [
     {
-      "caption": "Ana creates \"Team sync\", Mondays 9:00 New York time, with Ben and Chen. An idempotency key stops a retry creating two series.",
+      "caption": "Ana creates a weekly event called \"Team sync\" on Mondays at 9:00 New York time and invites Ben and Chen. The request carries an idempotency key, so a retry does not create a second series.",
       "arch": { "active": ["app", "gw", "cal", ["app", "gw"], ["gw", "cal"]], "dim": ["fb", "cache", "push", "worker", "sched", "stream"] }
     },
     {
-      "caption": "One transaction on Ana's shard writes the event and rule, Ana's entry, a change-log row and an outbox row. Version 1.",
+      "caption": "One transaction on Ana's shard writes the event and its rule, Ana's own entry, a change-log row and an outbox row. The event is now at version 1.",
       "arch": { "active": ["cal", "db", ["cal", "db"]], "dim": ["fb", "cache", "push", "worker", "sched", "stream"], "notes": { "db": "e81 v1" } },
       "vars": { "version": 1 }
     },
     {
-      "caption": "Ana gets 201 at once; she reads her own shard, so her calendar is current.",
-      "arch": { "active": [["cal", "gw"], ["gw", "app"]], "mark": ["app", "db"], "dim": ["fb", "cache", "push", "worker", "sched", "stream"] },
-      "vars": { "version": 1 }
-    },
-    {
-      "caption": "The outbox row reaches the change stream; a fan-out worker picks it up, off Ana's critical path.",
+      "caption": "The outbox row reaches the change stream, and a fan-out worker picks it up.",
       "arch": { "active": ["stream", "worker", ["db", "stream"], ["stream", "worker"]], "dim": ["fb", "cache", "app", "gw"] },
       "vars": { "version": 1 }
     },
     {
-      "caption": "The worker writes an entry and change-log row on Ben's and Chen's shards. Each upsert carries version 1 and is ignored if the stored version is newer, so a late message cannot roll back.",
+      "caption": "The worker writes an entry and a change-log row on Ben's shard and on Chen's shard. Each write carries version 1 and is ignored if the stored version is newer, so a late message cannot roll an entry back.",
       "arch": { "active": ["worker", "cal", "db", ["worker", "cal"], ["cal", "db"]], "dim": ["fb", "cache", "app", "gw"], "notes": { "db": "+2 entries" } },
       "vars": { "version": 1, "entries written": 2 }
     },
     {
-      "caption": "A silent push nudges their devices to call <code>changes?since=token</code>. They have the event about 2 seconds after Ana saved.",
+      "caption": "A silent push notification tells their devices to call the changes endpoint with their last token. Ben and Chen have the event about 2 seconds later.",
       "arch": { "active": ["push", "app", ["worker", "push"], ["push", "app"]], "dim": ["fb", "cache", "sched", "stream"] },
       "vars": { "version": 1, "seen by Ben after": "2 s" }
     },
     {
-      "caption": "Ben opens his week. One index range on his shard returns the series; it expands to Monday 9:00 New York, which is 14:00 in London.",
+      "caption": "Ben opens his week view. One index range scan on his shard returns the series, and it expands to Monday 9:00 New York time, which is 14:00 in London.",
       "arch": { "active": ["app", "gw", "cal", "db", ["app", "gw"], ["gw", "cal"], ["cal", "db"]], "dim": ["fb", "cache", "push", "worker", "sched", "stream"], "notes": { "app": "Mon 14:00" } }
     },
     {
-      "caption": "Had the worker crashed between Ben's entry and Chen's, the unacknowledged message goes to another worker, which redoes both upserts: Ben's is unchanged, Chen's is seconds late.",
+      "caption": "Suppose the worker crashes after writing Ben's entry but before writing Chen's. The unacknowledged message goes to another worker, which repeats both writes. Ben's entry does not change, and Chen's arrives a few seconds late.",
       "arch": { "fail": ["worker"], "active": ["stream", ["stream", "worker"]], "dim": ["fb", "cache", "app", "gw", "push"], "notes": { "worker": "crashed" } },
       "vars": { "version": 1, "delivery": "at least once" }
     },
     {
-      "caption": "Ana renames the event on her laptop while her phone, offline since version 1, sends a time change. Both say <code>If-Match: 1</code>. The laptop's lands first (version 2); the phone gets 412 and the current event.",
+      "caption": "Ana renames the event on her laptop, while her phone, which has been offline since version 1, sends a time change. Both requests say <code>If-Match: 1</code>. The laptop's request is applied first and creates version 2, so the phone's request gets a 412 response with the current event.",
       "arch": { "active": ["cal", "db", ["app", "gw"], ["gw", "cal"], ["cal", "db"]], "fail": [["cal", "gw"]], "dim": ["fb", "cache", "push", "worker", "sched", "stream"], "notes": { "db": "v2", "cal": "412 for v1" } },
       "vars": { "version": 2 }
     }
@@ -285,126 +263,119 @@ changes                      -- per calendar, for device sync
 
 <h3>Repeating events and time zones</h3>
 
-<p>"Every weekday at 9:00, no end date" has infinitely many occurrences. Storing years of them hurts the moment someone edits the series.</p>
+<p>A rule such as "every weekday at 9:00, with no end date" has infinitely many occurrences, so the service has to decide what is stored and what is computed. There are two options.</p>
 
-<x-tradeoffs caption="Storing repeating events">
-<script type="application/json">
-{
-  "options": [
-    { "name": "One row per occurrence, far ahead", "good": "Reads are a plain range query.", "bad": "A weekly meeting until 2100 is about 3,800 rows per attendee; \"move all to 10:00\" rewrites them all, and there is still an end.", "pick": "Never for open-ended series." },
-    { "name": "Rule + exceptions, expand on read", "good": "One row per series; editing all occurrences changes one row. Matches the iCalendar standard devices already speak.", "bad": "Every read runs expansion code with subtle edge cases.", "pick": "The primary store. The usual answer.", "default": true }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p><strong>One row per occurrence.</strong> The service creates a row for every occurrence up to some far-off date. Reads become a plain range query, but the cost is large: a weekly meeting that runs until 2100 is about 3,800 rows for each attendee. Changing "all occurrences to 10:00" rewrites every one of those rows, and the series still has an end date, after which the events silently stop.</p>
 
-<p>Store the rule in iCalendar <code>RRULE</code> format, the start as local time plus a zone, and exceptions keyed by <strong>the original start time</strong>, which stays fixed even when the occurrence moves. Ana's March 2027, with March 8 cancelled and March 22 moved to 10:00:</p>
+<p><strong>A rule plus exceptions, expanded on read.</strong> The service stores one row for the series, in the standard iCalendar <code>RRULE</code> format that devices already understand, and a small exception row for each occurrence that was changed. Editing all occurrences changes one row. The cost is that every read must run expansion code with subtle edge cases.</p>
+
+<p>Store the start as a local time plus a zone name, and key each exception by the occurrence's <strong>original start time</strong>, which never changes even when the occurrence is moved. The three edit scopes map onto the data as follows. Editing "this occurrence" adds an exception. Editing "all occurrences" changes the series row. Editing "this and following" ends the old rule just before that occurrence and starts a new series from it.</p>
+
+<p>The table shows Ana's Monday 9:00 New York meeting in March 2027, with March 8 cancelled and March 22 moved to 10:00.</p>
 
 <table>
 <thead><tr><th>Original start (New York)</th><th>Exception</th><th>UTC</th><th>Ben in London</th></tr></thead>
 <tbody>
 <tr><td>Mon Mar 1, 09:00</td><td>none</td><td>14:00</td><td>14:00</td></tr>
-<tr><td>Mon Mar 8, 09:00</td><td>cancelled</td><td>none</td><td>none</td></tr>
+<tr><td>Mon Mar 8, 09:00</td><td>cancelled</td><td>no occurrence</td><td>no occurrence</td></tr>
 <tr><td>Mon Mar 15, 09:00</td><td>none</td><td>13:00</td><td>13:00</td></tr>
 <tr><td>Mon Mar 22, 09:00</td><td>moved to 10:00</td><td>14:00</td><td>14:00</td></tr>
 <tr><td>Mon Mar 29, 09:00</td><td>none</td><td>13:00</td><td>14:00</td></tr>
 </tbody>
 </table>
 
-<p>Edit scopes map to the data: "this occurrence" adds an exception; "all" changes the series row; "this and following" ends the old rule before that occurrence and starts a new series. Reads cap the window at a year, bounding expansion.</p>
-
-<p>Look at the UTC column. Ana's 9:00 moves an hour in UTC when New York changes clocks on March 14, 2027. London changes on March 28, so for two weeks Ben sees 13:00. That is correct, and it only happens if you <strong>expand in the event's own zone, then convert</strong>.</p>
+<p>The UTC column shows why the zone matters. New York changes its clocks on March 14, 2027, so Ana's 9:00 moves from 14:00 to 13:00 in UTC. London changes on March 28, so for two weeks Ben sees the meeting at 13:00 and then at 14:00 again. This is correct because the meeting means "9:00 for the organizer", and it works only if the service <strong>expands the series in the event's own time zone and converts to the viewer's zone afterwards</strong>.</p>
 
 <ul>
-<li><strong>Repeating events</strong> store a zone name such as <code>America/New_York</code>, never an offset like −05:00, which is right for only half the year.</li>
-<li><strong>All-day events</strong> are dates with no zone: a March 3 birthday is March 3 everywhere.</li>
-<li><strong>Missing and doubled times:</strong> 2:30 on spring-forward night does not exist; 1:30 on fall-back night happens twice. Use one rule everywhere, such as iCalendar's: move a missing time forward by the gap, take the first of a doubled one.</li>
-<li><strong>The rules change.</strong> Governments change daylight saving at short notice. A time zone database update fixes future occurrences on the next expansion; rebuild anything derived in UTC for that zone.</li>
+<li>A repeating event must store a zone name such as <code>America/New_York</code>, never a fixed offset such as −05:00, which is correct for only part of the year.</li>
+<li>On the night the clocks go forward, 2:30 does not exist, and on the night they go back, 1:30 happens twice. Pick one rule and apply it everywhere. The iCalendar convention is to move a missing time forward by the length of the gap and to use the first of a repeated time.</li>
 </ul>
-
-<x-callout type="mistake" title="A repeating event as a UTC time plus seven days">
-<p>Storing 14:00 UTC and adding 7 days looks fine until March 15, when Ana's 9:00 meeting shows at 10:00 New York time. Repeat in local time; convert last.</p>
-</x-callout>
 
 <h3>Free/busy for many people</h3>
 
-<p>Chen asks when Ana, Ben and five others are free next week: seven shards, each with series to expand. The answer needs only busy intervals: free/busy reveals when, not what.</p>
+<p>When Chen asks when Ana, Ben and five other people are all free next week, the service must read seven people's schedules, each stored on a different shard and each containing series that need expanding. The answer needs only busy intervals, not titles, so private details stay hidden. There are two ways to compute it.</p>
 
-<x-tradeoffs caption="Answering free/busy">
+<p><strong>Expand on every lookup.</strong> The service reads each person's events and expands the series itself. The answer is always exact, but the slowest shard sets the latency.</p>
+
+<p><strong>A cached list of busy intervals per person.</strong> The service keeps a sorted list of each person's busy intervals for roughly the next eight weeks. At four meetings a day that is about 224 intervals, and at 16 bytes each about 3.6 KB per person. A lookup is one cache read per person, and the times are exact. The cost is that the list must be rebuilt whenever the person's calendar changes or the time zone database is updated.</p>
+
+<x-tradeoffs caption="Answering free/busy lookups">
 <script type="application/json">
 {
   "options": [
-    { "name": "Expand on every lookup", "good": "Always exact; nothing to sync.", "bad": "One expansion per person per lookup; the slowest shard sets latency.", "pick": "Small scale, or as the fallback." },
-    { "name": "Cached busy intervals per person", "good": "One cache read per person, exact times. Eight weeks of meetings is about 224 intervals × 16 B ≈ 3.6 KB.", "bad": "Rebuild a person's entry on every change and time zone update.", "pick": "The usual default for scheduling.", "default": true },
-    { "name": "Bitmap of 15-minute slots", "good": "96 bits a day; combining people is a bitwise OR.", "bad": "Rounds to slots: a 9:05 start blocks 9:00.", "pick": "Searching hundreds of rooms for any free slot." }
+    { "name": "Expand on every lookup", "good": "The answer is always exact and nothing has to be kept in sync.", "bad": "Each lookup does one expansion per person, and the slowest shard sets the latency.", "pick": "Use it at small scale, or as the fallback when the cache is down." },
+    { "name": "Cached busy intervals per person", "good": "One cache read per person gives exact times, and eight weeks of meetings take about 3.6 KB.", "bad": "A person's entry must be rebuilt on every change and on every time zone update.", "pick": "Use it as the default for scheduling views.", "default": true }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>The lookup reads 7 entries in parallel, merges sorted intervals (the <a href="/algorithms/intervals.html">intervals</a> pattern) and returns gaps in working hours. The cache is 100 million × 3.6 KB ≈ 360 GB, a modest cluster; seconds of lag is fine for suggesting slots.</p>
+<p>The choice here is the cached busy intervals. The service reads the seven cached lists in parallel, merges them with the <a href="/algorithms/intervals.html">interval merging</a> technique and returns the gaps that fall inside working hours. The cache for 100 million users is about 360 GB.</p>
 
 <h3>Reminders at scale</h3>
 
-<p>A repeating event has no last reminder, so use a rolling horizon on a <a href="/system-design/design-a-job-scheduler.html">job scheduler</a>:</p>
+<p>A repeating event has no last reminder, so the service cannot create all its reminders in advance. Instead it plans reminders inside a rolling horizon, using a <a href="/system-design/design-a-job-scheduler.html">job scheduler</a>.</p>
 
 <ul>
-<li><strong>Plan:</strong> a daily planner expands each calendar's next 48 hours; fan-out workers add changes inside that window. Jobs are keyed by (calendar, event, original start, offset), so planning twice creates one job.</li>
-<li><strong>Re-check on fire:</strong> drop the reminder if the event was cancelled, moved or declined; no hunting for jobs.</li>
-<li><strong>Survive the burst:</strong> the scheduler loads each minute's jobs a minute early and hands them to the <a href="/system-design/design-a-notification-system.html">notification system</a>, built for bursts of 100,000 a second.</li>
-<li><strong>Use the device:</strong> a synced phone raises the alarm itself, so a server outage does not silence most reminders.</li>
-<li><strong>Duplicates:</strong> jobs run at least once. A "sent" record per job key catches most; a rare double beats a missed meeting.</li>
+<li><strong>Planning:</strong> a daily planner expands each calendar's next 48 hours and creates a scheduled job for each reminder in that window. The fan-out workers add jobs when an edit falls inside the window. Each job is keyed by calendar, event, original start and offset, so planning twice creates one job.</li>
+<li><strong>Checking when the job fires:</strong> the job re-reads the event and does nothing if it was cancelled, moved or declined.</li>
+<li><strong>Surviving the burst:</strong> the scheduler loads each minute's jobs a minute early and hands them to the <a href="/system-design/design-a-notification-system.html">notification system</a>, which is built for bursts of 100,000 a second.</li>
+<li><strong>Duplicates:</strong> jobs run at least once. A "sent" record keyed by the job catches most duplicates, and a rare duplicate reminder is better than a missed meeting.</li>
 </ul>
 
-<h3>Edits from many devices</h3>
+<h3>Edits from many devices and sync</h3>
 
-<p>Every edit sends <code>If-Match</code> with its starting version; a conditional update applies it only if unchanged. A stale edit gets 412 and the current event; the client merges field by field and retries, or asks the user if both changed one field.</p>
+<p>Every edit sends the version it started from in an <code>If-Match</code> header, and the database applies it only if the stored version still matches. A stale edit receives a 412 response containing the current event. The client then merges the two changes and retries, or asks the user when both changed the same field.</p>
 
-<p>Devices sync from the per-calendar change log. Each change takes the next number from a per-calendar counter in the same transaction, so numbers commit in order and "everything after 1,042" misses nothing; that number is the sync token. Rows older than about 30 days are trimmed; an older token gets 410 and a full resync. A lost push just waits for the next app open.</p>
+<p>Devices sync from the per-calendar change log. Each change takes the next number from a per-calendar counter inside the same transaction as the edit, so the numbers commit in order and a request for "everything after 1,042" cannot miss a change. That number is the sync token. Log rows older than about 30 days are deleted, so a device with an older token gets a 410 response and does a full resync.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (35,000 writes and 350,000 reads a second at peak), add servers and read replicas (owners read their own calendar from the primary) and split shards. The real pain is a huge guest list: a 50,000-person all-hands is 50,000 entry writes per edit. Above about 1,000 guests, give each guest a pointer row, written once, and read times from the shared event: the hybrid a <a href="/system-design/design-a-news-feed.html">news feed</a> uses for celebrity accounts.</p>
+<h3>What breaks first at 10 times the load</h3>
+
+<p>At 10 times the load the peak is 35,000 writes and 350,000 reads a second. Adding servers, read replicas and shards handles most of that. The harder problem is a very large guest list: a company-wide meeting with 50,000 invitees means 50,000 entry writes for every edit. Above roughly 1,000 guests, the service should write one shared event and give each guest only a small pointer row, as a <a href="/system-design/design-a-news-feed.html">news feed</a> does for accounts with millions of followers.</p>
+
+<h3>What happens when a component fails</h3>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>Component that fails</th><th>What happens</th><th>What the design does</th></tr></thead>
 <tbody>
-<tr><td>A calendar DB primary</td><td>Its calendars' writes stop until a replica takes over.</td><td>Replicate synchronously to one replica; fail over in seconds.</td></tr>
-<tr><td>The change stream</td><td>Attendees and devices stop hearing of changes.</td><td>Organizers' writes still succeed; outbox rows wait until it recovers.</td></tr>
-<tr><td>A fan-out worker</td><td>Its messages are redelivered.</td><td>Upserts are idempotent, so redoing is safe.</td></tr>
-<tr><td>The busy-time cache</td><td>Lookups expand on each shard.</td><td>Slower, correct; rebuild lazily.</td></tr>
-<tr><td>The job scheduler</td><td>Server reminders stop.</td><td>Device alarms still fire; on recovery, send only reminders under 5 minutes late.</td></tr>
+<tr><td>A calendar DB primary</td><td>Writes to its calendars stop until a replica takes over.</td><td>The primary replicates synchronously to one replica, and the service fails over within seconds.</td></tr>
+<tr><td>The change stream</td><td>Attendees and devices stop hearing about changes.</td><td>Organizers' writes still succeed, and the outbox rows wait in the database until the stream recovers.</td></tr>
+<tr><td>The job scheduler</td><td>Server-side reminders stop.</td><td>Device alarms still fire, and on recovery the scheduler sends only reminders that are less than 5 minutes late.</td></tr>
 </tbody>
 </table>
 
 <h2>What a strong answer sounds like</h2>
 
+<p>Interviewers for this question mostly listen for how the candidate handles repeating events and time zones, because those are the parts that do not look like a standard web service. The table shows how the answers differ by level.</p>
+
 <table>
-<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<thead><tr><th>Level</th><th>What the answer contains</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Events with start and end, a cron job for reminders; repeating events become many rows.</td></tr>
-<tr><td>Mid</td><td>A rule with exceptions expanded within a window, asynchronous invite fan-out, a scheduler for reminders.</td></tr>
-<tr><td>Senior</td><td>Also gets local time right across daylight saving, makes reminders a rolling horizon with re-checks, sizes for the hourly burst, versions edits, and names the large-meeting problem.</td></tr>
+<tr><td>Junior</td><td>Draws an events table with a start and end time in UTC, stores each occurrence of a repeating event as its own row, and does not discuss invites to other users or reminders at scale.</td></tr>
+<tr><td>Mid-level</td><td>Stores a repeat rule plus exceptions, keeps the local time and zone name, copies events to each attendee, and uses a queue to send reminders, but does not say what happens to the data when a worker crashes or two devices edit at once.</td></tr>
+<tr><td>Senior</td><td>Does everything above, and also expands the series in the event's own zone across clock changes, versions edits with <code>If-Match</code>, makes the fan-out idempotent, plans reminders in a rolling horizon, and names the large-guest-list problem before being asked.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="The daylight saving question" tone="strong">
-<x-interviewer>Ana's weekly 9:00 meeting: what do you store, and what does Ben in London see in March?</x-interviewer>
-<x-you>09:00 with the zone <code>America/New_York</code> and the rule, not a UTC time. I expand in New York time, then convert. Ben sees 14:00, then 13:00 for the two weeks between the US and UK clock changes, then 14:00. That is right: the organizer's 9:00 is what the meeting means.</x-you>
-<x-interviewer>And if the US changed its daylight saving rules?</x-interviewer>
-<x-you>Future occurrences fix themselves on the next expansion. I rebuild what I cached in UTC: spans, busy caches, planned reminders.</x-you>
+<x-interviewer>Ana has a weekly meeting at 9:00. What do you store, and what does Ben in London see in March?</x-interviewer>
+<x-you>I store 09:00 with the zone <code>America/New_York</code> and the repeat rule, not a UTC time. I expand the series in New York time and then convert to the viewer's zone. Ben sees 14:00, then 13:00 for the two weeks between the US and UK clock changes, and then 14:00 again. That is correct, because the meeting means 9:00 for the organizer.</x-you>
+<x-interviewer>What if the US changed its daylight saving rules?</x-interviewer>
+<x-you>Future occurrences fix themselves the next time they are expanded, once the time zone database is updated. I would rebuild anything I had derived in UTC, which means the span columns, the busy caches and the planned reminders.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How do you book a meeting room without double booking?</h3>
-<p>A room is a calendar that auto-accepts if nothing confirmed overlaps. Check and accept run in one transaction that bumps the room's change counter, so two bookings cannot interleave; the loser is declined.</p>
+<p>A room is a calendar that accepts an invite automatically only if no confirmed event overlaps it. The overlap check and the acceptance run in one transaction on the room's shard, and that transaction also increments the room's change counter. Two bookings for the same slot therefore cannot interleave, and the one that commits second sees the first and is declined.</p>
 
-<h3>How do invites to people at other companies work?</h3>
-<p>By email with an iCalendar attachment; replies come back the same way, matched by the event's unique ID and sequence number.</p>
+<h3>An attendee declines one occurrence of a series. Where is that stored?</h3>
+<p>It is stored as an exception on that attendee's own entry, keyed by the occurrence's original start time. The shared event and every other attendee's entry are untouched.</p>
 
-<h3>An attendee declines one occurrence. Where is that stored?</h3>
-<p>As an exception on that attendee's entry, keyed by original start; the shared event is untouched.</p>
+<h3>Why not store all times in UTC?</h3>
+<p>UTC is right for a single instant such as a flight. It is wrong for a repeating event, because "9:00 every Monday" means local time and its UTC value changes when the clocks change.</p>
 
 <x-checklist title="Self-review: calendar">
 <script type="application/json">
@@ -412,8 +383,8 @@ changes                      -- per calendar, for device sync
   "groups": [
     { "title": "Before drawing", "items": ["I asked about repeating events, rooms and external invites", "I separated what must be instant from what may lag", "I set a reminder delivery target"] },
     { "title": "Numbers and interfaces", "items": ["I estimated reads, writes and storage per user", "I sized reminders for the top-of-the-hour burst", "I sent times as local time plus a zone name", "I versioned edits with If-Match and a 412 path"] },
-    { "title": "Design and depth", "items": ["Repeating events are a rule plus exceptions keyed by original start", "I expanded in the event's zone across a clock change", "Free/busy uses a per-person busy cache, without titles", "Reminders are a rolling horizon, re-checked on fire"] },
-    { "title": "Failure", "items": ["Fan-out is idempotent when a worker dies mid-way", "I named the large-meeting fan-out problem and a fix"] }
+    { "title": "Design and depth", "items": ["I stored repeating events as a rule plus exceptions keyed by original start", "I expanded in the event's zone across a clock change", "I used a per-person busy cache for free/busy, without titles", "I planned reminders in a rolling horizon and re-checked them when they fire"] },
+    { "title": "Failure", "items": ["I made the fan-out idempotent for a worker that dies halfway", "I named the large-meeting fan-out problem and a fix"] }
   ]
 }
 </script>

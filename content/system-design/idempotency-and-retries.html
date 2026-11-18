@@ -1,28 +1,52 @@
 <!--
 {
   "title": "Idempotency and Retries",
-  "description": "Retry safely: timeouts, exponential backoff with jitter, retry budgets, and idempotency keys that stop a lost response from charging a card twice.",
-  "minutes": 14,
+  "description": "How to retry failed requests without overloading a server or repeating an action, using timeouts, backoff, retry budgets and idempotency keys.",
+  "minutes": 16,
   "tags": ["reliability", "retries", "payments", "distributed systems"]
 }
 -->
-<p>A shop's app sends "charge $40" to its payments API. The API charges the card, but the response is lost. After 2 seconds the app retries, and the card is charged again. If 1 in 1,000 calls times out like this at 100 payments a second, that is 100 × 0.001 = 0.1 double charges a second: 8,640 angry customers a day.</p>
+<p>A retry is a second attempt at a request that failed or got no answer, and it is how a client copes with brief network and server failures. An operation is <strong>idempotent</strong> if doing it several times has the same effect as doing it once. Retries are safe only for idempotent operations, so a system that retries needs operations that are idempotent by nature, or a mechanism such as an idempotency key that makes them so.</p>
 
-<p>Retrying was right; most failures are brief. The server just could not recognise "the same charge again".</p>
+<p>Without idempotency, a client that sends "charge this card $40" and gets no response cannot know whether the charge happened. If it retries, the customer may be charged twice, and if it does not, the customer may not be charged at all. Unlimited retries cause a second problem: when a server is struggling, thousands of clients retrying at once can keep it from recovering.</p>
 
-<h2>The idea</h2>
+<h2>Where retries and idempotency fit</h2>
 
-<p>An operation is <strong>idempotent</strong> if doing it twice has the same effect as once. "Set the status to shipped" is idempotent; "add $40" is not. Over a network you cannot tell a lost request from a lost response, so any client that retries sends some operations twice. Make them idempotent, then retry freely.</p>
+<x-arch caption="The client retries on a timeout, and the API uses a key store to recognise a repeated request before it calls the card processor.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Client (retries)", "kind": "client", "col": 0, "row": 1 },
+    { "id": "api", "label": "Payments API", "kind": "service", "col": 1, "row": 1 },
+    { "id": "keys", "label": "Idempotency keys", "kind": "database", "col": 2, "row": 0 },
+    { "id": "card", "label": "Card processor", "kind": "external", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "api", "label": "POST + key" },
+    { "from": "api", "to": "keys", "label": "claim key" },
+    { "from": "api", "to": "card", "label": "charge" }
+  ]
+}
+</script>
+</x-arch>
 
-<p>Retries need a <strong>timeout</strong> to stop waiting, <strong>backoff with jitter</strong> to spare a struggling server, and a <strong>limit</strong> to stop endless loops.</p>
+<h2>Timeouts</h2>
 
-<h2>Timeouts and backoff</h2>
+<p>A timeout is how long a client waits for a response before giving up. When it fires, the client has learned nothing about what the server did: the request may never have arrived, or the server may have finished and the response may have been lost. A timed-out request is therefore an unknown outcome, not a failure.</p>
 
-<p>A timeout means "I do not know what happened", never "it failed". Set it a little above the callee's p99 (p99 300 ms, timeout 500 ms), not a round 30 seconds that ties up a thread.</p>
+<p>Set the timeout a little above the latency that almost all requests have, such as the 99th percentile. Too short, and the client abandons requests that would have succeeded and adds needless retries. Too long, and the client holds a thread for the whole wait and can run out of threads.</p>
 
-<p>Retry only what can succeed next time: timeouts, connection resets, <code>503</code>, <code>429</code>. Never retry a <code>400</code>; it fails the same way again.</p>
+<h2>Retries with exponential backoff and jitter</h2>
 
-<p><strong>Exponential backoff</strong> waits longer after each failure: 100 ms, 200 ms, 400 ms, doubling up to a cap. <strong>Jitter</strong> waits a random time between 0 and that ceiling. Without it, 1,000 clients that failed together retry together, at exactly 100 ms, then 300 ms, hitting the recovering server in synchronised waves.</p>
+<p>A retry policy decides which failures to retry, how long to wait between attempts and when to stop. Retry only failures that can succeed on a later attempt: timeouts, connection resets, <code>503</code> and <code>429</code>. A <code>400</code> or <code>404</code> will fail the same way again, so retrying it only adds load. If the server sends a <code>Retry-After</code> header, wait at least that long.</p>
+
+<h3>Exponential backoff</h3>
+
+<p>Waiting a fixed time between attempts keeps pressure on a server that is already struggling. Exponential backoff doubles the wait after each failure, for example 100 ms, 200 ms, 400 ms, up to a cap of a few seconds. Limit the total to a few attempts.</p>
+
+<h3>Jitter</h3>
+
+<p>When many clients fail at the same moment, backoff alone makes them all retry at the same moments, so the server receives load in synchronised waves. With full jitter each client waits a random time between zero and the current backoff value, which spreads the retries out.</p>
 
 <x-code title="Retry with exponential backoff and full jitter">
 <pre lang="js">
@@ -51,22 +75,62 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
 </pre>
 </x-code>
 
-<h3>Retries multiply</h3>
+<h2>Retry storms and retry budgets</h2>
 
-<p>If three layers each make up to 3 attempts, one user request can reach the database 27 times (worked out below), turning an overload into an outage. Retry at one layer, usually the one closest to the user, and give each client a <strong>retry budget</strong>: retries may add at most 10% to normal traffic; beyond that, failures are returned.</p>
+<h3>Retries multiply across layers</h3>
+
+<p>A retry storm happens when retries add so much load that a failing service cannot recover. The worst case is retries at several layers. If a client, an API and an order service each make up to 3 attempts at a failed call, a failing database can receive 3 × 3 × 3 = 27 calls for one user request, exactly when it is least able to handle them. The usual fix is to retry at one layer, normally the one that knows how to repeat the whole operation, and let the layers below fail fast.</p>
+
+<h3>Retry budgets</h3>
+
+<p>A retry budget limits retries to a fraction of normal traffic, for example about 10% of a client's recent requests. When the service is healthy the budget is never reached. When it is failing, the budget caps the extra load and the client returns errors for the rest. The budget is shared by all calls from one client process, because a per-request limit still allows three attempts for every request at once.</p>
+
+<h3>Circuit breakers</h3>
+
+<p>A circuit breaker stops calls to a dependency that keeps failing and later lets a few test calls through. It limits retry load more strongly than a budget, and is covered in <a href="/system-design/reliability-and-failure.html">Reliability and Failure</a>.</p>
+
+<h2>Which operations are safe to retry</h2>
+
+<p>Whether a retry is safe depends on the operation, not on the error. Reads are always safe to retry. An operation that sets a fixed value, such as "set the status to shipped" or a <code>PUT</code> that replaces a whole record, is idempotent. A <code>DELETE</code> of a specific record is too.</p>
+
+<p>An operation that adds or creates something, such as "add $40 to the balance" or a <code>POST</code> that creates an order, changes the state on every repeat, so it needs one of the techniques below.</p>
 
 <h2>Idempotency keys</h2>
 
-<p>For other operations, the client creates a unique <strong>idempotency key</strong> (a random UUID) per logical action, such as one press of "Pay", and sends it with every attempt. The server remembers keys:</p>
+<p>An idempotency key is a unique value that the client attaches to a request and reuses on every retry of it. The server remembers which keys it has processed and what it answered, so a repeated key returns the saved answer instead of repeating the work. This makes any operation, including a payment, safe to retry.</p>
 
-<ol>
-<li>Insert the key as "in progress". A unique constraint lets only one attempt succeed.</li>
-<li>If the key is done, return the saved response. If in progress, return <code>409</code> so the client retries later.</li>
-<li>Do the work, passing the key to any downstream system that accepts one (the card processor).</li>
-<li>Save the response with the key. Keep keys about 24 hours, longer than any client retries.</li>
-</ol>
+<h3>Who generates the key</h3>
 
-<p>Also store a hash of the request body: the same key with a different amount is a client bug, rejected with <code>422</code>.</p>
+<p>The client generates the key, usually a random UUID, once per user action such as one press of "Pay", and sends the same value on every attempt. The server cannot generate it, because only the client knows that two requests are the same action. The key must be created before the first attempt and outside the retry loop, because a key created inside the loop makes every attempt a new payment.</p>
+
+<h3>What the server stores and the atomic insert</h3>
+
+<p>For each key the server stores the key itself, the owner of the key (such as the account id), a state (in progress or completed), a fingerprint of the request, and the saved response once there is one. The server must claim the key with a single atomic operation. A database unique constraint does this: the server tries to insert the key, and only one of several concurrent attempts succeeds.</p>
+
+<x-code single title="Claiming a key atomically">
+<pre lang="sql">
+INSERT INTO idempotency_keys (account_id, key, request_hash, state, created_at)
+VALUES (:account_id, :key, :request_hash, 'in_progress', now())
+ON CONFLICT (account_id, key) DO NOTHING;
+-- 1 row inserted: this attempt does the work. 0 rows: read the existing row.
+</pre>
+</x-code>
+
+<p>Checking whether the key exists and then inserting it in a second step does not work. Two retries that arrive together can both find that the key is missing, and both then do the work. The insert and the check have to be the same statement.</p>
+
+<h3>The in-progress state</h3>
+
+<p>A retry can arrive while the first attempt is still running, for example when the client's timeout is shorter than the processing time. The server finds the key in progress and must not start the work again. It usually answers with <code>409 Conflict</code> so the client tries again shortly, or it waits briefly for the first attempt and returns its result.</p>
+
+<p>If the first attempt crashes after charging the card but before saving the result, the key stays in progress and every retry gets a conflict. To avoid this, the claim carries a lease of some seconds. After the lease expires, a retry takes over and repeats the work. This is safe only if the downstream system accepts the same key, as in the tracer below, so that it returns the original charge. Otherwise a background job must ask it what happened first.</p>
+
+<h3>The request fingerprint</h3>
+
+<p>The server also stores a hash of the request body and compares it with any later request that uses the same key. The same key with a different amount is a client bug, so the server rejects it, commonly with <code>422</code>, instead of returning the answer to a different request.</p>
+
+<h3>How long keys are kept</h3>
+
+<p>Keys must be kept longer than any client keeps retrying the same action. A day is a common choice for payment APIs. After that the key is deleted.</p>
 
 <x-tracer title="A lost response, a retry, one charge">
 <script type="application/json">
@@ -91,38 +155,28 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
       "vars": { "charges": 0 }
     },
     {
-      "caption": "The API inserts <code>k-7f3</code> as \"in progress\". It succeeds, so this attempt owns the work.",
+      "caption": "The API inserts <code>k-7f3</code> as \"in progress\". The insert succeeds, so this attempt owns the work.",
       "arch": { "active": ["keys", ["api", "keys"]], "notes": { "keys": "k-7f3 started" } },
       "vars": { "charges": 0 }
     },
     {
-      "caption": "It charges $40, passing the same key so the processor can dedupe too.",
-      "arch": { "active": ["card", ["api", "card"]], "notes": { "card": "charged $40" } },
+      "caption": "It charges $40, passing the same key to the processor, and saves the response under the key.",
+      "arch": { "active": ["card", ["api", "card"]], "mark": ["keys"], "notes": { "card": "charged $40", "keys": "k-7f3 done" } },
       "vars": { "charges": 1 }
     },
     {
-      "caption": "It saves the response (201, charge <code>ch_9</code>) under the key, then replies.",
-      "arch": { "active": ["keys", ["api", "keys"]], "mark": ["card"], "notes": { "keys": "k-7f3 done" } },
-      "vars": { "charges": 1 }
-    },
-    {
-      "caption": "The reply is lost. After 2 seconds the app times out, not knowing whether the charge happened.",
+      "caption": "The reply is lost. After 2 seconds the app times out and does not know whether the charge happened.",
       "arch": { "fail": [["api", "app"]], "notes": { "app": "timeout" } },
       "vars": { "charges": 1 }
     },
     {
-      "caption": "It waits a random 0 to 100 ms and resends with the <em>same</em> key. A new key would be a new charge.",
+      "caption": "The app waits a random time and resends with the <em>same</em> key. A new key would mean a new charge.",
       "arch": { "active": ["app", "api", ["app", "api"]], "notes": { "app": "retry, k-7f3" } },
       "vars": { "charges": 1, "attempts": 2 }
     },
     {
-      "caption": "The API finds <code>k-7f3</code> done and returns the saved 201 with <code>ch_9</code>. The processor is not called.",
+      "caption": "The API finds <code>k-7f3</code> completed and returns the saved response. The processor is not called again.",
       "arch": { "active": ["keys", ["api", "keys"], ["api", "app"]], "mark": ["app"], "dim": ["card"], "notes": { "keys": "seen: replay" } },
-      "vars": { "charges": 1, "attempts": 2 }
-    },
-    {
-      "caption": "Had the retry arrived during the first attempt, the key would read \"in progress\" and the API would answer 409.",
-      "arch": { "active": ["keys", ["api", "keys"]], "dim": ["card"], "notes": { "keys": "busy: 409" } },
       "vars": { "charges": 1, "attempts": 2 }
     }
   ]
@@ -130,91 +184,70 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
 </script>
 </x-tracer>
 
-<p>One gap: a crash after charging but before saving "done" leaves the key stuck "in progress", and every retry gets 409. So the claim holds a lease, say 30 seconds. Once it expires, a retry takes over and calls the processor with the same key, which returns the original charge. A processor without keys needs a sweeper that checks stuck keys against it first.</p>
+<h2>Other ways to make an operation idempotent</h2>
 
-<h2>Ways to make work safe to repeat</h2>
+<p>An idempotency key needs a key store on the write path, and it needs the client to cooperate. Some operations can be made idempotent without either.</p>
 
-<x-tradeoffs caption="Deduplication options">
-<script type="application/json">
-{
-  "options": [
-    { "name": "Naturally idempotent operation", "good": "Nothing to store: <code>PUT</code> a full value, \"set status = shipped\".", "bad": "Many real actions are increments, sends or charges.", "pick": "\"Set to X\" instead of \"add X\"." },
-    { "name": "Idempotency key from the client", "good": "Works for any action; retries get the original response.", "bad": "A key store on the write path; the client must reuse the key correctly.", "pick": "Client-facing mutations: payments, orders, bookings.", "default": true },
-    { "name": "Dedupe table in the consumer", "good": "Message id recorded in the effect's transaction; duplicates are skipped.", "bad": "Table grows; retention must outlast redelivery.", "pick": "At-least-once queue and stream consumers." },
-    { "name": "Conditional write (version)", "good": "<code>UPDATE … WHERE version = 7</code> applies only once.", "bad": "A retry sees \"0 rows\" and must tell a duplicate from a real conflict.", "pick": "State machines: PAID to SHIPPED once." }
-  ]
-}
-</script>
-</x-tradeoffs>
+<h3>Conditional writes</h3>
 
-<h2>Numbers worth remembering</h2>
+<p>A conditional write applies a change only if the record is still in the expected state, for example <code>UPDATE orders SET status = 'SHIPPED' WHERE id = 7 AND status = 'PAID'</code>, or a write that checks a version number. A repeat matches zero rows and changes nothing. This suits state machines, where an order moves from paid to shipped only once. The weakness is that zero rows changed can mean the change was already applied or that another writer changed the row, so the code must read the row to tell a duplicate from a real conflict.</p>
 
-<ul>
-<li>Timeout: a little above the callee's p99, not its average.</li>
-<li>Backoff: start around 100 ms, double, cap at a few seconds, 3 to 5 attempts.</li>
-<li>Retry budget: about 10% extra traffic, at one layer.</li>
-</ul>
+<h3>Natural keys and unique constraints</h3>
 
-<x-estimate title="Retry amplification">
-<script type="application/json">
-{
-  "question": "The database is down. At worst, how many database calls can one user request cause?",
-  "givens": ["Three layers: app → API → order service → database", "Each layer makes 1 attempt plus up to 2 retries", "Every call fails"],
-  "unit": "count",
-  "answer": "27",
-  "accept": ["9", "80"],
-  "steps": ["Each layer makes 3 attempts on the layer below", "3 API calls × 3 order-service calls × 3 database calls = 27"],
-  "note": "1,000 users a second becomes 27,000 calls a second on a database already failing."
-}
-</script>
-</x-estimate>
+<p>Sometimes the data already identifies the action, such as an order number or a booking made of a user and a slot. A unique constraint on that value makes the second insert fail, and the code treats the failure as "already done". The identifier must be stable across retries, so it has to come from the client or the business data and not be generated by the server on each attempt.</p>
+
+<h3>Deduplication on the consumer</h3>
+
+<p>Message queues and streams usually deliver each message <strong>at least once</strong>: if a consumer crashes or does not acknowledge in time, the broker redelivers it. Consumers therefore deduplicate. Each message carries a unique id, and the consumer records that id in the same transaction as the message's effect and skips ids already recorded. Recording it in a separate step would let a crash lose the message or process it twice. The table of ids must be kept longer than the longest redelivery delay. At-least-once delivery combined with this deduplication gives an effect equivalent to exactly-once processing, even though the broker itself can still deliver a message twice. Queues are covered in <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>.</p>
+
+<h2>Side effects and saved responses</h2>
+
+<h3>Side effects outside the database</h3>
+
+<p>If the handler also sends an email and crashes before saving the result, the retry sends it again. Pass the key to any downstream service that supports one, or write an outbox row in the same transaction as the key so one worker performs the side effect once.</p>
+
+<h3>Which responses to save</h3>
+
+<p>A saved response is replayed to every retry, so saving a transient failure such as a <code>503</code> would make the client see it forever. Save completed results, including a definitive refusal such as "card declined". For a failure that may succeed later, release the key so a retry runs the operation again.</p>
 
 <h2>In the interview</h2>
 
-<p>Raise this whenever a client can retry an action with side effects: payments, orders, messages, any at-least-once consumer. Say: "A timeout is not a failure, it is an unknown. So the create call takes an idempotency key."</p>
+<p>Raise idempotency whenever a client can repeat an action with side effects, such as a payment, an order or a message. For client-facing writes the answer is an idempotency key, and for state changes inside a database it is often a conditional write.</p>
 
-<x-interview title="The double charge">
-<x-interviewer>The client times out on a payment and retries. What stops a double charge?</x-interviewer>
-<x-you>The client sends one idempotency key per checkout attempt on every retry. The server inserts it under a unique constraint before charging, so only one attempt does the work; a repeat gets the stored response. The key also goes to the card processor, covering a crash mid-charge.</x-you>
-<x-interviewer>How long do you keep the keys?</x-interviewer>
-<x-you>24 hours; clients retry for minutes at most. At 100 payments a second that is about 8.6 million rows: small.</x-you>
-<x-coach>The size check, 100 × 86,400 = 8.64 million, justifies a simple design.</x-coach>
-</x-interview>
-
-<p>Follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"Who generates the key, client or server?"</strong> The client: only it knows two requests are the same action.</li>
+<li><strong>"What stops a double charge when the client retries?"</strong> The client sends one idempotency key per payment on every attempt. The server claims the key with an atomic insert before charging, so only one attempt does the work and a repeat gets the stored response. The key is also passed to the card processor, which covers a crash between the charge and saving the result.</li>
+<li><strong>"Who generates the key, and when?"</strong> The client, once per user action and before the first attempt, because only the client knows that two requests are the same action.</li>
+<li><strong>"What if the server crashes after charging but before saving the result?"</strong> The key stays in progress, so it needs a lease. After the lease expires a retry takes over and calls the processor with the same key, which returns the original charge. A processor without key support has to be queried for the charge first.</li>
+<li><strong>"Can a message queue give you exactly-once processing?"</strong> The broker delivers at least once, so a consumer can see the same message twice. The consumer stores each message id in the same transaction as the message's effect and skips ids it has seen, which makes the effect happen once.</li>
+<li><strong>"How do you stop retries from overloading a struggling service?"</strong> Use exponential backoff with jitter, a cap on attempts and a retry budget, and retry at one layer only. A circuit breaker then stops calls to a dependency that is clearly down.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="A new key on every retry">
-<p>A key created inside the retry loop makes each attempt a new payment. Create it once per user action, before the first attempt.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Checking, then inserting">
-<p>"Look up the key; if absent, charge" lets two concurrent retries both see nothing. Claim it with an atomic insert under a unique constraint.</p>
-</x-callout>
+<x-interview title="The double charge" tone="strong">
+<x-interviewer>The client times out on a payment request and retries. What stops a double charge?</x-interviewer>
+<x-you>The client creates one idempotency key per checkout attempt and sends it on every retry. The server inserts the key under a unique constraint before it charges the card, so only one attempt does the work, and a repeat gets the stored response. I would also pass the key to the card processor, so that a crash after the charge does not lead to a second one.</x-you>
+<x-interviewer>What if the retry arrives while the first request is still running?</x-interviewer>
+<x-you>The key is still marked in progress, so the server answers with a conflict and the client retries after a short delay. The key has a lease, so if the first attempt died, a later retry can take over.</x-you>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "Which operation is idempotent as written?",
+      "question": "A payment client times out and sends the request again. Where should the idempotency key be created?",
       "options": [
-        { "text": "<code>balance = balance + 40</code>", "why": "Run twice, it adds $80." },
-        { "text": "<code>status = 'SHIPPED' WHERE id = 7</code>", "correct": true, "why": "Setting a value twice gives the same result as once." },
-        { "text": "<code>INSERT INTO emails_to_send …</code> with no unique key", "why": "Each run inserts another row, so the email is sent twice." }
+        { "text": "By the client once per user action, before the first attempt", "correct": true, "why": "Only the client knows that the retry is the same action, and every attempt must carry the same key." },
+        { "text": "By the client inside the retry loop, so each attempt has a fresh key", "why": "Each attempt would then look like a new payment, and the server could not recognise the repeat." },
+        { "text": "By the server when the request first arrives", "why": "The server cannot link a retry to the first request unless the client sends something that matches it." }
       ]
-    },
-    {
-      "question": "A call fails with <code>400 Bad Request</code>. What should the client do?",
+    }
+    ,{
+      "question": "Two retries with the same key reach the server at the same moment. Which design lets only one of them do the work?",
       "options": [
-        { "text": "Retry with backoff", "why": "The request itself is wrong; it will fail every time." },
-        { "text": "Return the error without retrying", "correct": true, "why": "Retry only failures that can succeed later." },
-        { "text": "Retry with a new idempotency key", "why": "The key is not the problem, and a new key risks doing the action twice." }
+        { "text": "Look up the key, and insert it if it is not found", "why": "Both retries can find nothing before either inserts, so both do the work." },
+        { "text": "Insert the key under a unique constraint and work only if the insert succeeded", "correct": true, "why": "The database lets exactly one insert succeed." }
       ]
     }
   ]
@@ -224,4 +257,4 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
 
 <h2>What to practise next</h2>
 
-<p>Circuit breakers and load shedding are in <a href="/system-design/reliability-and-failure.html">reliability and failure</a>. Use idempotency keys where they matter most in <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>.</p>
+<p>Read about circuit breakers and load shedding in <a href="/system-design/reliability-and-failure.html">Reliability and Failure</a>, and see idempotency keys used in a full design in <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>.</p>

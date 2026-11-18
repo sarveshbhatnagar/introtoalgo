@@ -24,28 +24,28 @@
     {
       "args": [[1, 0, 1, 0], [[2, 0, 2, 0], [0, 1, 0, 1], [1, 1, 1, 1]]],
       "expected": [0.6652409557748218, 0.09003057317038046, 0.24472847105479764],
-      "explanation": "d = 4, so divide by √4 = 2. Dot products: 4, 0, 2. Scores: 2, 0, 1. Softmax: e² ≈ 7.389, e⁰ = 1, e¹ ≈ 2.718, total 11.107, so the weights are about 0.665, 0.090 and 0.245. The first key matches best and gets most of the attention."
+      "explanation": "Here d = 4, so each dot product is divided by √4 = 2. The dot products are 4, 0 and 2, which gives scores of 2, 0 and 1. The softmax terms are e² ≈ 7.389, e⁰ = 1 and e¹ ≈ 2.718, with a total of 11.107, so the weights are about 0.665, 0.090 and 0.245. The first key matches best and gets most of the attention."
     },
     {
       "args": [[0, 0], [[3, 1], [-2, 5]]],
       "expected": [0.5, 0.5],
-      "explanation": "A zero query has dot product 0 with every key, so all scores are 0 and attention splits evenly."
+      "explanation": "A zero query has a dot product of 0 with every key, so all scores are 0 and the attention is split evenly."
     },
     {
       "args": [[30, 40], [[30, 40], [40, 30]]],
       "expected": [1.0, 1.9531818567219233e-31],
-      "explanation": "Dot products are 2500 and 2400, scores 2500 / √2 ≈ 1767.8 and 2400 / √2 ≈ 1697.1. e^1767.8 overflows, so shift by the largest score first. The gap is about 70.7, so the second weight is e^-70.7, tiny but not zero, and the first is almost exactly 1."
+      "explanation": "The dot products are 2500 and 2400, so the scores are 2500 / √2 ≈ 1767.8 and 2400 / √2 ≈ 1697.1. Computing e^1767.8 directly overflows, so subtract the largest score from every score first. The gap between the scores is about 70.7, so the second weight is e^-70.7, which is tiny but not zero, and the first weight is almost exactly 1."
     }
   ],
   "hints": [
-    "In the first example, which key looks most like the query? Compute the three dot products first. Does the biggest match your guess?",
-    "A dot product is large when two vectors are long and point the same way. Without dividing by <code>√d</code>, bigger <code>d</code> gives bigger scores, and softmax would put nearly all the weight on one key.",
-    "Once you have the scores, this is plain softmax. What do you subtract from every score so that no <code>e^x</code> can overflow?",
-    "For each key: dot product with the query, divide by <code>√d</code>. Find the maximum score. Compute <code>e^(score − max)</code> for each, sum them, and divide each by the sum."
+    "In the first example, which key looks most like the query? Compute the three dot products and check whether the biggest one matches your guess.",
+    "A dot product is large when two vectors are long and point the same way. Without dividing by <code>√d</code>, a bigger <code>d</code> gives bigger scores, and softmax would put nearly all the weight on one key.",
+    "Once you have the scores, the rest is a plain softmax. What can you subtract from every score so that no <code>e^x</code> can overflow?",
+    "For each key, take the dot product with the query and divide it by <code>√d</code>. Find the maximum score, compute <code>e^(score − max)</code> for each score, sum those values, and divide each one by the sum."
   ],
   "bruteForce": [
-    "<p>One query cannot go faster: you must read every number of every key, O(n · d). Real models do this for every word at once as a matrix multiplication, so n words cost O(n² · d). That quadratic cost is why long inputs are expensive.</p>",
-    "<p>Mistakes to avoid: leaving out the <code>√d</code> scaling, dividing by <code>d</code> instead of <code>√d</code>, and exponentiating raw scores, which overflows for large vectors.</p>"
+    "<p>A single query cannot be answered faster than O(n · d), because every number of every key has to be read. Real models do this for every word at once as a matrix multiplication, so n words cost O(n² · d), and that quadratic cost is why long inputs are expensive.</p>",
+    "<p>The scaling and the overflow are the two places where a straightforward implementation goes wrong. Leaving out the division by <code>√d</code>, or dividing by <code>d</code> instead, gives wrong weights, and exponentiating the raw scores overflows for large vectors.</p>"
   ],
   "signature": {
     "function": "attentionWeights",
@@ -121,21 +121,21 @@
     ],
     "walkthrough": [
       "<p>Attention weights are two familiar pieces: a dot product scores how well each key matches the query, and a softmax turns scores into weights that sum to 1. The <code>√d</code> division sits between them.</p>",
-      "<p>Trace the first example, query <code>[1, 0, 1, 0]</code>, so d = 4 and √d = 2:</p>",
+      "<p>Trace the first example with query <code>[1, 0, 1, 0]</code>, so d = 4 and √d = 2:</p>",
       "<ol>",
-      "<li>Key 0 <code>[2, 0, 2, 0]</code>: dot 2 + 2 = 4, score 2.</li>",
-      "<li>Key 1 <code>[0, 1, 0, 1]</code>: dot 0, score 0.</li>",
-      "<li>Key 2 <code>[1, 1, 1, 1]</code>: dot 1 + 1 = 2, score 1.</li>",
-      "<li>Max score 2. Shifted: 0, -2, -1. Exponentials: 1, 0.135, 0.368. Total 1.503.</li>",
-      "<li>Weights: 0.665, 0.090, 0.245.</li>",
+      "<li>Key 0 is <code>[2, 0, 2, 0]</code>. Its dot product is 2 + 2 = 4, so its score is 2.</li>",
+      "<li>Key 1 is <code>[0, 1, 0, 1]</code>. Its dot product is 0, so its score is 0.</li>",
+      "<li>Key 2 is <code>[1, 1, 1, 1]</code>. Its dot product is 1 + 1 = 2, so its score is 1.</li>",
+      "<li>The maximum score is 2, so the shifted scores are 0, -2 and -1. Their exponentials are 1, 0.135 and 0.368, which total 1.503.</li>",
+      "<li>Dividing each exponential by the total gives the weights 0.665, 0.090 and 0.245.</li>",
       "</ol>",
-      "<p>Why <code>√d</code>? With roughly random entries, a dot product of d entries spreads out by about <code>√d</code>. Dividing by it keeps scores in a similar range at any vector size, so softmax does not collapse onto one key and training stays steady.</p>"
+      "<p>The division by <code>√d</code> is there because, with roughly random entries, a dot product of d entries spreads out by about <code>√d</code>. Dividing by it keeps the scores in a similar range at any vector size, so softmax does not collapse onto one key and training stays steady.</p>"
     ],
     "time": "O(n · d)",
     "timeWhy": "One dot product of length d for each of the n keys, then a linear softmax.",
     "space": "O(n)",
     "spaceWhy": "One score and one weight per key.",
-    "takeaway": "Scaled dot-product attention for one query: score every key with a dot product, divide by √d, softmax. The output weights then mix the value vectors. Score-then-softmax is the same shape as retrieval: find what matches, weigh it, combine."
+    "takeaway": "Scaled dot-product attention for one query scores every key with a dot product, divides the scores by √d, and applies a softmax. The resulting weights are then used to mix the value vectors."
   },
   "related": ["attention-and-transformers", "embeddings", "what-is-an-llm"]
 }

@@ -1,37 +1,31 @@
 <!--
 {
   "title": "Caching",
-  "description": "Keep hot data in memory so most reads skip the database: where caches sit, how to keep them fresh, what to evict, and how to talk about it in an interview.",
-  "minutes": 14,
+  "description": "How caches take read load off a database, the four caching strategies and when to use each, and the failure cases interviewers ask about.",
+  "minutes": 16,
   "tags": ["caching", "building blocks", "performance"]
 }
 -->
-<p>An online shop's product page reads one database row per view: 400 reads a second on a normal day. During a sale it is 4,000 a second at about 5 ms each, and the database times out, though nearly every read asks for one of the same few hundred products.</p>
+<p>A cache is a fast store, usually in memory, that holds copies of data which is slow or expensive to fetch from its source. It is used to take read load off a database and to cut response time. The cost is that the copy can be out of date, so most caching decisions are about how stale the data is allowed to be and what happens when the cache is empty or unavailable.</p>
 
-<p>A cache remembers answers: the first request for product 42 goes to the database, and the next few thousand get a copy from memory in half a millisecond.</p>
+<p>Without a cache, every read reaches the database, even when thousands of requests ask for the same few rows. A database that handles normal traffic can then time out during a spike, although almost all of the extra work is repeated.</p>
 
-<h2>The idea</h2>
+<h2>Where caches sit</h2>
 
-<p>A cache is a small, fast store of copies of data that is expensive to fetch or compute. Check it first. On a <strong>hit</strong>, return the copy. On a <strong>miss</strong>, read the source and keep a copy.</p>
-
-<p>It works because traffic is lopsided: a few keys get most reads. At a 90% hit rate, the database sees 4,000 × 0.1 = 400 reads a second during the sale, a quiet day's load. Average latency drops too: 0.9 × 0.5 ms + 0.1 × (0.5 + 5) ms = 1 ms, against 5 ms.</p>
-
-<p>The price: two copies that can disagree. Most of caching is deciding how much disagreement you can live with.</p>
-
-<x-arch caption="Caches sit at several layers. The browser and the CDN keep static files; a shared cache beside the database holds hot rows and computed results.">
+<x-arch caption="A request can be answered by the browser cache, the CDN, a server's local memory or the shared cache before it reaches the database.">
 <script type="application/json">
 {
   "nodes": [
     { "id": "browser", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
     { "id": "cdn", "label": "CDN", "kind": "cdn", "col": 1, "row": 0 },
     { "id": "lb", "label": "Load balancer", "kind": "load-balancer", "col": 1, "row": 1 },
-    { "id": "app", "label": "App servers", "kind": "service", "col": 2, "row": 1, "stack": true },
-    { "id": "cache", "label": "Cache cluster", "kind": "cache", "col": 3, "row": 0 },
+    { "id": "app", "label": "App servers (local cache)", "kind": "service", "col": 2, "row": 1, "stack": true },
+    { "id": "cache", "label": "Shared cache", "kind": "cache", "col": 3, "row": 0 },
     { "id": "db", "label": "Database", "kind": "database", "col": 3, "row": 2 }
   ],
   "edges": [
-    { "from": "browser", "to": "cdn", "label": "images, JS" },
-    { "from": "browser", "to": "lb", "label": "page request" },
+    { "from": "browser", "to": "cdn", "label": "static files" },
+    { "from": "browser", "to": "lb", "label": "API requests" },
     { "from": "lb", "to": "app" },
     { "from": "app", "to": "cache", "label": "get / set" },
     { "from": "app", "to": "db", "label": "read on miss" }
@@ -40,210 +34,222 @@
 </script>
 </x-arch>
 
-<h2>Hit, miss and invalidation</h2>
+<p>In an interview, "add a cache" usually means the shared cache: a separate in-memory store, such as Redis or Memcached, that every app server reads. The other layer worth knowing is the <strong>local cache</strong> inside each app server's memory. A local cache is faster because it needs no network call, but each server holds its own copy, so an update on one server does not reach the others, and the memory used grows with the number of servers. Use a shared cache by default, and add a local cache with a TTL of a few seconds in front of it only for a handful of very hot keys. Static files belong on a <a href="/system-design/cdns.html">CDN</a>.</p>
 
-<p>The most common pattern is <strong>cache-aside</strong>: the application talks to both the cache and the database. Watch what a write must do to the cached copy.</p>
+<h2>Caching strategies</h2>
 
-<x-tracer title="Cache-aside: a hit, a miss, a write, a failure">
+<p>Two of the four strategies describe how data gets into the cache on a read (cache-aside and read-through), and two describe what a write does (write-through and write-behind). You choose one of each, and they can be combined.</p>
+
+<h3>Cache-aside</h3>
+
+<x-arch caption="Cache-aside: the application talks to the cache and to the database itself.">
 <script type="application/json">
 {
-  "arch": {
-    "nodes": [
-      { "id": "shopper", "label": "Shopper", "kind": "client", "col": 0, "row": 0 },
-      { "id": "editor", "label": "Price editor", "kind": "client", "col": 0, "row": 2 },
-      { "id": "app", "label": "App server", "kind": "service", "col": 1, "row": 1 },
-      { "id": "cache", "label": "Cache", "kind": "cache", "col": 2, "row": 0 },
-      { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 2 }
-    ],
-    "edges": [
-      { "from": "shopper", "to": "app", "label": "GET product" },
-      { "from": "editor", "to": "app", "label": "PUT price" },
-      { "from": "app", "to": "cache" },
-      { "from": "app", "to": "db" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "A shopper asks for product 42.",
-      "arch": { "active": ["shopper", ["shopper", "app"]] },
-      "vars": { "cache hits": 0, "db reads": 0 }
-    },
-    {
-      "caption": "The cache has <code>p:42</code>: a hit, in about 0.5 ms.",
-      "arch": { "active": ["app", "cache", ["app", "cache"]], "notes": { "cache": "hit" } },
-      "vars": { "cache hits": 1, "db reads": 0 }
-    },
-    {
-      "caption": "The page goes back. The database was never touched.",
-      "arch": { "active": [["app", "shopper"]], "mark": ["shopper"] },
-      "vars": { "cache hits": 1, "db reads": 0 }
-    },
-    {
-      "caption": "Product 77 is not in the cache: a miss.",
-      "arch": { "active": ["app", "cache", ["app", "cache"]], "notes": { "cache": "miss" } },
-      "vars": { "cache hits": 1, "db reads": 0 }
-    },
-    {
-      "caption": "The app reads it from the database: about 5 ms.",
-      "arch": { "active": ["db", ["app", "db"]], "notes": { "db": "read p:77" } },
-      "vars": { "cache hits": 1, "db reads": 1 }
-    },
-    {
-      "caption": "It caches the row with a 10-minute time to live (TTL), so the next reads of 77 hit.",
-      "arch": { "active": ["cache", ["app", "cache"]], "notes": { "cache": "set, TTL 10m" } },
-      "vars": { "cache hits": 1, "db reads": 1 }
-    },
-    {
-      "caption": "An editor changes product 42's price. The app writes the database first: it is the source of truth.",
-      "arch": { "active": ["editor", "db", ["editor", "app"], ["app", "db"]], "notes": { "db": "p:42 = $18" } },
-      "vars": { "cache hits": 1, "db reads": 1 }
-    },
-    {
-      "caption": "Then it deletes <code>p:42</code> from the cache. Skip this and shoppers see the old price until the TTL ends.",
-      "arch": { "active": ["cache", ["app", "cache"]], "notes": { "cache": "delete p:42" } },
-      "vars": { "cache hits": 1, "db reads": 1 }
-    },
-    {
-      "caption": "The next read of 42 misses, loads $18 and caches it.",
-      "arch": { "active": ["db", ["app", "db"]], "mark": ["cache"], "notes": { "cache": "p:42 = $18" } },
-      "vars": { "cache hits": 1, "db reads": 2 }
-    },
-    {
-      "caption": "The cache node dies. All 4,000 reads a second land on a database sized for 400. The interview below shows the plan.",
-      "arch": { "fail": ["cache"], "active": ["db", ["app", "db"]], "dim": [["app", "cache"]], "notes": { "db": "4,000 reads/s" } },
-      "vars": { "cache hits": 1, "db reads": "4,000/s" }
-    }
+  "nodes": [
+    { "id": "app", "label": "App server", "kind": "service", "col": 0, "row": 1 },
+    { "id": "cache", "label": "Cache", "kind": "cache", "col": 2, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "app", "to": "cache", "label": "1. get   3. set" },
+    { "from": "app", "to": "db", "label": "2. read on a miss" }
   ]
 }
 </script>
-</x-tracer>
+</x-arch>
 
-<h2>Four ways to wire a cache</h2>
+<p>The application reads the cache first. On a hit it returns the value. On a miss it reads the database, stores the result in the cache with a time to live (TTL), and returns it. On a write, the application updates the database and then deletes the cached key, so the next read loads the new value.</p>
 
+<p>Cache-aside is the default answer because it is simple, it caches only data that is actually read, and the application keeps working, more slowly, if the cache is down. Its weaknesses are that the first read of every key is slow, that every code path which writes the data must remember to delete the key, and that a stale value can still get in through a race (covered below).</p>
 
+<p>The write deletes the key instead of setting the new value because two concurrent writers can set their values in the opposite order to their database commits, which leaves the older value in the cache. A delete cannot go wrong in that way.</p>
 
-<x-tradeoffs caption="Read and write strategies">
+<h3>Read-through</h3>
+
+<p>Read-through has the same read behaviour, but the cache layer loads the missing value from the database itself, so the application only ever talks to the cache. This keeps the loading logic in one place instead of in every service. It needs a cache library or a thin service in front of the cache that knows how to query the database, and its misses and staleness behave exactly like cache-aside. Mention it as "the same as cache-aside, with the loading moved into the cache layer".</p>
+
+<h3>Write-through</h3>
+
+<x-arch caption="Write-through: a write is acknowledged only after both the cache and the database have it.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "app", "label": "App server", "kind": "service", "col": 0, "row": 0 },
+    { "id": "cache", "label": "Cache layer", "kind": "cache", "col": 1, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 0 }
+  ],
+  "edges": [
+    { "from": "app", "to": "cache", "label": "1. write" },
+    { "from": "cache", "to": "db", "label": "2. write, then ack" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>Every write updates the cache and the database before it is acknowledged. A read that follows a write finds the new value already cached, so there is no miss and no stale read. Pick it for data that is read soon after it is written, such as a user's own profile or settings.</p>
+
+<p>At scale it has three problems:</p>
+
+<ul>
+<li>Every write pays for two stores, so write latency goes up.</li>
+<li>Every written key is cached whether or not anyone reads it, so the cache fills with cold data unless entries also have a TTL.</li>
+<li>The two writes are not atomic. If the database write fails after the cache was updated, the cache holds a value that was never saved. Write the database first, and treat a failed cache update as a delete.</li>
+</ul>
+
+<h3>Write-behind</h3>
+
+<x-arch caption="Write-behind: the write is acknowledged from the cache, and the database is updated later in batches.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "app", "label": "App server", "kind": "service", "col": 0, "row": 0 },
+    { "id": "cache", "label": "Cache layer", "kind": "cache", "col": 1, "row": 0 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 0 }
+  ],
+  "edges": [
+    { "from": "app", "to": "cache", "label": "1. write, ack" },
+    { "from": "cache", "to": "db", "label": "2. flush later", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
+
+<p>The write goes to the cache and is acknowledged immediately. The cache layer writes to the database later, usually in batches. Writes are very fast, and many updates to the same key collapse into one database write. Pick it for very high write rates where losing a few seconds of data is acceptable, such as view counters or "last seen" timestamps.</p>
+
+<p>The risks are larger than with the other strategies:</p>
+
+<ul>
+<li>If the cache node dies before it flushes, acknowledged writes are lost. Buffering the writes in a durable <a href="/system-design/message-queues-and-streams.html">queue</a> reduces this, at the cost of handling retries, duplicates and ordering.</li>
+<li>The database lags behind the cache, so anything that reads the database directly, such as reports or other services, sees old data.</li>
+<li>If the database is slow or down, the backlog of unflushed writes grows and needs a limit.</li>
+</ul>
+
+<p>Do not use write-behind for payments, orders or anything that must not be lost.</p>
+
+<x-tradeoffs caption="Summary of the four strategies">
 <script type="application/json">
 {
   "options": [
     {
       "name": "Cache-aside",
-      "good": "Simple. Only read data gets cached. If the cache dies, the app still works, slower.",
-      "bad": "A miss costs three trips. Every write must invalidate.",
-      "pick": "Read-heavy data. The default interview answer.",
+      "good": "It is simple, caches only what is read, and survives a cache outage.",
+      "bad": "The first read of a key is slow, and every write path must delete the key.",
+      "pick": "Read-heavy data. This is the default answer.",
       "default": true
     },
     {
       "name": "Read-through",
-      "good": "The cache loads misses itself; the app reads from one place.",
-      "bad": "The cache must know how to query your database.",
-      "pick": "Your cache library supports it."
+      "good": "The application reads from one place, and loading logic is not repeated.",
+      "bad": "The cache layer has to know how to query the database.",
+      "pick": "Many services read the same data through a shared library."
     },
     {
       "name": "Write-through",
-      "good": "Writes update cache and database together, so reads after a write are fresh.",
-      "bad": "Slower writes. Unread data fills the cache.",
-      "pick": "Data read right after it is written (a user's own profile)."
+      "good": "A read after a write is always fresh and never misses.",
+      "bad": "Writes are slower, and data nobody reads still takes up memory.",
+      "pick": "Data that is read right after it is written."
     },
     {
       "name": "Write-behind",
-      "good": "Writes return once cached; the database is updated later in batches.",
-      "bad": "If the cache dies before flushing, acknowledged writes are lost.",
-      "pick": "Huge write rates where losing seconds of data is fine (view counters)."
+      "good": "Writes are very fast and are batched into fewer database writes.",
+      "bad": "Acknowledged writes are lost if the cache fails before flushing.",
+      "pick": "Very high write rates where a small loss is acceptable."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<h3>What to drop when memory is full</h3>
+<h2>Expiry and eviction</h2>
 
-<ul>
-<li><strong>LRU</strong> (least recently used) drops the key untouched for longest. The usual default: recent use predicts the next.</li>
-<li><strong>LFU</strong> (least frequently used) keeps long-term favourites, but last week's hot key can squat in memory.</li>
-<li>A <strong>TTL</strong> removes entries too old to trust, even with room to spare: a safety net for any invalidation you miss.</li>
-</ul>
+<p>These are two separate mechanisms. <strong>Expiry</strong> removes an entry when its TTL runs out, which limits how long a stale value can survive. Choose the TTL from how stale the data may be: hours for a list of countries, minutes for a product description, seconds for a trending list. Keep a TTL even when writes delete keys, because it cleans up after any invalidation that was missed.</p>
 
-<h3>The stampede</h3>
+<p><strong>Eviction</strong> removes entries when memory is full. LRU (least recently used) evicts the entry that has gone longest without a read, and it is the usual default. LFU (least frequently used) keeps the entries with the most reads over time, which protects long-term popular keys from a one-off scan but is slower to notice that an old favourite has gone cold.</p>
 
-<p>A popular key expires, and every request before the refill misses and runs the same query. If rebuilding the home page feed takes 200 ms at 4,000 requests a second, 4,000 × 0.2 = 800 identical queries hit the database. That <strong>cache stampede</strong> can take down the database the cache protects.</p>
+<h2>Problems that come up at scale</h2>
 
-<p>The fix: one request rebuilds the value while the rest wait or use the old one (a lock per key, or request coalescing in each server). Also refresh hot keys before they expire, and add random jitter to TTLs so keys written together do not expire together.</p>
+<h3>A stale value after a correct invalidation</h3>
 
-<h2>Numbers worth remembering</h2>
+<p>"Write the database, then delete the key" is not free of races. A reader misses the cache and reads the old value from the database. Before the reader stores it, a writer commits a new value and deletes the key. The reader then stores the old value, and it stays in the cache until the TTL ends. Cache-aside therefore gives eventual consistency, not strong consistency. Keep TTLs short enough to bound the damage, store a version number with the value and refuse to overwrite a newer version, and read anything that must be correct, such as the price at checkout, from the database.</p>
 
-<ul>
-<li>Local memory read: about 100 ns. Round trip in a data center: about 0.5 ms, most of a networked cache read.</li>
-<li>Indexed database read: about 1 to 10 ms, more under load.</li>
-<li>One in-memory cache node: on the order of 100,000 simple reads a second.</li>
-<li>Sizing: hot items × bytes each. 10 million products at 2 KB is 10<sup>7</sup> × 2 × 10<sup>3</sup> = 20 GB: a large node or small cluster.</li>
-</ul>
+<h3>Cache stampede</h3>
 
-<x-estimate title="Hit rate and database load">
-<script type="application/json">
-{
-  "question": "With the cache, how many reads a second still reach the database at peak?",
-  "givens": ["4,000 product page views a second at peak", "Each view reads one product", "The cache hit rate is 95%"],
-  "unit": "count/s",
-  "answer": "200/s",
-  "accept": ["100/s", "400/s"],
-  "steps": ["Misses are 100% − 95% = 5% of reads", "4,000 × 0.05 = 200 reads a second reach the database"],
-  "note": "From 90% to 95% hits halves the database load."
-}
-</script>
-</x-estimate>
+<p>When a very popular key expires, every request that arrives before it is refilled misses and runs the same database query at the same moment. The fix is to let one request rebuild the value while the others wait for it or are served the old value. This is done with a per-key lock or with request coalescing inside each server. Refreshing hot keys shortly before they expire also helps.</p>
+
+<h3>Many keys expiring together</h3>
+
+<p>If a deploy or a warm-up job fills the cache with thousands of keys that share one TTL, they all expire in the same second and the database receives all the misses at once. Add a random offset to each TTL so that expiries spread out.</p>
+
+<h3>Requests for keys that do not exist</h3>
+
+<p>A lookup for an id that is not in the database can never be cached as a value, so every such request reaches the database. A buggy client or an attacker can use this to bypass the cache completely. Cache the "not found" result with a short TTL, and validate ids before looking them up.</p>
+
+<h3>Hot keys</h3>
+
+<p>A single key, such as a celebrity's profile, can receive more traffic than the one cache node that holds it can serve. Adding nodes does not help, because the key still lives on one node. Copy the hot value into each app server's local cache for a few seconds, or spread its reads over replicas of that node.</p>
+
+<h3>The cache is down</h3>
+
+<p>With cache-aside the application falls back to the database, which then receives the full read load that the cache used to absorb and may fail too. Plan for it: run cache replicas with automatic failover, put short timeouts on cache calls, limit how many misses are allowed through to the database, and refill a new cache gradually before sending it full traffic.</p>
+
+<h2>Scaling the cache across nodes</h2>
+
+<p>When the data no longer fits on one node, the keys are split across several nodes, and each client hashes the key to find the node that owns it. A plain <code>hash(key) % N</code> moves almost every key when a node is added or removed, which empties the cache in one step. <a href="/system-design/consistent-hashing.html">Consistent hashing</a> moves only about <code>1/N</code> of the keys. Each node normally also has a replica that takes over when it fails. Replication between them is usually asynchronous, so a failover can lose the most recent writes, which is acceptable for a cache-aside cache and is one more reason to avoid write-behind for important data.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring up a cache when reads dominate (10 per write or more) and some keys are much hotter, or a result is expensive and often requested. Give the numbers and the staleness you accept. Caching every box by reflex is a red flag.</p>
+<p>Add a cache when reads far outnumber writes and the same data is read repeatedly, and say so: "Reads outnumber writes by about 100 to 1 and a small set of products gets most of the traffic, so I'd use cache-aside with a ten-minute TTL and delete the key on every write." State how stale the data may be, and name what is never read from the cache.</p>
 
-<x-interview title="Adding a cache to a product page">
-<x-interviewer>Product pages get slow during sales. What would you change?</x-interviewer>
-<x-you>Reads outnumber writes about 100 to 1, and a few hundred products get most views, so I'd put cache-aside in front of the product table: key by product id, 10-minute TTL, delete the key on a price change.</x-you>
-<x-coach>Ratio and skew come before the tool: that is the judgement being tested.</x-coach>
-<x-interviewer>Is a stale price at checkout acceptable?</x-interviewer>
-<x-you>On the listing page, a few seconds is fine. At checkout, no: checkout reads the price from the database, so the cache never causes a wrong charge.</x-you>
-<x-interviewer>What if the cache cluster goes down?</x-interviewer>
-<x-you>Reads fall through at ten times the normal database load. I'd run cache replicas, rate limit the fall-through so the database degrades instead of dying, and warm the cache before full traffic returns.</x-you>
-</x-interview>
-
-<p>Expected follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do you keep the cache consistent?"</strong> Delete on write, plus a TTL. Data that must never be stale is read from the database.</li>
-<li><strong>"What if one key is extremely hot?"</strong> Copy it into each app server's memory for a few seconds.</li>
-<li><strong>"Why delete instead of updating the cached value?"</strong> Two writers' updates can land in the wrong order and leave the older value. A delete cannot.</li>
+<li><strong>"How do you keep the cache consistent with the database?"</strong> Write the database first and then delete the key, with a TTL as a backstop. Explain the race above, and say that data which must be correct is read from the database.</li>
+<li><strong>"Why delete the key instead of updating it?"</strong> Two concurrent updates can reach the cache in the wrong order and leave the older value. A delete is safe in any order, and the next read loads the current value.</li>
+<li><strong>"What happens when the cache goes down?"</strong> All reads fall through to the database. Describe replicas with failover, timeouts, a limit on fall-through reads and a gradual refill.</li>
+<li><strong>"What if one key is extremely hot?"</strong> More nodes do not help, because one node owns the key. Use a short-lived local cache on each app server, or read replicas for that node.</li>
+<li><strong>"A popular key just expired and the database is overloaded. Why?"</strong> This is a stampede. Let one request rebuild the value while the rest wait or get the old one.</li>
+<li><strong>"When would you not use a cache?"</strong> When data changes as often as it is read, when every read must be current, or when the database already handles the load. A cache adds a second copy to keep correct and another component that can fail.</li>
+<li><strong>"How do you size it?"</strong> Size it for the working set, meaning the keys that are read often, not for the whole dataset. Multiply that key count by the average entry size and add headroom.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Updating the cache before the database">
-<p>If the database write fails after the cache update, readers see a value that never existed. Write the database first, then delete the key.</p>
-</x-callout>
-
-
+<x-interview title="Adding a cache to a product page" tone="strong">
+<x-interviewer>Product pages get slow during sales. What would you change?</x-interviewer>
+<x-you>Reads far outnumber writes here, and a few hundred products get most of the views, so I'd put a cache-aside cache in front of the product table. The key is the product id, the TTL is ten minutes, and a price change deletes the key.</x-you>
+<x-interviewer>Can a customer be charged a stale price?</x-interviewer>
+<x-you>No. The listing page can be a few minutes stale, but checkout reads the price from the database, so the cache never decides what someone pays.</x-you>
+<x-interviewer>What happens if the cache cluster fails during the sale?</x-interviewer>
+<x-you>Reads would fall through to the database and overload it. I'd run a replica for each cache node with automatic failover, and cap the number of misses that reach the database so that it slows down instead of failing.</x-you>
+<x-coach>Each answer gives the choice and the reason for it, and separates the data that may be stale from the data that may not.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "Reads hit a cache 80% of the time. Each cache read costs 1 ms and each database read 10 ms. What is the average read latency with cache-aside?",
+      "question": "A service counts video views at a very high write rate. Losing a few seconds of counts in a crash is acceptable. Which write strategy fits?",
       "options": [
-        { "text": "2.8 ms", "why": "That is 0.8 × 1 + 0.2 × 10. A miss also pays for the failed cache lookup." },
-        { "text": "3 ms", "correct": true, "why": "0.8 × 1 + 0.2 × (1 + 10) = 0.8 + 2.2 = 3 ms." },
-        { "text": "8.2 ms", "why": "That weights the database read by the hit rate, but hits never reach the database." }
+        { "text": "Write-through", "why": "Every view would wait for a database write, which is the cost this workload cannot afford." },
+        { "text": "Write-behind", "correct": true, "why": "Writes are acknowledged from the cache and flushed in batches, and the small possible loss is acceptable here." },
+        { "text": "Cache-aside with delete on write", "why": "Each view would still write the database directly, so the write load is unchanged." }
       ]
     },
     {
-      "question": "A popular key expires and 500 requests miss at once, each running the same 300 ms query. Which fix targets this?",
+      "question": "A cache cluster has 10 nodes, and one key receives more reads than a single node can serve. What fixes it?",
       "options": [
-        { "text": "A larger cache", "why": "The key expired; it was not evicted for lack of space." },
-        { "text": "Let one request rebuild the key while the others wait or get the stale value", "correct": true, "why": "That turns 500 identical queries into one." },
-        { "text": "Switch from LRU to LFU eviction", "why": "Eviction only matters when memory is full." }
+        { "text": "Add 10 more nodes", "why": "The key still maps to exactly one node, so that node stays overloaded." },
+        { "text": "Keep a copy in each app server's memory for a few seconds", "correct": true, "why": "Most reads of the hot key are then answered locally and never reach the cache node." },
+        { "text": "Switch eviction from LRU to LFU", "why": "Eviction decides what to drop when memory is full. It does not spread read load." }
+      ]
+    },
+    {
+      "question": "With cache-aside, a write updates the database and then deletes the key. Can a reader still see a stale value afterwards?",
+      "options": [
+        { "text": "No, the delete guarantees the next read is fresh", "why": "A reader that loaded the old value before the write can store it after the delete." },
+        { "text": "Yes, if a concurrent reader stores the old value after the delete", "correct": true, "why": "This race is why a TTL is kept as a backstop and why critical reads go to the database." },
+        { "text": "Only if the cache is full", "why": "Eviction removes entries. It does not bring old values back." }
       ]
     }
-
   ]
 }
 </script>
@@ -251,4 +257,4 @@
 
 <h2>What to practise next</h2>
 
-<p>A cache across machines must decide which node holds each key: <a href="/system-design/consistent-hashing.html">consistent hashing</a>. For a cache in a full design, see <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a>.</p>
+<p>Read <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> to see how keys are placed on cache nodes, and <a href="/system-design/design-a-distributed-cache.html">Design a Distributed Cache</a> to design the cache itself.</p>

@@ -1,26 +1,24 @@
 <!--
 {
   "title": "The Context Window",
-  "description": "The context window is a fixed token budget shared by instructions, history, documents and the reply. See what happens when it fills up and how apps cope.",
-  "minutes": 11,
+  "description": "How the context window limits what a model can read in one call, what apps do when a conversation no longer fits, and how to avoid losing important facts.",
+  "minutes": 12,
   "tags": ["context", "tokens"]
 }
 -->
-<p>A meeting room has one whiteboard. By noon it is full of notes, so the next person wipes the oldest corner. Nobody checks whether that corner held the one decision everybody agreed on at 9 a.m.</p>
+<p>The context window is the maximum amount of text, measured in <a href="/ai/tokens.html">tokens</a>, that a model can take in and produce in a single call. Because the app resends the whole conversation on every call (<a href="/ai/what-is-context.html">What Is Context</a>), a long conversation or a large document eventually stops fitting, and the app has to decide what to leave out. If you do not know how that decision is made, important instructions and facts can disappear without any error message.</p>
 
-<p>A model's context has the same problem. The app resends the whole conversation on every call (<a href="/ai/what-is-context.html">What Is Context</a>), but the model can only read so much text at once. That limit is the <strong>context window</strong>.</p>
+<p>A chat that has run for an hour shows the problem. The user said early on that they are allergic to peanuts, the app trimmed the oldest messages to make room, and the model now suggests a peanut topping because it never sees the allergy.</p>
 
-<h2>A fixed budget, counted in tokens</h2>
+<h2>What counts toward the limit</h2>
 
-<p>The window is a maximum number of <a href="/ai/tokens.html">tokens</a> per call. Three things trip people up:</p>
+<p>The limit applies to everything sent in one call, not only to what the user typed. The instructions, the descriptions of any tools, the results that tools returned earlier, retrieved documents, every earlier message and the new message all share the same budget, and users usually underestimate how full it is because they see only their own messages.</p>
 
-<ul>
-<li><strong>Everything counts.</strong> Instructions, tool descriptions, documents, every earlier message and the new one share one budget. Users see only their own messages, so they underestimate how full it is.</li>
-<li><strong>The reply counts too.</strong> The answer is written into the same window. If the input fills it, the reply gets cut off.</li>
-<li><strong>The size depends on the model</strong>, and has grown over time. Check your model's documentation rather than a number you remember.</li>
-</ul>
+<p>The reply counts as well. The model writes its answer into the same window, so if the input fills the window almost completely, the reply is cut off or the call is rejected. The size of the window depends on the model and has changed over time, so read it from your model's documentation instead of relying on a number you remember.</p>
 
-<x-figure caption="One call's budget: fixed costs first, space reserved for the reply, and the conversation gets the rest.">
+<p>Many APIs also set a separate maximum for the length of a single reply, which is usually much smaller than the window. A model that thinks step by step before answering may write that reasoning into the same budget, so a reply can use more of the window than the visible answer suggests.</p>
+
+<x-figure caption="Everything the model reads and writes in one call has to fit in a single window, so space for the reply must be reserved before the history is filled in.">
 <svg viewBox="0 0 520 190" aria-label="A long horizontal bar divided into six parts: instructions, tools, documents, conversation history, new message, and a dashed section reserved for the reply. A bracket under the first five reads input, a bracket under the last reads output.">
   <rect x="10" y="40" width="60" height="50" rx="4" class="f-surface s-line"/>
   <rect x="70" y="40" width="60" height="50" rx="4" class="f-surface s-line"/>
@@ -46,17 +44,17 @@
 </svg>
 </x-figure>
 
-<h2>What happens when it fills up</h2>
+<h2>What apps do when the conversation does not fit</h2>
 
-<p>When a conversation outgrows the window, the app has three common choices:</p>
+<p>An app has a few options when the input plus the reserved reply would exceed the window. Each one loses something different, so it matters which one your app or tool uses.</p>
 
-<ol>
-<li><strong>Refuse</strong> with an error and ask you to start over or shorten your input. Honest, but annoying.</li>
-<li><strong>Drop the oldest messages.</strong> Keep the instructions and newest turns, and quietly leave out the rest. Simple and widely used.</li>
-<li><strong>Summarize</strong> old turns. Better, but a summary can lose details. <a href="/ai/memory.html">Memory</a> covers this.</li>
-</ol>
+<h3>Refuse the request</h3>
 
-<p>The second is dangerous because it is silent. Take a cooking chat with a toy window of 120 tokens, 20 reserved for the reply, so the input may use 100.</p>
+<p>The app returns an error and asks the user to shorten the input or start a new conversation. Nothing is lost silently, which makes this the safest option, but it interrupts the user. It is the right choice when dropping content would make the answer wrong, for example when the user asks for a summary of one specific document that is too long.</p>
+
+<h3>Drop the oldest messages</h3>
+
+<p>The app keeps the instructions and the newest messages and leaves out whatever does not fit, starting from the oldest. This is the simplest approach and the most common one, and it fails silently. The model has no way to know that something was removed, so it answers as if the dropped messages never existed. The tracer below shows how that happens with a toy window of 120 tokens, of which 20 are reserved for the reply, so the input may use 100.</p>
 
 <x-tracer title="Fitting a chat into 100 input tokens">
 <script type="application/json">
@@ -70,20 +68,18 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Six earlier messages, oldest on the left. The first says \"I'm allergic to peanuts.\" The instructions (20) and the new message \"Add a crunchy topping?\" (10) are always sent.", "line": 1, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25] } ], "vars": { "budget": 100, "used": 30 } },
-    { "caption": "Start from the newest, since recent turns usually matter most. 30 + 25 = 55 fits. Keep it.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 5 }, "mark": [5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [5] } ], "vars": { "budget": 100, "used": 55 } },
-    { "caption": "55 + 10 = 65. Fits. Keep it.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 4 }, "mark": [4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [4, 5] } ], "vars": { "budget": 100, "used": 65 } },
-    { "caption": "The long recipe list: 65 + 35 = 100. Exactly at budget, so it fits.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 3 }, "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [3, 4, 5] } ], "vars": { "budget": 100, "used": 100 } },
-    { "caption": "100 + 10 = 110, over budget. Stop. Everything older is left out.", "line": 3, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 2 }, "highlight": [2], "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "highlight": [2], "mark": [3, 4, 5] } ], "vars": { "budget": 100, "used": 100 } },
-    { "caption": "The model gets the instructions, three recent messages and the question. The allergy is gone, so \"crushed peanuts\" looks like a fine suggestion. Nothing warned anyone.", "line": 5, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "dim": [0, 1, 2], "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "dim": [0, 1, 2], "mark": [3, 4, 5] } ], "vars": { "kept": 3, "dropped": 3, "allergy seen": "no" } }
+    { "caption": "There are six earlier messages, oldest on the left. The first says \"I'm allergic to peanuts.\" The instructions (20 tokens) and the new message \"Add a crunchy topping?\" (10 tokens) are always sent, so 30 tokens are used before any history is added.", "line": 1, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25] } ], "vars": { "budget": 100, "used": 30 } },
+    { "caption": "The loop starts with the newest message, because recent turns usually matter most. 30 + 25 = 55 is within the budget, so the message is kept.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 5 }, "mark": [5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [5] } ], "vars": { "budget": 100, "used": 55 } },
+    { "caption": "55 + 10 = 65, which still fits, so the next message is kept.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 4 }, "mark": [4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [4, 5] } ], "vars": { "budget": 100, "used": 65 } },
+    { "caption": "The long recipe list adds 35 tokens: 65 + 35 = 100. That is exactly the budget, so it still fits.", "line": 4, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 3 }, "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "mark": [3, 4, 5] } ], "vars": { "budget": 100, "used": 100 } },
+    { "caption": "Adding the next message would give 100 + 10 = 110, which is over the budget, so the loop stops. Every older message is left out as well.", "line": 3, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "pointers": { "i": 2 }, "highlight": [2], "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "highlight": [2], "mark": [3, 4, 5] } ], "vars": { "budget": 100, "used": 100 } },
+    { "caption": "The model receives the instructions, three recent messages and the question. The allergy message is gone, so crushed peanuts looks like a reasonable suggestion, and nothing in the app warned anyone.", "line": 5, "arrays": [ { "label": "message", "values": ["allergy", "ok", "dinner?", "recipes", "noodles?", "noodle idea"], "dim": [0, 1, 2], "mark": [3, 4, 5] }, { "label": "tokens", "values": [15, 10, 10, 35, 10, 25], "dim": [0, 1, 2], "mark": [3, 4, 5] } ], "vars": { "kept": 3, "dropped": 3, "allergy seen": "no" } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>The most important fact was said first, so "oldest first out" dropped it first.</p>
-
-<h2>The trimming in code</h2>
+<p>The most important fact in this conversation was also the oldest one, so a rule of "oldest out first" removed it first. The same function in code looks like this.</p>
 
 <x-code>
 <pre lang="js">
@@ -123,60 +119,60 @@ print(result["used"], len(result["request"]))  # 100 5
 </pre>
 </x-code>
 
-<p>The loop uses <code>break</code>, not "skip and keep looking". Skipping a big message but keeping an older small one would leave a hole, and the model would read replies to questions it never saw.</p>
+<p>The loop stops at the first message that does not fit instead of skipping it and continuing with older, smaller ones. Skipping would leave a gap in the middle of the conversation, and the model would see answers to questions that are no longer there.</p>
 
-<x-complexity>
-<script type="application/json">
-{ "rows": [ { "time": "O(n)", "space": "O(n)", "note": "One pass over at most n saved messages, newest first, then one reverse." } ] }
-</script>
-</x-complexity>
+<h3>Summarize the old turns</h3>
 
-<h2>Fitting is not the same as reading well</h2>
+<p>The app asks a model to condense the older part of the conversation into a short summary and sends the summary in place of the original messages. This keeps the gist of a long conversation in far fewer tokens. The weakness is that a summary keeps what the summarizer judged important, and it can leave out an exact value, a name or a constraint that turns out to matter later. It also costs an extra model call. <a href="/ai/memory.html">Memory</a> covers this approach in more detail.</p>
 
-<p>A bigger window means more fits, not that the model uses all of it equally well. As context grows:</p>
+<h3>Retrieve only the relevant parts</h3>
 
-<ul>
-<li><strong>Cost and speed suffer.</strong> The whole context is read on every call, so longer usually means pricier and slower, turn after turn.</li>
-<li><strong>The middle gets less attention.</strong> Models use information near the start and end more reliably. A key line on page 40 of 80 is easier to miss than the same line at the top.</li>
-<li><strong>Noise distracts.</strong> Asked about one product with ten similar product sheets in context, a model can mix up details between them.</li>
-</ul>
+<p>When the problem is a large body of documents instead of a long chat, the app can store the documents outside the window and put only the passages relevant to the current question into the context. This lets the model work with far more material than fits in any window, but it depends on the search finding the right passages. <a href="/ai/rag-basics.html">RAG Basics</a> explains how it works.</p>
 
-<x-callout type="key">
-<p>The window is a ceiling, not a target. Fill it with what the task needs, not with everything that fits.</p>
+<h2>A bigger window does not mean better reading</h2>
+
+<p>Fitting in the window and being used well are different things. Several effects get stronger as the context grows.</p>
+
+<p>Cost and delay grow, because the whole context is read again on every call, so a long conversation is more expensive and slower on each turn than a short one. Models also tend to use information near the start and the end of a long input more reliably than information in the middle, so one important sentence in the middle of a very long document is easier to miss than the same sentence at the top. And irrelevant material distracts: if you ask about one product while ten similar product sheets are in the context, the model can mix up details between them. The goal is to include what the task needs, not everything that fits. <a href="/ai/context-rot.html">Context Rot</a> covers how long conversations degrade.</p>
+
+<h2>Pitfalls when sizing and trimming context</h2>
+
+<x-callout type="mistake" title="No room left for the reply">
+<p>If the input is allowed to fill the whole window, the reply is truncated in the middle of a sentence or the call fails. Subtract the space you need for the answer before deciding how much input to send, and reserve more for long outputs such as code or reports. Many APIs also let you set a maximum reply length, and that value counts against the same window.</p>
 </x-callout>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="No room left for the answer">
-<p>Fill the input to the limit and the reply stops mid-sentence or the call fails. Always reserve space for output, more for long answers like code or reports.</p>
+<x-callout type="mistake" title="Lasting facts stored only in an early message">
+<p>Trimming removes the oldest turns first, so anything the user said once at the start, such as an allergy, a language preference or a hard rule, is the first thing to go. Put facts that must always hold into the instructions or a pinned note that the app sends on every call, so that trimming the history cannot remove them.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Keeping key facts only in old messages">
-<p>Trimming removes the oldest turns first. Long-lived facts like allergies, names and hard rules belong in the instructions or a pinned note sent every call, not only in message 1.</p>
+<x-callout type="mistake" title="Estimating size by counting words">
+<p>The number of tokens per word varies. Code, numbers, identifiers and less common languages use noticeably more tokens per word than ordinary English text. When the numbers matter, use the model's tokenizer or the token count that the API reports instead of a word count.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Counting words instead of tokens">
-<p>The token-to-word ratio varies. Code, numbers, IDs and less common languages use more tokens per word. Use the tokenizer or the API's token count when numbers matter.</p>
+<x-callout type="mistake" title="Tool descriptions that fill the budget unnoticed">
+<p>Every tool the app offers has a description that is sent on every call, and an agent with many tools can spend a large share of the window before the conversation starts. Offer only the tools that the current task can use.</p>
 </x-callout>
 
-<h2>Try it yourself</h2>
+<h2>What to do in practice</h2>
 
-<x-tryit title="Does it fit">
+<p>Work out the budget before you build the prompt. Start with the window size, subtract the space for the reply, then subtract the fixed parts (instructions and tool descriptions), and what remains is what history and documents can use. When a conversation is long, decide on purpose what is allowed to be dropped and what is not, instead of letting the oldest-first rule decide.</p>
+
+<p>If you only use a chat product and do not control the app, the same ideas apply from the outside. Start a new conversation when the topic changes, restate the constraints that matter in your message when a chat has become long, and send the relevant section of a document instead of the whole file when the question concerns one part.</p>
+
+<x-tryit title="Does it fit?">
 <x-task>
-<p>A toy model has a 2,000-token window. Your app sends instructions (300 tokens), 4 tool descriptions (400 in total), a document (1,100) and the conversation including the new message (200). You reserve 500 for the reply. Does it fit? If not, by how much is it over, and what would you cut first?</p>
+<p>A toy model has a 2,000-token window. Your app sends instructions (300 tokens), four tool descriptions (400 tokens in total), a document (1,100 tokens) and the conversation including the new message (200 tokens). You reserve 500 tokens for the reply. Does everything fit? If not, by how much is it over, and what would you cut first?</p>
 </x-task>
 <x-answer>
-<p>300 + 400 + 1,100 + 200 + 500 = 2,500. That is <strong>500 tokens over</strong>.</p>
-<p>Options, roughly in order:</p>
+<p>The total is 300 + 400 + 1,100 + 200 + 500 = 2,500 tokens, which is <strong>500 tokens over</strong> the window.</p>
+<p>The options, roughly in the order you would try them:</p>
 <ul>
-<li><strong>Trim the document</strong>, the biggest item. If the question is about one section, send that. Cutting it to 600 tokens fixes the budget alone: 300 + 400 + 600 + 200 + 500 = 2,000.</li>
-<li><strong>Drop tools this task cannot use.</strong> Two irrelevant tools save about 200 tokens and remove options the model could misuse.</li>
-<li><strong>Do not cut the reply reserve.</strong> That just moves the failure to a truncated answer.</li>
+<li><strong>Trim the document</strong>, because it is the largest item. If the question is about one section, send only that section. Cutting the document to 600 tokens fixes the budget by itself: 300 + 400 + 600 + 200 + 500 = 2,000.</li>
+<li><strong>Remove tools that this task cannot use.</strong> Two irrelevant tools would save about 200 tokens and also remove options that the model could misuse.</li>
+<li><strong>Do not shrink the reply reserve.</strong> That only moves the failure to a truncated answer.</li>
 </ul>
 </x-answer>
 </x-tryit>
-
-<h2>Check yourself</h2>
 
 <x-quiz>
 <script type="application/json">
@@ -185,24 +181,24 @@ print(result["used"], len(result["request"]))  # 100 5
     {
       "question": "Which of these use up the context window on a call?",
       "options": [
-        { "text": "Only the messages the user typed", "why": "Instructions, tools, documents and the reply share the same budget." },
-        { "text": "Everything sent to the model, plus the reply it writes", "correct": true, "why": "Input and output share one window, so you reserve space for the answer." },
-        { "text": "Only the reply", "why": "The input counts too, and is usually much bigger." }
+        { "text": "Only the messages the user typed", "why": "Instructions, tool descriptions, documents and the reply share the same budget." },
+        { "text": "Everything sent to the model, plus the reply it writes", "correct": true, "why": "Input and output share one window, so space for the answer has to be reserved." },
+        { "text": "Only the reply", "why": "The input counts too, and it is usually much larger than the reply." }
       ]
     },
     {
-      "question": "An app trims old messages to fit. Early on, the user said \"Always answer in Spanish.\" Forty turns later replies switch to English. Best fix?",
+      "question": "An app trims old messages to fit. Early in the chat the user said \"Always answer in Spanish.\" Forty turns later the replies switch to English. What is the best fix?",
       "options": [
-        { "text": "Ask the user to repeat the request every few turns", "why": "It works, but burdens the user with the app's job." },
-        { "text": "Move lasting preferences into the instructions or a pinned note sent on every call", "correct": true, "why": "Then trimming the history cannot remove them." },
-        { "text": "Use a model with a bigger window", "why": "That only delays the problem." }
+        { "text": "Ask the user to repeat the request every few turns", "why": "That works, but it makes the user do the app's job." },
+        { "text": "Move lasting preferences into the instructions or a pinned note that is sent on every call", "correct": true, "why": "Trimming the history then cannot remove them." },
+        { "text": "Use a model with a bigger window", "why": "That only delays the problem until the conversation is longer." }
       ]
     },
     {
       "question": "Your document fits in the window with room to spare. Why might you still send only the relevant section?",
       "options": [
-        { "text": "Models ignore anything after the first page", "why": "They read all of it, just not every part equally reliably." },
-        { "text": "Less text costs less, runs faster, and leaves less irrelevant material to distract the model", "correct": true, "why": "Focused context usually gives better answers." },
+        { "text": "Models ignore anything after the first page", "why": "Models read all of it, but not every part equally reliably." },
+        { "text": "Less text costs less, is faster to process, and leaves less irrelevant material to distract the model", "correct": true, "why": "Focused context usually gives better answers." },
         { "text": "Long documents make the model more creative", "why": "Length mainly affects cost, speed and focus, not creativity." }
       ]
     }
@@ -213,4 +209,4 @@ print(result["used"], len(result["request"]))  # 100 5
 
 <h2>What to practise next</h2>
 
-<p><a href="/ai/context-engineering.html">Context Engineering</a> is about spending the budget well: choosing, shrinking and ordering what goes in. Long chats that slowly get worse are covered in <a href="/ai/context-rot.html">Context Rot</a>.</p>
+<p><a href="/ai/context-engineering.html">Context Engineering</a> covers how to choose, shrink and order what goes into the window, and <a href="/ai/context-rot.html">Context Rot</a> covers why long chats get worse over time.</p>

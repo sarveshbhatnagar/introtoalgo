@@ -1,31 +1,22 @@
 <!--
 {
   "title": "What Is an LLM",
-  "description": "A large language model does one thing: predict the next piece of text, again and again. See the loop step by step, with a toy model in JS and Python.",
-  "minutes": 11,
+  "description": "How a large language model generates text one token at a time, how chat assistants are built on that loop, and what it means for using them well.",
+  "minutes": 13,
   "tags": ["llm", "fundamentals"]
 }
 -->
-<p>Type "See you" on your phone and the keyboard suggests "soon", "later", "tomorrow". Keep tapping the first suggestion and you get a sentence, usually a strange one.</p>
+<p>A large language model, or LLM, is a program that reads text and predicts which piece of text is most likely to come next. Everything it does, including answering questions, summarising reports and writing code, comes from repeating that prediction many times. Knowing this explains both what these systems do well and why they fail in the ways they do.</p>
 
-<p>A large language model, or LLM, works the same way: it reads the text so far and predicts what comes next. The difference is scale. It learned from an enormous amount of writing, and it reads everything you wrote, not just the last word. That is enough to draft an email, explain a bug or summarise a report.</p>
+<p>If you only think of an LLM as something that "knows" things, its mistakes look random. If you think of it as something that continues text plausibly, most of them become predictable: it can write a confident sentence about a fact it never learned, and it cannot take back a sentence it has already written.</p>
 
-<h2>One job: predict what comes next</h2>
+<h2>How the model generates text</h2>
 
-<p>Give a model some text and it returns a list of chances: for every piece of text it knows, how likely it is to come next. For "The capital of France is", "Paris" gets a very high chance and "a" a small one ("is a city of...").</p>
+<p>Given some text, the model returns a probability for every piece of text it knows, saying how likely that piece is to come next. For "The capital of France is", the piece "Paris" gets a very high probability, and a piece such as "a" gets a small one, because "a" would start a phrase like "a city in Europe".</p>
 
-<p>To write more, run a loop:</p>
+<p>The model produces only one piece of text per call, so longer output comes from a loop outside the model. The program around the model gives it the text so far, receives the probabilities, chooses one piece, appends it to the text, and calls the model again with the longer text. The loop stops when the model chooses a special end marker or when a length limit is reached.</p>
 
-<ol>
-<li>Give the model the text so far.</li>
-<li>Get the chances for the next piece.</li>
-<li>Pick one piece.</li>
-<li>Stick it on the end of the text, and go back to step 1.</li>
-</ol>
-
-<p>Stop when the model picks a special "end" piece or the text hits a length limit. An assistant's long replies are built this way, one piece at a time.</p>
-
-<x-figure caption="Generation is a loop. Each new piece is added to the text, and the longer text is fed back in.">
+<x-figure caption="Generation is a loop. Each chosen piece is appended to the text, and the longer text is sent back to the model.">
 <svg viewBox="0 0 500 220" aria-label="A loop of four boxes: text so far, model, chances for the next piece, pick one. An arrow from pick one goes back to text so far, labelled append.">
   <defs><marker id="llm-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <rect x="10" y="30" width="130" height="56" rx="8" class="f-surface s-line"/>
@@ -48,11 +39,11 @@
 </svg>
 </x-figure>
 
-<p>The pieces are called tokens. They are often whole words, but not always; <a href="/ai/tokens.html">Tokens</a> shows how text is cut up. For now, think of them as words.</p>
+<p>The pieces of text are called tokens. They are often whole words but can also be parts of words or single characters, and <a href="/ai/tokens.html">Tokens</a> explains how text is split. This lesson treats tokens as words to keep the examples readable.</p>
 
-<h2>Watch the loop by hand</h2>
+<h3>A worked example with a toy model</h3>
 
-<p>This toy model is a small table mapping the last two words to chances for the next. A real model is not a table and reads the whole text, but the loop is the same. This version always takes the most likely word, called <em>greedy</em> picking.</p>
+<p>The toy model below is a small table that maps the last two words to probabilities for the next word. A real model is not a table and reads the whole text rather than two words, but the loop around it is the same. This version always chooses the most likely word, which is called greedy selection.</p>
 
 <x-tracer title="Generating text one word at a time">
 <script type="application/json">
@@ -69,21 +60,19 @@
   "codeLang": "text",
   "steps": [
     { "caption": "Start with <code>the cat</code>.", "line": 1, "vars": { "text": "the cat" } },
-    { "caption": "For <code>the cat</code>, \"sat\" is most likely, at 0.6. The chances add up to 1.", "line": 4, "arrays": [ { "label": "next word", "values": ["sat", "ran", "is"], "highlight": [0] }, { "label": "chance", "values": [0.6, 0.3, 0.1], "highlight": [0] } ], "vars": { "text": "the cat", "context": "the cat" } },
+    { "caption": "For <code>the cat</code>, \"sat\" is the most likely next word, at 0.6. The probabilities add up to 1.", "line": 4, "arrays": [ { "label": "next word", "values": ["sat", "ran", "is"], "highlight": [0] }, { "label": "chance", "values": [0.6, 0.3, 0.1], "highlight": [0] } ], "vars": { "text": "the cat", "context": "the cat" } },
     { "caption": "Append \"sat\". The context for the next call is now <code>cat sat</code>.", "line": 6, "vars": { "text": "the cat sat", "context": "cat sat" } },
-    { "caption": "For <code>cat sat</code>, \"on\" wins with 0.7 and is appended. Greedy picking ignores \"down\".", "line": 6, "arrays": [ { "label": "next word", "values": ["on", "down", "still"], "highlight": [0] }, { "label": "chance", "values": [0.7, 0.2, 0.1], "highlight": [0] } ], "vars": { "text": "the cat sat on", "context": "cat sat" } },
-    { "caption": "For <code>sat on</code>, \"the\" wins with 0.8. This phrase almost always continues this way.", "line": 6, "arrays": [ { "label": "next word", "values": ["the", "a", "my"], "highlight": [0] }, { "label": "chance", "values": [0.8, 0.15, 0.05], "highlight": [0] } ], "vars": { "text": "the cat sat on the", "context": "sat on" } },
-    { "caption": "For <code>on the</code>, \"mat\" wins with only 0.5: \"sofa\" or \"roof\" would be fine too.", "line": 6, "arrays": [ { "label": "next word", "values": ["mat", "sofa", "roof"], "highlight": [0] }, { "label": "chance", "values": [0.5, 0.3, 0.2], "highlight": [0] } ], "vars": { "text": "the cat sat on the mat", "context": "on the" } },
+    { "caption": "For <code>cat sat</code>, \"on\" wins with 0.7 and is appended. Greedy selection ignores \"down\", even though it has a 0.2 chance.", "line": 6, "arrays": [ { "label": "next word", "values": ["on", "down", "still"], "highlight": [0] }, { "label": "chance", "values": [0.7, 0.2, 0.1], "highlight": [0] } ], "vars": { "text": "the cat sat on", "context": "cat sat" } },
+    { "caption": "For <code>sat on</code>, \"the\" wins with 0.8, because this phrase almost always continues that way.", "line": 6, "arrays": [ { "label": "next word", "values": ["the", "a", "my"], "highlight": [0] }, { "label": "chance", "values": [0.8, 0.15, 0.05], "highlight": [0] } ], "vars": { "text": "the cat sat on the", "context": "sat on" } },
+    { "caption": "For <code>on the</code>, \"mat\" wins with only 0.5, although \"sofa\" or \"roof\" would be just as reasonable.", "line": 6, "arrays": [ { "label": "next word", "values": ["mat", "sofa", "roof"], "highlight": [0] }, { "label": "chance", "values": [0.5, 0.3, 0.2], "highlight": [0] } ], "vars": { "text": "the cat sat on the mat", "context": "on the" } },
     { "caption": "For <code>the mat</code>, a full stop wins with 0.6. The loop sees \".\" and stops.", "line": 7, "arrays": [ { "label": "next word", "values": [".", "and", "today"], "mark": [0] }, { "label": "chance", "values": [0.6, 0.3, 0.1], "mark": [0] } ], "vars": { "text": "the cat sat on the mat .", "context": "the mat" } },
-    { "caption": "Five model calls, five new words. A long answer is just many calls in a row.", "vars": { "text": "the cat sat on the mat .", "model calls": 5 } }
+    { "caption": "The loop made five model calls and added five words. A long answer is produced the same way, by many calls in a row.", "vars": { "text": "the cat sat on the mat .", "model calls": 5 } }
   ]
 }
 </script>
 </x-tracer>
 
-<h2>The loop in code</h2>
-
-<p>The dictionary plays the model; the rest is the loop you just traced.</p>
+<p>The same loop in code, with a dictionary standing in for the model:</p>
 
 <x-code>
 <pre lang="js">
@@ -139,23 +128,33 @@ generate(["the", "cat"], 20)  # "the cat sat on the mat ."
 </pre>
 </x-code>
 
-<p><code>n</code> new words take <code>n</code> calls, one after another, since each needs the word before it. That is why replies appear gradually.</p>
+<p>Generating <code>n</code> new tokens takes <code>n</code> calls that must run one after another, because each call needs the token chosen by the previous one. This is why replies appear gradually and why longer replies take longer.</p>
 
-<h2>What "large" changes</h2>
+<h2>What makes a model large</h2>
 
-<p>A real LLM replaces the five-row table with a <a href="/ai/neural-networks.html">neural network</a>: billions of numbers, called parameters, that turn the text so far into chances for the next token. <a href="/ai/attention-and-transformers.html">Attention and Transformers</a> shows the design that lets every word take every other word into account.</p>
+<p>A real LLM replaces the five-row table with a <a href="/ai/neural-networks.html">neural network</a>, which is a large set of numbers called parameters that turns the text so far into probabilities for the next token. The <a href="/ai/attention-and-transformers.html">Transformer</a> design lets the network take every earlier token into account when it makes a prediction, instead of only the last two.</p>
 
-<p>The numbers are set during training: show the network huge amounts of text and nudge them so the real next token gets a higher chance each time (<a href="/ai/training-and-fine-tuning.html">Training and Fine-Tuning</a>).</p>
+<p>The parameters are set during training. The network is shown a very large amount of text, and after each example its parameters are adjusted so that the token that really came next gets a higher probability. <a href="/ai/training-and-fine-tuning.html">Training and Fine-Tuning</a> covers this in detail.</p>
 
-<p>At that scale, something surprising happens. Predicting a physics textbook, a recipe or a Python file well requires absorbing a lot about physics, cooking and Python. Nobody programs those skills in; they are a side effect of good prediction.</p>
+<p>Predicting text well across many subjects forces the network to absorb a great deal about those subjects. To continue a physics textbook, a recipe or a Python file correctly, it has to pick up physics, cooking and Python. Nobody programs these skills in; they are a side effect of getting the prediction right.</p>
 
-<x-callout type="key">
-<p>An LLM is a next-token predictor. Every ability it shows comes out of a loop that adds one likely piece of text at a time.</p>
-</x-callout>
+<h2>How the next token is chosen</h2>
 
-<h2>A chat is a document being continued</h2>
+<p>The model only produces probabilities, so the choice of token is made by ordinary code around it, and that choice changes the output a lot.</p>
 
-<p>In a chat, the app joins your messages, the earlier replies and some hidden instructions into one long text, with markers showing who said what. The model continues that text with the assistant's next turn.</p>
+<h3>Greedy selection</h3>
+
+<p>Greedy selection always takes the most likely token, as in the trace above. The output is the same on every run, which is useful when you want repeatable results. The weakness is that the text tends to be plain and repetitive, and one early choice that was only slightly more likely than the others fixes the direction of everything after it.</p>
+
+<h3>Sampling</h3>
+
+<p>Sampling picks a token at random, weighted by its probability, so a token with 0.2 is chosen about one time in five. The same prompt can then give different answers on different runs. Sampling is the usual setting for chat and writing, where variety is wanted. A setting called temperature makes the choice more or less random, and <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> covers it.</p>
+
+<p>For tasks with one correct answer, such as extracting a field from a document, you generally want the output to be as predictable as possible. For writing and brainstorming, you want some variety. Because sampling can pick an unlikely token, even a correct model can occasionally produce a wrong answer to a question it usually gets right, so one successful run does not show that a prompt is reliable.</p>
+
+<h2>How a chat assistant works</h2>
+
+<p>A chat assistant does not work differently from the loop above. The application joins the hidden instructions, your earlier messages, the earlier replies and your new message into one long text, with markers that show who said what. The model then continues that text with the assistant's next turn.</p>
 
 <x-prompt label="What the model sees, roughly">
 <x-system>
@@ -169,27 +168,37 @@ What is the boiling point of water at sea level?
 </x-model>
 </x-prompt>
 
-<p>The model does not remember earlier messages between calls. The app sends the whole conversation every time, and if a message falls out of that text, the model no longer knows it was said. <a href="/ai/what-is-context.html">What Is Context</a> builds on this.</p>
+<p>An assistant is made by first training a model on general text and then training it further on examples of helpful conversations, so that continuing a chat means writing a useful reply. The mechanism is still next-token prediction.</p>
 
-<h2>Common mistakes</h2>
+<p>The model keeps nothing between calls. The application sends the whole conversation every time, and if a message is cut from that text because it no longer fits, the model has no way to know it was ever said. <a href="/ai/what-is-context.html">What Is Context</a> builds on this.</p>
 
-<x-callout type="mistake" title="Thinking the model looks facts up">
-<p>A plain LLM has no database. A stated fact is the most plausible next text: often correct, because the fact appeared many times in training, sometimes a confident guess (<a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a>). Apps that add search are a separate system feeding text in.</p>
-</x-callout>
+<h2>Limitations that follow from next-token prediction</h2>
 
-<x-callout type="mistake" title="Thinking the model writes the answer first, then shows it">
-<p>The output is committed one token at a time and never revised. A model's internal state can anticipate words further ahead, but it cannot change what it already wrote, so a bad start tends to stay. That is one reason to let the model work through a problem before its final answer; see <a href="/ai/give-the-model-room-to-think.html">Give the Model Room to Think</a>.</p>
-</x-callout>
+<h3>Stated facts are not looked up</h3>
 
-<x-callout type="mistake" title="Treating fluent text as proof of understanding">
-<p>Smooth sentences are what the model is best at, and they say nothing about whether the content is right. Check the answer.</p>
-</x-callout>
+<p>A plain LLM has no database to consult. When it states a fact, that fact is the most plausible continuation of the text, which is often correct because the fact appeared many times in training, and sometimes a confident guess. Names, dates, citations and numbers that are rare in the training text are the most likely to be wrong, and <a href="/ai/why-models-hallucinate.html">Why Models Hallucinate</a> covers this. If the answer must be correct, put the source text into the prompt or use a system that retrieves documents for the model, and check the result.</p>
 
-<h2>Try it yourself</h2>
+<h3>Output cannot be revised</h3>
+
+<p>The model commits to each token as it writes it and never goes back. If it begins an answer with a wrong claim, the rest of the text is then written to be consistent with that claim. For problems that need several steps, ask the model to work through the steps before it gives its final answer, as described in <a href="/ai/give-the-model-room-to-think.html">Give the Model Room to Think</a>.</p>
+
+<h3>Fluent text says nothing about correctness</h3>
+
+<p>Smooth, well-organised sentences are what the model produces best, whether or not the content is right. The tone of an answer is therefore not evidence that it is accurate, and a wrong answer is usually as polished as a right one.</p>
+
+<h2>What this changes in practice</h2>
+
+<ul>
+<li>Put everything the model needs into the prompt. It has no access to your documents, your earlier chats or your intent unless that text is in what you send.</li>
+<li>Treat answers about specific facts as claims to verify, and give the model the source material when accuracy matters.</li>
+<li>Expect different answers on different runs when sampling is on, and test a prompt several times before you rely on it.</li>
+<li>Start a fresh conversation when an earlier wrong turn is steering the answers. The wrong text is part of what the model continues, so correcting it in place often works less well than starting again with a better first message.</li>
+<li>Remember that you pay in time and cost for every token read and written, so long prompts and long replies are slower and more expensive.</li>
+</ul>
 
 <x-tryit title="Be the model for one step">
 <x-task>
-<p>For each sentence start, write the three most likely next words with rough chances (leave some room for everything else). Which is hardest to predict, and why?</p>
+<p>For each sentence start, write the three most likely next words with rough probabilities, leaving some room for all other words. Which start is hardest to predict, and why?</p>
 </x-task>
 <x-start>
 1. "Thank you so ..."
@@ -198,15 +207,13 @@ What is the boiling point of water at sea level?
 </x-start>
 <x-answer>
 <ol>
-<li>"much" 0.85, "very" 0.05, "kindly" 0.02. Almost certain: the phrase is extremely common.</li>
-<li>"Monday" 0.15, "Thursday" 0.15, "next" 0.15, the rest over other days, dates and "the". The <em>kind</em> of word is clear (a time), the exact word is not.</li>
-<li>"blue" 0.3, "green" 0.15, "red" 0.1. Many answers fit, and the text gives no clue.</li>
+<li>"much" 0.85, "very" 0.05, "kindly" 0.02. The next word is almost certain because the phrase is extremely common.</li>
+<li>"Monday" 0.15, "Thursday" 0.15, "next" 0.15, with the rest spread over other days, dates and "the". The kind of word is clear, since it will be a time, but the exact word is not.</li>
+<li>"blue" 0.3, "green" 0.15, "red" 0.1. Many answers fit, and the text gives no clue about which one is meant.</li>
 </ol>
-<p>A model is confident when the text pins the answer down, and spreads its chances when it does not. In case 2 the true answer is a fact about <em>your</em> meeting that is nowhere in the text. A model has to guess, and it will write "Thursday" just as smoothly as "much".</p>
+<p>A model is confident when the text pins the answer down, and its probabilities are spread out when it does not. In case 2 the true answer is a fact about your meeting that appears nowhere in the text. The model has to guess, and it will write "Thursday" as smoothly as it wrote "much" in case 1, which is why you should supply facts like this in the prompt.</p>
 </x-answer>
 </x-tryit>
-
-<h2>Check yourself</h2>
 
 <x-quiz>
 <script type="application/json">
@@ -215,25 +222,33 @@ What is the boiling point of water at sea level?
     {
       "question": "What does a language model produce each time it is called?",
       "options": [
-        { "text": "A complete answer to the question", "why": "Complete answers come from calling it many times in a loop." },
-        { "text": "Chances for what the next token should be", "correct": true, "why": "Right. Something outside the model picks one and appends it." },
+        { "text": "A complete answer to the question", "why": "Complete answers come from calling the model many times in a loop." },
+        { "text": "Probabilities for what the next token should be", "correct": true, "why": "Code outside the model picks one token and appends it to the text." },
         { "text": "The most relevant document from its training data", "why": "The model does not store or retrieve documents." }
       ]
     },
     {
-      "question": "With this lesson's loop, how many model calls does a 200-token reply take?",
+      "question": "With the loop in this lesson, how many model calls does a 200-token reply take?",
       "options": [
-        { "text": "Once", "why": "One call only gives chances for one next token." },
-        { "text": "200 times", "correct": true, "why": "Each new token needs its own call." },
-        { "text": "It depends on the number of sentences", "why": "Sentences do not matter to the loop. Tokens do." }
+        { "text": "One", "why": "One call only gives probabilities for one next token." },
+        { "text": "200", "correct": true, "why": "Each new token needs its own call." },
+        { "text": "It depends on the number of sentences", "why": "The loop counts tokens, not sentences." }
       ]
     },
     {
-      "question": "You tell an assistant your name in the first message. Twenty messages later it still uses it. Why?",
+      "question": "You tell an assistant your name in the first message, and twenty messages later it still uses it. Why?",
       "options": [
-        { "text": "The model learned your name and stored it in its parameters", "why": "Chatting does not change parameters." },
-        { "text": "The app sends the whole conversation, including that first message, on every call", "correct": true, "why": "Your name is still in the text it is given." },
-        { "text": "Models remember the last person they talked to", "why": "There is no memory between calls apart from the text sent in." }
+        { "text": "The model learned your name and stored it in its parameters", "why": "Chatting does not change the parameters." },
+        { "text": "The application sends the whole conversation, including the first message, on every call", "correct": true, "why": "Your name is still in the text the model is given." },
+        { "text": "Models remember the last person they talked to", "why": "The model keeps nothing between calls apart from the text sent in." }
+      ]
+    },
+    {
+      "question": "You run the same prompt twice with sampling on and get two different answers. What is the most likely reason?",
+      "options": [
+        { "text": "The model changed its parameters between the runs", "why": "Parameters stay fixed while the model is used." },
+        { "text": "The next token was chosen at random according to its probability, so the runs diverged", "correct": true, "why": "A different choice early in the text leads to different text after it." },
+        { "text": "One of the two answers must be a malfunction", "why": "Differing outputs are expected when sampling." }
       ]
     }
   ]
@@ -243,4 +258,4 @@ What is the boiling point of water at sea level?
 
 <h2>What to practise next</h2>
 
-<p><a href="/ai/tokens.html">Tokens</a> explains the pieces the model predicts and why they matter for cost, limits and some odd mistakes. Later, <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> replaces the greedy pick with what real systems use.</p>
+<p><a href="/ai/tokens.html">Tokens</a> explains the pieces the model predicts and why they affect cost, limits and some odd mistakes. <a href="/ai/sampling-and-temperature.html">Sampling and Temperature</a> then covers how real systems choose among the likely tokens.</p>

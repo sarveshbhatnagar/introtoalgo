@@ -1,39 +1,24 @@
 <!--
 {
   "title": "Context Engineering",
-  "description": "Choose what the model sees on each call: select what the task needs, shrink it, order and label it, and keep stale or conflicting material out.",
+  "description": "How to decide what information the model receives on each call, including how to select, compress, order and isolate it and how to keep stale material out.",
   "minutes": 12,
   "tags": ["context", "prompting"]
 }
 -->
-<p>A neighbour will feed your cat for a week. You could hand them a shoebox of vet bills, food receipts and the manual for a feeder you stopped using last year. Or one page: how much food and when, the pill on Tuesdays, the vet's number, and "she hides under the bed when the doorbell rings, that's normal." The page works better, though it contains less. Building a model's context is the same job.</p>
+<p>Context engineering is the work of deciding everything a model reads on a single call: which documents, history and instructions go in, in what form and order, and what is left out. Prompting is only the wording of the request, while context engineering also covers the material around it. In an application, code does this work on every request, so the quality of that code often matters more than the wording of any one prompt.</p>
 
-<h2>From wording to the whole screen</h2>
+<p>The model knows only what is in its <a href="/ai/what-is-context.html">context</a>, and the <a href="/ai/the-context-window.html">context window</a> is limited. If you send too little, the model guesses. If you send too much, it has to find the useful part among irrelevant material, and when the material contradicts itself, it may follow the wrong version. The goal on every call is to send the smallest set of information that lets the model do the task well.</p>
 
-<p>Prompting is how you phrase a request. <strong>Context engineering</strong> covers everything the model reads: what goes in, in what form and order, and what stays out. In an app, code does it on every request.</p>
+<h2>What good context looks like</h2>
 
-<p>The model only knows its <a href="/ai/what-is-context.html">context</a>, and the <a href="/ai/the-context-window.html">window</a> is limited and works best focused. So on every call, ask: what is the smallest set of information that lets the model do this task well?</p>
+<p>Good context is relevant to the task, current, consistent with itself, and clearly labelled so the model can tell an instruction from a document and one source from another. You build it with four techniques, described below: selecting, compressing, ordering and labelling, and isolating. You also decide what to keep out, which is as important as what to put in.</p>
 
-<x-callout type="key">
-<p>Good context is relevant, current, consistent and clearly labelled. Every piece should earn its place.</p>
-</x-callout>
+<h2>A worked example: choosing context for a returns question</h2>
 
-<h2>Four moves</h2>
+<p>A shop's assistant is asked: "Can I return headphones I've already opened?" The application has six candidate pieces of text. Each has a size in tokens and a relevance score. The score could come from <a href="/ai/rag-basics.html">retrieval</a>, from fixed rules, or from a quick check by another model. The budget for this call is 250 tokens.</p>
 
-<ol>
-<li><strong>Select.</strong> Include only what this task needs. Leave out shipping rates when the question is about returns.</li>
-<li><strong>Compress.</strong> Send the relevant section, not the manual. Summarize long threads into decisions. Strip repeated headers, footers and legal text.</li>
-<li><strong>Order and label.</strong> Put instructions where they cannot be missed. Label each piece with what it is and its source. After long material, restate the question.</li>
-<li><strong>Isolate.</strong> Split a big job into focused calls: summarize each report alone, then compare the summaries.</li>
-</ol>
-
-<p>Equally, <strong>keep out</strong> outdated versions, sources that disagree, loosely related material, unneeded secrets, and untrusted text that might contain instructions (<a href="/ai/prompt-injection.html">Prompt Injection</a>).</p>
-
-<h2>Packing a context, step by step</h2>
-
-<p>A customer asks a shop's assistant: "Can I return headphones I've already opened?" The app has six candidate pieces, each with a size in tokens and a relevance score (from <a href="/ai/rag-basics.html">retrieval</a>, fixed rules, or a quick check by another model). The budget is 250 tokens.</p>
-
-<p>The method: drop anything stale, then take the most relevant pieces that fit, skipping anything below 0.3 relevance.</p>
+<p>The method has two parts. First, drop anything stale. Then go through the rest from most to least relevant, skipping pieces with a score below 0.3 and pieces that no longer fit in the budget.</p>
 
 <x-tracer title="Choose context for a returns question, budget 250">
 <script type="application/json">
@@ -48,20 +33,20 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "The 2019 returns policy was replaced. Keeping it would give two rules that disagree, so it is dropped first, whatever its score.", "line": 1, "arrays": [ { "label": "piece", "values": ["policy", "product", "order", "FAQ", "old policy", "shipping"], "dim": [4] }, { "label": "score", "values": [0.9, 0.6, 0.8, 0.4, 0.7, 0.2], "dim": [4] }, { "label": "tokens", "values": [120, 80, 40, 300, 120, 60], "dim": [4] } ], "vars": { "budget": 250, "used": 0 } },
-    { "caption": "Sort the other five by score so the most useful get first claim on the budget.", "line": 2, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60] } ], "vars": { "budget": 250, "used": 0 } },
-    { "caption": "Current returns policy: score 0.9, 0 + 120 = 120. Fits. Add it.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 0 }, "mark": [0] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0] } ], "vars": { "budget": 250, "used": 120 } },
-    { "caption": "The order record: when they bought, which model. 120 + 40 = 160. Add it.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 1 }, "mark": [0, 1] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0, 1] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0, 1] } ], "vars": { "budget": 250, "used": 160 } },
-    { "caption": "The product page says whether the headphones are in-ear, which matters for hygiene rules. 160 + 80 = 240. Add it.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 2 }, "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
-    { "caption": "The whole FAQ: 240 + 300 = 540, far over 250. Skip it. If one FAQ answer mattered, send that answer alone.", "line": 5, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 3 }, "highlight": [3], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "highlight": [3], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "highlight": [3], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
-    { "caption": "Shipping rates: score 0.2, below 0.3. Skip it.", "line": 4, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 4 }, "highlight": [4], "dim": [3], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "highlight": [4], "dim": [3], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "highlight": [4], "dim": [3], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
-    { "caption": "Three pieces, 240 tokens, no contradictions. Sending all six would cost 720 tokens and include two policies that disagree.", "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "dim": [3, 4], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "dim": [3, 4], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "dim": [3, 4], "mark": [0, 1, 2] } ], "vars": { "chosen": 3, "used": 240, "send everything": 720 } }
+    { "caption": "The 2019 returns policy was replaced. Keeping it would give the model two rules that disagree, so it is dropped first, whatever its score.", "line": 1, "arrays": [ { "label": "piece", "values": ["policy", "product", "order", "FAQ", "old policy", "shipping"], "dim": [4] }, { "label": "score", "values": [0.9, 0.6, 0.8, 0.4, 0.7, 0.2], "dim": [4] }, { "label": "tokens", "values": [120, 80, 40, 300, 120, 60], "dim": [4] } ], "vars": { "budget": 250, "used": 0 } },
+    { "caption": "The other five pieces are sorted by score, so the most useful ones get first claim on the budget.", "line": 2, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60] } ], "vars": { "budget": 250, "used": 0 } },
+    { "caption": "The current returns policy has score 0.9, and 0 + 120 = 120 fits in the budget, so it is added.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 0 }, "mark": [0] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0] } ], "vars": { "budget": 250, "used": 120 } },
+    { "caption": "The order record says when the customer bought the item and which model it was. 120 + 40 = 160, so it is added.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 1 }, "mark": [0, 1] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0, 1] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0, 1] } ], "vars": { "budget": 250, "used": 160 } },
+    { "caption": "The product page says whether the headphones are in-ear, which matters for hygiene rules. 160 + 80 = 240, so it is added.", "line": 6, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 2 }, "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
+    { "caption": "The whole FAQ would bring the total to 240 + 300 = 540, far over the budget of 250, so it is skipped. If one FAQ answer mattered, that answer alone could be sent instead.", "line": 5, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 3 }, "highlight": [3], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "highlight": [3], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "highlight": [3], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
+    { "caption": "The shipping rates have score 0.2, which is below 0.3, so they are skipped.", "line": 4, "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "pointers": { "i": 4 }, "highlight": [4], "dim": [3], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "highlight": [4], "dim": [3], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "highlight": [4], "dim": [3], "mark": [0, 1, 2] } ], "vars": { "budget": 250, "used": 240 } },
+    { "caption": "Three pieces are chosen, using 240 tokens and containing no contradictions. Sending all six would have cost 720 tokens and included two policies that disagree.", "arrays": [ { "label": "piece", "values": ["policy", "order", "product", "FAQ", "shipping"], "dim": [3, 4], "mark": [0, 1, 2] }, { "label": "score", "values": [0.9, 0.8, 0.6, 0.4, 0.2], "dim": [3, 4], "mark": [0, 1, 2] }, { "label": "tokens", "values": [120, 40, 80, 300, 60], "dim": [3, 4], "mark": [0, 1, 2] } ], "vars": { "chosen": 3, "used": 240, "send everything": 720 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>Unlike trimming chat history, skipping a piece and carrying on is fine here: the pieces are independent.</p>
+<p>When a piece does not fit, the loop skips it and carries on, because the pieces are independent of each other. This differs from trimming chat history, where you usually drop the oldest messages to keep the conversation in order.</p>
 
 <x-code>
 <pre lang="js">
@@ -117,9 +102,9 @@ select_context([
 </pre>
 </x-code>
 
-<p>Sorting costs O(n log n) for n pieces, tiny next to the model call. The hard part is good scores and honest "stale" flags.</p>
+<p>The sorting cost is negligible next to the model call. The difficult part is producing scores that reflect real relevance and marking stale material honestly.</p>
 
-<h2>What the model receives</h2>
+<p>The two prompts below show what the model receives with and without this selection.</p>
 
 <x-prompt label="Everything pasted in" tone="weak">
 <x-user>
@@ -152,69 +137,101 @@ Yes. Your T2 headphones are over-ear, so the in-ear exception does not apply. Op
 </x-model>
 </x-prompt>
 
-<p>The first reply mixed the two policies and missed the in-ear rule. The second had every needed fact, labelled, with nothing contradicting it.</p>
+<p>The first reply blended the old and the current policy and never mentioned the in-ear rule. The second reply had every fact it needed, each one labelled, and nothing in the context contradicted anything else.</p>
 
-<h2>Common mistakes</h2>
+<h2>Techniques for building context</h2>
 
-<x-callout type="mistake" title="&quot;More context is safer&quot;">
-<p>Extra material costs tokens, slows the call, and offers more wrong details to latch onto. If unsure, test with and without.</p>
+<h3>Selecting</h3>
+
+<p>Selecting means including only the material this task needs. For a returns question, that excludes the shipping rates and the marketing copy, even though they belong to the same shop. The usual tools are retrieval by similarity to the question, fixed rules such as "always include the customer's order", and a cheap first pass in which a small model or a keyword filter discards obviously unrelated items. Selection fails when the relevance signal is poor: a retriever that returns the wrong passages gives the model confident, wrong material, and the model has no way to know the passages were a bad match.</p>
+
+<h3>Compressing</h3>
+
+<p>Compressing means shrinking what you have chosen without losing the facts the task depends on. You can send the relevant section of a document instead of the whole document, replace a long conversation with a summary of the decisions made in it, and strip repeated headers, footers and legal boilerplate. Summaries lose detail, so use them for material the model only needs the gist of, and keep exact text for anything it must quote or calculate from, such as a contract clause or a table of figures. A summary written by a model can also introduce errors, so for important material check it before you rely on it.</p>
+
+<h3>Ordering and labelling</h3>
+
+<p>Ordering and labelling mean arranging the context so the model can tell what each part is. Put the instructions in a place where they cannot be mistaken for part of a document, wrap each piece of material in a labelled block that says what it is and where it came from, and, after a long block of material, repeat the question you want answered. Labels also let the model say which source an answer came from, which makes the answer easier to check. See <a href="/ai/structured-output.html">Structured Output</a> for ways to ask for that in the reply.</p>
+
+<p>Order also affects cost and reliability. Models often use information in the middle of a very long context less reliably than information at the start or the end, so put the question and the most important material near the edges. Many providers can also reuse the processing of a prompt prefix that is identical between calls, so put the parts that never change, such as the instructions and tool definitions, first, and the parts that change on every request, such as the user's question and the retrieved passages, last. Putting a timestamp or other changing value at the top of the prompt makes the prefix different on every call and defeats that reuse.</p>
+
+<h3>Isolating</h3>
+
+<p>Isolating means splitting a large job into several focused calls instead of one call with everything in it. To compare ten long reports, summarize each report in its own call, then send the ten summaries to a final call that does the comparison. Each call sees only what it needs, and the final call works on short inputs. The cost is more calls and more total latency, and the summaries may drop a detail that the comparison turns out to need, so design the summary step around the question you will ask at the end.</p>
+
+<h3>Managing conversation history and tool output</h3>
+
+<p>In a long conversation or an agent loop, the history is itself context that grows on every turn. The simplest policy is to drop the oldest messages once a limit is reached, which is cheap but forgets early decisions. A better policy is to keep the last few turns word for word and replace everything older with a summary of the facts and decisions that still matter. Tool results need the same care: a tool that returns a whole file or a thousand database rows fills the context with text the model reads once and never needs again, so return only the relevant part, and clear old tool results from the history once their conclusions have been recorded.</p>
+
+<h3>What to keep out</h3>
+
+<p>Leave out outdated versions of documents, sources that disagree with each other, loosely related material, secrets the task does not need, and untrusted text that might contain instructions, such as web pages or customer emails. The last one matters because the model may follow instructions that appear inside material you only meant it to read, as <a href="/ai/prompt-injection.html">Prompt Injection</a> explains.</p>
+
+<h2>Pitfalls and nuances</h2>
+
+<x-callout type="mistake" title="Adding more context to be safe">
+<p>Extra material costs tokens, slows the call and gives the model more irrelevant details to latch onto. When you are unsure whether a piece helps, run the same test questions with and without it and compare the answers. The <a href="/ai/context-rot.html">Context Rot</a> lesson covers how quality drops as context grows.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Leaving contradictions in">
-<p>Two policy versions, old and new price lists, draft and final specs: the model cannot reliably tell which wins. Remove the stale one, or label which is current.</p>
+<x-callout type="mistake" title="Leaving contradictions in the context">
+<p>When the context holds two policy versions, an old and a new price list, or a draft and a final specification, the model cannot reliably tell which one is current. It may pick the wrong one or blend them. Remove the outdated version before the call, or label which one is current and say that it takes precedence.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Burying the instruction">
-<p>An instruction in the middle of a pasted document can read as part of it. Put instructions first, material in labelled blocks, and repeat the question at the end.</p>
+<x-callout type="mistake" title="Trusting the relevance scores without checking them">
+<p>The packing method only works if the scores and the stale flags are accurate. Read a sample of the contexts your system actually builds for real questions. A retriever that ranks the wrong passage first, or a knowledge base that still contains last year's policy, will produce wrong answers that look well supported.</p>
 </x-callout>
 
-<h2>Try it yourself</h2>
+<h2>How this changes what you do in practice</h2>
+
+<p>Before you tune the wording of a prompt, look at the full text the model received on a failing example. Most wrong answers trace back to something missing, something stale or two sources that disagree, and rewording does not fix any of those. Log the final assembled context for each request while you are developing, so you can read it.</p>
+
+<p>When you build a context, work through the techniques in order. Select the pieces the task needs, compress the ones that are long, label each piece and place the instruction and the question where they will not be missed, and split the job into several calls if one context would be too large or too mixed. Then test with and without each optional piece, and keep only the ones that improve the answers.</p>
+
+<p>When you use a coding assistant, apply the same thinking by hand: give it the error message, the failing test and the relevant files before anything else, instead of pointing it at the whole project.</p>
 
 <x-tryit title="Pack the context for a bug fix">
 <x-task>
-<p>A coding assistant must fix a failing test for a shopping-cart total. You could give it: the whole repository (about 2,000 files), the failing test file, the function being tested, the test's error output, the team's style guide, last week's chat about a different feature, and the README. What do you include or leave out, and why?</p>
+<p>A coding assistant must fix a failing test for a shopping-cart total. You could give it the whole repository (about 2,000 files), the failing test file, the function being tested, the test's error output, the team's style guide, last week's chat about a different feature, and the README. Decide what to include and what to leave out, and give a reason for each choice.</p>
 </x-task>
 <x-answer>
-<p><strong>Include:</strong></p>
+<p>Include the following.</p>
 <ul>
-<li><strong>The error output</strong>: what actually went wrong, often the most useful piece.</li>
-<li><strong>The failing test</strong>: it defines "correct".</li>
-<li><strong>The function under test</strong>, plus anything involved that it calls, such as a discount helper.</li>
+<li>The error output, because it shows what actually went wrong and is often the most useful piece.</li>
+<li>The failing test, because it defines what correct behaviour is.</li>
+<li>The function under test, and anything it calls that is involved in the failure, such as a discount helper.</li>
 </ul>
-<p><strong>Maybe:</strong> a few relevant lines of the style guide, if the fix will be reviewed against it.</p>
-<p><strong>Leave out:</strong> the whole repository (it buries the three files that matter), last week's chat (a different feature, possibly outdated code), and the README (rarely needed for a local fix).</p>
-<p>Coding tools that search the repository make this selection themselves, so pointing them at the error and files first helps.</p>
+<p>A few relevant lines of the style guide are optional, and worth including only if the fix will be reviewed against it.</p>
+<p>Leave out everything else. The whole repository would bury the few files that matter. Last week's chat is about a different feature and may refer to code that has since changed. The README is rarely needed for a local fix.</p>
+<p>Coding tools that search the repository make this selection themselves, so naming the error and the files first still helps them start from the right place.</p>
 </x-answer>
 </x-tryit>
-
-<h2>Check yourself</h2>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "A support bot sometimes quotes an old refund period. Both old and new policies are in its context. Best fix?",
+      "question": "A support bot sometimes quotes an old refund period. Both the old and the new policy are in its context. What is the best fix?",
       "options": [
         { "text": "Add \"be accurate\" to the instructions", "why": "The model cannot be accurate when its context disagrees with itself." },
         { "text": "Remove the old policy from the material the bot can receive", "correct": true, "why": "Keeping stale, contradictory material out is the most reliable fix." },
-        { "text": "Use a bigger context window", "why": "Both policies already fit; that is the problem." }
+        { "text": "Use a bigger context window", "why": "Both policies already fit, and having both is the problem." }
       ]
     },
     {
-      "question": "You need to compare 10 long reports. Which approach uses the <strong>isolate</strong> move?",
+      "question": "You need to compare 10 long reports. Which approach uses the isolating technique?",
       "options": [
-        { "text": "Paste all 10 reports into one call", "why": "The opposite: one big context where details blur between reports." },
+        { "text": "Paste all 10 reports into one call", "why": "This is the opposite: one large context in which details blur between reports." },
         { "text": "Summarize each report in its own call, then compare the 10 summaries in a final call", "correct": true, "why": "Each call gets a focused context, and the final call works on compact inputs." },
-        { "text": "Send only the first report", "why": "Isolating splits the work; it does not skip it." }
+        { "text": "Send only the first report", "why": "Isolating splits the work into several calls. It does not skip any of it." }
       ]
     },
     {
-      "question": "In the packing example, why was the FAQ skipped despite scoring above the threshold?",
+      "question": "In the worked example, why was the FAQ skipped even though its score was above the 0.3 threshold?",
       "options": [
         { "text": "It was stale", "why": "Only the 2019 policy was marked stale." },
-        { "text": "Its 300 tokens would exceed the 250-token budget", "correct": true, "why": "240 + 300 = 540. If part of it mattered, send just that part." },
-        { "text": "FAQs are never useful", "why": "A single FAQ answer could be useful. The whole page was too big for its value." }
+        { "text": "Its 300 tokens would have exceeded the 250-token budget", "correct": true, "why": "240 + 300 = 540. If part of the FAQ mattered, sending just that part would fit." },
+        { "text": "FAQs are never useful", "why": "A single FAQ answer could be useful. This piece was too large for its value." }
       ]
     }
   ]
@@ -224,4 +241,4 @@ Yes. Your T2 headphones are over-ear, so the in-ear exception does not apply. Op
 
 <h2>What to practise next</h2>
 
-<p>The packing example assumed relevance scores. <a href="/ai/rag-basics.html">RAG Basics</a> computes them by searching your documents with embeddings, and <a href="/ai/chunking-and-retrieval.html">Chunking and Retrieval</a> cuts documents into pieces worth retrieving.</p>
+<p>The worked example assumed that relevance scores already existed. <a href="/ai/rag-basics.html">RAG Basics</a> shows how to compute them by searching your documents with embeddings, and <a href="/ai/chunking-and-retrieval.html">Chunking and Retrieval</a> covers how to cut documents into pieces worth retrieving.</p>

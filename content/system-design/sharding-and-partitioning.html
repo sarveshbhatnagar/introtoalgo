@@ -1,76 +1,130 @@
 <!--
 {
   "title": "Sharding and Partitioning",
-  "description": "Split data across machines by range, hash or directory, pick a shard key, handle hot keys and cross-shard queries, and add shards without downtime.",
-  "minutes": 13,
+  "description": "How sharding splits a database across machines, how range, hash and directory mapping differ, and what interviewers ask about shard keys and rebalancing.",
+  "minutes": 17,
   "tags": ["databases", "sharding", "partitioning", "building blocks", "scaling"]
 }
 -->
-<p>A chat app stores 20 billion messages of about 400 bytes: 20 × 10<sup>9</sup> × 400 B = 8 TB. At peak it writes 30,000 a second. Replicas do not help: each holds all 8 TB and applies all 30,000 writes.</p>
+<p>Sharding, also called partitioning, splits one large dataset into pieces and stores each piece on a different machine. Each piece is a <strong>shard</strong>. A <strong>shard key</strong>, which is a column such as <code>user_id</code>, decides which shard a given row belongs to. Sharding is how a database grows beyond the storage and write capacity of a single machine.</p>
 
-<p>Sharding gives each machine a slice: with 8 shards, each holds about 1 TB and takes 30,000 ÷ 8 ≈ 3,750 writes a second.</p>
+<p>Read replicas and caches do not solve that problem, because every replica holds a full copy of the data and applies every write. Replicas add read capacity but not storage or write capacity.</p>
 
-<h2>The idea</h2>
+<h2>Where sharding sits</h2>
 
-<p>A <strong>shard</strong> (or partition) is a subset of the rows on its own machine. A <strong>shard key</strong>, such as <code>chat_id</code>, decides which shard each row lives on. A query with the shard key goes to one shard; one without must ask them all.</p>
-
-<p>Each shard is usually a small leader-follower group: sharding splits the work, <a href="/system-design/replication.html">replication</a> protects each piece.</p>
-
-<p>The cost: cross-shard joins and transactions become hard, every query must consider the shard key, and moving data is a project. That pain is permanent, so shard only when one machine cannot cope.</p>
-
-<h2>Three ways to map keys to shards</h2>
-
-<x-tradeoffs caption="Partitioning schemes">
+<x-arch caption="A router uses the shard key to send each query to one shard. Each shard is a small replicated group.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "Range",
-      "good": "Neighbouring keys live together, so range scans (\"names A to F\") hit one or two shards.",
-      "bad": "Sequential keys (timestamps, auto-increment ids) all write to the last shard.",
-      "pick": "Range queries over keys that arrive spread out (usernames, not timestamps)."
-    },
-    {
-      "name": "Hash",
-      "good": "Spreads keys and load evenly, even sequential ones.",
-      "bad": "Range scans ask every shard. Plain <code>hash mod N</code> moves most keys when N changes.",
-      "pick": "Lookups by key. The usual default.",
-      "default": true
-    },
-    {
-      "name": "Directory",
-      "good": "A lookup table says where each key (or tenant) lives, so you can place and move each one.",
-      "bad": "The directory is on every request's path: it must be fast, cached and highly available.",
-      "pick": "Multi-tenant systems where big customers get their own shard."
-    }
+  "nodes": [
+    { "id": "app", "label": "App servers", "kind": "service", "col": 0, "row": 1, "stack": true },
+    { "id": "router", "label": "Shard router", "kind": "service", "col": 1, "row": 1 },
+    { "id": "s1", "label": "Shard 1", "kind": "database", "col": 2, "row": 0 },
+    { "id": "s2", "label": "Shard 2", "kind": "database", "col": 2, "row": 1 },
+    { "id": "s3", "label": "Shard 3", "kind": "database", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "app", "to": "router", "label": "query + shard key" },
+    { "from": "router", "to": "s1" },
+    { "from": "router", "to": "s2" },
+    { "from": "router", "to": "s3" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<p>A common mistake is plain <code>hash(key) mod 8</code>. Going from 8 to 9 shards, a key stays put only if its hash gives the same remainder for 8 and 9: 8 values in every 72. So 64 ÷ 72 ≈ 89% of the data moves. Two fixes: <a href="/system-design/consistent-hashing.html">consistent hashing</a>, or many fixed partitions: hash keys into 1,024 partitions once and give each shard 128. A new shard takes whole partitions from the others, and only about 1 ÷ 9 ≈ 11% of the data moves.</p>
+<p>The router can be a separate service, a library in the application, or part of the database. A query that contains the shard key reaches one shard, and a query without it has to be sent to all of them. Each shard is normally a leader with followers, so <a href="/system-design/replication.html">replication</a> protects each piece against machine failure and sharding divides the load between pieces.</p>
+
+<h2>When to shard and what to try first</h2>
+
+<p>Sharding has a permanent cost: joins and transactions across shards become hard, every query has to include the shard key, and changing the key later means moving data. Try the cheaper options first.</p>
+
+<ul>
+<li>If the machine is short of CPU, memory or disk, a bigger machine is the simplest fix, and many systems never need more.</li>
+<li>If the load is mostly reads, add read replicas. They scale reads without changing the data model, at the price of replication lag.</li>
+<li>If the same rows are read repeatedly, add a <a href="/system-design/caching.html">cache</a>.</li>
+</ul>
+
+<p>Shard when the data volume or the write rate exceeds what the largest practical machine can handle.</p>
+
+<h2>Mapping keys to shards</h2>
+
+<p>The mapping from a key to a shard is the central design choice. There are three common ones, and each behaves very differently under load and growth.</p>
+
+<h3>Range partitioning</h3>
+
+<p>Each shard owns a continuous range of key values, for example usernames A to F on shard 1 and G to M on shard 2. The ranges are stored in a small table that the router consults. Because neighbouring keys live together, a range query such as "all orders between two dates" touches one or two shards.</p>
+
+<p>Use it when range queries over the key are a main access pattern. The danger is uneven load: if the key grows over time, such as a timestamp, every new write falls in the newest range and one shard takes all the writes. Range-based stores usually split a range into two when it grows too large, which handles size but not a hot newest range.</p>
+
+<h3>Hash partitioning</h3>
+
+<p>The router applies a hash function to the key and uses the result to pick the shard. A good hash spreads keys evenly even when the keys are sequential. It is the default for lookups by key, such as user ids or order ids.</p>
+
+<p>The cost is that key order is lost, so a range scan over a hashed key has to ask every shard. The other danger is the way the hash is turned into a shard number, covered under rebalancing below.</p>
+
+<h3>Directory partitioning</h3>
+
+<p>A lookup service stores an explicit entry for each key or group of keys saying which shard holds it. Routers read the directory on every request, normally from a local cache. A key can be placed anywhere and moved by updating one entry.</p>
+
+<p>Use it when placement must be controlled, for example in a multi-tenant product where a few large customers get a dedicated shard and small ones share the rest. If the directory is unavailable no request can be routed, so it must be replicated and cached in the routers.</p>
 
 <h2>Choosing the shard key</h2>
 
-<p>The checklist (applied to a booking system in <a href="/system-design/data-modeling.html">data modeling</a>):</p>
+<p>The shard key matters more than the mapping, because it decides which queries are cheap. A good key meets three conditions.</p>
 
 <ul>
-<li><strong>The hottest queries include it.</strong> "Latest 50 messages in chat 8813" names the chat, so <code>chat_id</code> puts the whole query on one shard.</li>
-<li><strong>Things that change together share it.</strong> A transaction inside one shard is ordinary; across shards it is not.</li>
-<li><strong>Many distinct values, spread evenly.</strong> <code>country</code> has a few hundred values and a handful of giants: a few huge shards.</li>
+<li><strong>The most frequent queries include it.</strong> If the main query is "the latest 50 messages in a chat", sharding by <code>chat_id</code> puts the whole query on one shard.</li>
+<li><strong>Rows that are used together share it.</strong> A transaction or join that stays inside one shard is as simple as on a single database.</li>
+<li><strong>It has many distinct values with an even spread.</strong> Sharding by <code>country</code> gives a few hundred values and a few very large ones, so a few shards end up much bigger than the rest.</li>
 </ul>
 
-<h3>Hot keys</h3>
+<p>The key favours one access pattern and makes the others more expensive, so say which query it serves and which it hurts.</p>
 
-<p>A good key still has outliers. A 50,000-member group chat may take 2,000 messages a second during an event, all on one shard. If that is a real requirement, split the key: write to a random one of <code>chat:8813#0</code> to <code>chat:8813#9</code>, 200 a second each, and have reads gather the 10 and merge by time. Only for known hot keys: every read now costs 10 lookups.</p>
+<h2>Hot keys, cross-shard queries and secondary indexes</h2>
 
-<h3>Cross-shard queries</h3>
+<h3>Hot keys and skew</h3>
 
-<p>A query without the shard key goes to every shard and merges the answers (scatter-gather), so it is as slow as the slowest shard. If each is slow 1% of the time, a query to all 8 is slow 1 − 0.99<sup>8</sup> ≈ 7.7% of the time; with 100 shards, 1 − 0.99<sup>100</sup> ≈ 63%. Keep them rare, or serve them from a copy sharded by their field, or a <a href="/system-design/search-systems.html">search index</a>.</p>
+<p>Even a good key has outliers. One celebrity account or one very active group chat can receive far more traffic than a single shard can serve, and adding shards does not help because the key still lives on one of them. If the hot key is mostly read, cache it or read it from replicas. If it is written heavily, append a random suffix such as <code>chat:8813#0</code> to <code>chat:8813#9</code> on writes so they spread over ten shards, and have reads fetch all ten and merge them. That makes every read of the key ten times more expensive, so apply it only to keys known to be hot.</p>
 
-<h2>Adding a shard without downtime</h2>
+<h3>Queries that cross shards</h3>
 
-<p>8 shards, 1,024 partitions. A ninth shard joins and takes about 14 partitions from each of the 8, one at a time.</p>
+<p>A query without the shard key is sent to every shard and the router merges the answers. This is called scatter-gather. The query is only as fast as its slowest shard, so it gets slower as shards are added. If a frequent query does not match the shard key, serve it from a second copy of the data sharded by the field it uses, or from a <a href="/system-design/search-systems.html">search index</a>.</p>
+
+<h3>Transactions across shards</h3>
+
+<p>A transaction whose rows are on one shard works as it does on a single database. When rows are on different shards, the shards must agree on commit or abort with a protocol such as two-phase commit, which is slow and can leave participants waiting if the coordinator fails. The better answer is to choose the shard key so that the rows of one transaction live together. When that is impossible, use a sequence of local transactions with compensating steps, as described in <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>.</p>
+
+<h3>Secondary indexes</h3>
+
+<p>A secondary index lets you query by a column that is not the shard key, such as finding a user by email when users are sharded by id. There are two ways to build one.</p>
+
+<p>A <strong>local index</strong> is kept separately by each shard and covers only that shard's rows. A write updates one shard, which keeps writes cheap and atomic. A read by the indexed column has to ask every shard, because any of them might hold a match.</p>
+
+<p>A <strong>global index</strong> covers all rows and is itself sharded by the indexed column, so a lookup by email goes to one index shard. The cost moves to writes: one row write updates the data shard and an index shard on different machines, so many systems update the index asynchronously and it can briefly lag. Use a local index when such reads are rare, and a global index when they are frequent and a short lag is acceptable.</p>
+
+<h3>Unique ids across shards</h3>
+
+<p>Auto-increment counters are per database, so two shards will generate the same ids. Use ids that are unique without coordination, as described in <a href="/system-design/unique-ids.html">unique ids</a>. A unique column such as a username must be the shard key of its own table, so that a duplicate is detected on one shard.</p>
+
+<h2>Adding shards and rebalancing</h2>
+
+<p>Shards are added as data grows, and the mapping should let that happen with little data movement and no downtime.</p>
+
+<h3>Why hash mod N fails</h3>
+
+<p>The obvious way to turn a hash into a shard number is <code>hash(key) mod N</code>, where N is the number of shards. It works until N changes. Going from 8 shards to 9, a key stays where it is only when its hash gives the same remainder for 8 and for 9, which is true for 8 of every 72 hash values, so about 89% of the rows have to move.</p>
+
+<h3>Consistent hashing</h3>
+
+<p><a href="/system-design/consistent-hashing.html">Consistent hashing</a> places both the shards and the keys on a circle of hash values. A key belongs to the first shard found going clockwise from its position. When a shard is added, it takes over only the arc between itself and its neighbour, so on average only 1/N of the keys move, and the other shards are unaffected. To even out the arcs, each machine is given many positions on the circle, called virtual nodes.</p>
+
+<h3>Many fixed partitions mapped to fewer machines</h3>
+
+<p>Many databases fix the number of partitions up front, much larger than the number of machines, for example 1,024. A key's partition never changes, and a small table maps each partition to a machine. Adding a machine means moving whole partitions to it and updating the table. With 8 machines holding 128 partitions each, a ninth machine takes about 114 partitions, roughly 1/9 of the data. The partition count is hard to change later, so pick a number comfortably larger than the machines you will ever need.</p>
+
+<h3>Moving a partition without downtime</h3>
+
+<p>The tracer follows one partition from an old shard to a new one while the system keeps serving requests.</p>
 
 <x-tracer title="Moving partition 37 to a new shard">
 <script type="application/json">
@@ -95,37 +149,37 @@
   },
   "steps": [
     {
-      "caption": "A message for chat 8813 hashes to partition 37; the router's cached map says shard 1.",
+      "caption": "Chat 8813 hashes to partition 37, and the router's cached map says shard 1 owns it.",
       "arch": { "active": ["app", "router", "s1", ["app", "router"], ["router", "s1"]], "hide": ["s9"], "notes": { "s1": "p37" } },
       "vars": { "p37 owner": "shard 1" }
     },
     {
-      "caption": "Empty shard 9 joins. Shard 1 streams it a snapshot of partition 37 while still serving it.",
+      "caption": "The empty shard 9 joins, and shard 1 copies a snapshot of partition 37 to it while still serving it.",
       "arch": { "active": ["s1", "s9", ["s1", "s9"]], "notes": { "s9": "copying" } },
       "vars": { "p37 owner": "shard 1" }
     },
     {
-      "caption": "If shard 9 died now, nothing is lost: shard 1 still owns partition 37. Retry the copy.",
+      "caption": "If shard 9 failed now, nothing would be lost, because shard 1 still owns the partition and the copy is retried.",
       "arch": { "fail": ["s9", ["s1", "s9"]], "mark": ["s1"], "notes": { "s1": "still owner" } },
       "vars": { "p37 owner": "shard 1" }
     },
     {
-      "caption": "Normally the snapshot finishes; writes made meanwhile replay from shard 1's change log until shard 9 is milliseconds behind.",
+      "caption": "Writes made during the copy are replayed from shard 1's change log until shard 9 is milliseconds behind.",
       "arch": { "active": ["s1", "s9", ["s1", "s9"]], "notes": { "s9": "catching up" } },
       "vars": { "p37 owner": "shard 1" }
     },
     {
-      "caption": "Shard 1 pauses writes to partition 37 for well under a second, ships the last changes, and the map now says shard 9.",
+      "caption": "Shard 1 briefly pauses writes to the partition, sends the last changes, and the map is switched to shard 9.",
       "arch": { "active": ["map", ["router", "map"]], "mark": ["s9"], "notes": { "map": "p37 → shard 9" } },
       "vars": { "p37 owner": "shard 9" }
     },
     {
-      "caption": "A router with an old map still sends chat 8813 to shard 1, which answers \"moved\". The router refreshes and retries.",
+      "caption": "A router with the old map still sends chat 8813 to shard 1, which says the partition has moved, so the router refreshes its map.",
       "arch": { "active": ["s1", ["router", "s1"], ["router", "map"]], "notes": { "s1": "moved" } },
       "vars": { "p37 owner": "shard 9" }
     },
     {
-      "caption": "Chat 8813 now goes to shard 9; shard 1 deletes its copy later. Repeat for about 112 partitions and shard 9 carries its ninth of the load.",
+      "caption": "Chat 8813 now goes to shard 9, and shard 1 deletes its copy later. Repeating this gives shard 9 about a ninth of the data.",
       "arch": { "active": ["s9", ["app", "router"], ["router", "s9"]], "mark": ["s9"], "dim": [["s1", "s9"]] },
       "vars": { "p37 owner": "shard 9", "data moved": "≈ 11%" }
     }
@@ -134,70 +188,49 @@
 </script>
 </x-tracer>
 
-<h2>Numbers worth remembering</h2>
-
-<ul>
-<li>Plan for both limits: data per machine (often about 1 TB or less, so moves and rebuilds are quick) and writes per machine (roughly thousands a second for a relational primary).</li>
-<li>Far more partitions than machines (hundreds to thousands), so growth moves whole partitions.</li>
-<li>Scatter-gather tail: 1 − 0.99<sup>n</sup> of queries hit a slow shard.</li>
-</ul>
-
-<x-estimate title="How many shards?">
-<script type="application/json">
-{
-  "question": "How many shards does the chat store need today?",
-  "givens": ["20 billion messages, about 400 bytes each", "Keep each shard to about 1 TB", "30,000 writes a second at peak; one shard comfortably takes 5,000"],
-  "unit": "count",
-  "answer": "8",
-  "accept": ["4", "20"],
-  "steps": ["Storage: 20 × 10<sup>9</sup> × 400 B = 8 TB → 8 shards of 1 TB", "Writes: 30,000 ÷ 5,000 = 6 shards", "Take the larger: 8 shards (plus replicas for each)"],
-  "note": "The tighter limit decides. Storage leaves no headroom here, so start with more; 1,024 partitions make that cheap."
-}
-</script>
-</x-estimate>
-
 <h2>In the interview</h2>
 
-<p>Bring up sharding when your estimate says one machine cannot cope. Name the shard key, the query it serves, the query it hurts, and how you handle hot keys and growth.</p>
+<p>Bring up sharding only after your estimate shows that one machine cannot hold the data or take the writes. Then say which key you shard by, which query that key makes cheap, which query it makes expensive, and how you handle hot keys and growth. For the mapping, hash into many fixed partitions, unless range queries over the key are a core requirement (use ranges) or tenants need individual placement (use a directory).</p>
 
-<x-interview title="Sharding a message store">
-<x-interviewer>8 TB and 30,000 writes a second. How do you store messages?</x-interviewer>
-<x-you>Shard by <code>chat_id</code>, hashed into 1,024 partitions over 8 shards. Loading a chat, the hottest query, hits one shard. A user's inbox would fan out, so it gets its own table sharded by <code>user_id</code>, updated with each message.</x-you>
-<x-interviewer>One chat goes viral. Now what?</x-interviewer>
-<x-you>Its partition runs hot. If one chat really takes thousands of messages a second, I'd split its key into 10 sub-keys for writes and merge on read, only for chats we flag as huge.</x-you>
-<x-coach>The key is justified by a query, the cost is named, and the hot-key fix stays where needed.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do you keep usernames unique across shards?"</strong> Shard the usernames table by username, so the check is one shard.</li>
+<li><strong>"Why shard instead of adding replicas?"</strong> Replicas copy all the data and all the writes, so they add read capacity only. Sharding is the one that adds storage and write capacity.</li>
+<li><strong>"How do you pick the shard key?"</strong> Look at the most frequent query and use the field it filters on, so that query reaches one shard. Check that it has many evenly spread values and that rows used in one transaction share it.</li>
+<li><strong>"Range or hash?"</strong> Hash gives an even spread and suits lookups by key. Range keeps neighbouring keys together for scans but sends sequential writes, such as timestamps, to one shard. I would hash unless scans over the key are central.</li>
+<li><strong>"What happens when you add a shard?"</strong> With <code>hash mod N</code> nearly all data moves, so I would use many fixed partitions or consistent hashing. A new shard then copies whole partitions while the old shard still serves them, replays recent writes, and switches the map at the end.</li>
+<li><strong>"What if one key is extremely hot?"</strong> More shards do not help, because the key stays on one shard. I would cache it if it is read-heavy, or split it into sub-keys for writes and merge on read.</li>
+<li><strong>"How do you query by a column that is not the shard key?"</strong> A local index asks every shard, while a global index answers from one shard but makes writes touch two places and usually lags slightly. I choose by how frequent the query is.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Range-sharding on a timestamp">
-<p>Every new row has the latest time, so every write lands on the last shard while the others idle. Hash the key, or lead with something spread out (<code>chat_id</code>, then time).</p>
-</x-callout>
+<x-interview title="Sharding a message store" tone="strong">
+<x-interviewer>The chat service stores 8 TB of messages and takes 30,000 writes a second. How do you store them?</x-interviewer>
+<x-you>That is more than one primary can handle, and replicas do not add write capacity, so I would shard. The hottest query loads the latest messages of one chat, so I would shard by <code>chat_id</code>, hashed into 1,024 partitions spread over 8 shards, which keeps that query on a single shard.</x-you>
+<x-interviewer>What does that make hard?</x-interviewer>
+<x-you>Listing all chats of one user would ask every shard, so I would keep a second table sharded by <code>user_id</code> with each user's chat list.</x-you>
+<x-interviewer>One chat goes viral and its shard is overloaded.</x-interviewer>
+<x-you>More shards would not help, because the chat stays on one of them. For chats known to be huge, I would split writes over ten sub-keys and merge on read, and leave ordinary chats alone.</x-you>
+<x-coach>Each choice is tied to a query, the cost of the choice is stated, and the hot-key fix is limited to the keys that need it.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "A query asks all 20 shards. Each is slow 1% of the time, independently. About how often is the query slow?",
+      "question": "A service stores events with an increasing timestamp as the key, and most queries read the latest events. Which mapping avoids a hot shard?",
       "options": [
-        { "text": "1%", "why": "That is one shard. The query waits for all 20." },
-        { "text": "18%", "correct": true, "why": "1 − 0.99<sup>20</sup> ≈ 0.18." },
-        { "text": "20%", "why": "Adding 1% twenty times double-counts cases where two shards are slow." }
+        { "text": "Range partitioning on the timestamp", "why": "Every new event has the latest timestamp, so all writes go to the last range." },
+        { "text": "Hash partitioning on the key, or a key that leads with a well-spread field", "correct": true, "why": "Hashing spreads consecutive writes across all shards." },
+        { "text": "A directory with one entry per event", "why": "The directory only records placement. It does not decide where new writes go, and it would grow with every event." }
       ]
     },
     {
-      "question": "A ride app shards trips by <code>driver_id</code>. Which query is cheapest?",
+      "question": "A store of 100 million users is sharded by <code>user_id</code>. You need to look up a user by email address often. What is the best way to support it?",
       "options": [
-        { "text": "All trips in one city today", "why": "Drivers in a city spread over every shard: scatter-gather." },
-        { "text": "A driver's trips this week", "correct": true, "why": "The shard key is in the query, so one shard answers it." },
-        { "text": "A rider's trip history", "why": "A rider's trips are with many drivers on many shards." }
+        { "text": "A local index on each shard", "why": "Every lookup would have to ask all shards, which is expensive for a frequent query." },
+        { "text": "A global index sharded by email", "correct": true, "why": "A lookup goes to one index shard. Writes update two places, and the index may lag briefly." },
+        { "text": "Re-shard all users by email", "why": "That would make queries by <code>user_id</code> scatter across shards instead." }
       ]
     }
   ]
@@ -207,4 +240,4 @@
 
 <h2>What to practise next</h2>
 
-<p>The other way to make adding a node move little is <a href="/system-design/consistent-hashing.html">consistent hashing</a>, next. Sharding by conversation is central to <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>.</p>
+<p>Read <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> for the ring in detail, and <a href="/system-design/unique-ids.html">Unique IDs</a> for generating keys across shards. <a href="/system-design/design-a-chat-app.html">Design a Chat App</a> applies sharding by conversation.</p>

@@ -1,42 +1,40 @@
 <!--
 {
   "title": "Design Ride Sharing",
-  "description": "Design a ride-hailing backend: high-rate location updates, geospatial cells and neighbours, matching without double assignment, and the trip state machine.",
-  "minutes": 27,
+  "description": "How to design a ride-hailing backend: location updates, finding nearby drivers, matching without double assignment, and what interviewers ask.",
+  "minutes": 24,
   "kind": "design",
   "tags": ["case study", "geospatial", "matching", "state machine", "realtime"]
 }
 -->
-<p>You tap "Request" on a street corner. Seconds later the app shows a driver two minutes away, and a little car moves toward you. Behind it, a million drivers report their position every few seconds, and the system must find the right one near you and make sure no other rider gets the same car.</p>
+<p>A ride-sharing service lets a rider request a car from their current location and matches the request with a nearby available driver. The rider and the driver then both follow the trip on a map until it ends.</p>
 
-<p>It has three hard parts that request-and-response designs lack: writes far above reads, searching by location, and riders racing for the same driver. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The question is popular because it has three hard parts. Drivers send location updates far more often than riders send requests, so writes greatly outnumber reads. The service has to search for drivers by location instead of by key. Finally, several riders may compete for the same driver at the same moment, and the system must never give one driver to two riders. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a ride-sharing service.</x-interviewer>
-<x-you>I'll focus on the core: request, match a nearby driver, follow the trip on a map. Are pricing, payments and shared rides in scope?</x-you>
-<x-interviewer>No. Another team quotes the price.</x-interviewer>
-<x-you>How many drivers online at peak, and rides a day?</x-you>
-<x-interviewer>About a million drivers at peak, 10 million rides a day.</x-interviewer>
-<x-you>Then my priorities: a driver is never assigned to two riders, a match takes a few seconds, and map positions are at most a few seconds old. Losing a location update is fine; losing a trip record is not, because we bill from it.</x-you>
-<x-coach>Locations are disposable; trips are not. That one sentence shapes the storage for the whole design.</x-coach>
+<x-you>I will focus on the core flow: a rider requests a trip, the system matches a nearby driver, and both follow the trip on a map. Are pricing, payments and shared rides in scope?</x-you>
+<x-interviewer>No, another team provides the price quote.</x-interviewer>
+<x-you>How many drivers are online at peak, and how many rides are there per day?</x-you>
+<x-interviewer>Assume about one million drivers online at peak and 10 million rides a day.</x-interviewer>
+<x-you>Then these are my priorities. A driver must never be assigned to two riders, a match should take a few seconds, and positions on the map may be at most a few seconds old. I can lose a location update, because the next one replaces it, but I cannot lose a trip record, because billing depends on it.</x-you>
+<x-coach>Saying which data may be lost decides the storage choices for the rest of the design.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> drivers report location; riders request rides; a nearby driver accepts or declines an offer; both see progress live; trips move through clear states and can be cancelled.</li>
-<li><strong>Non-functional:</strong> no driver on two trips (strong consistency for assignment); match within about 5 seconds; locations at most about 5 seconds stale; durable trip records; matching survives a location node dying.</li>
-<li><strong>Out of scope:</strong> payments, pricing, shared rides, ratings, onboarding.</li>
+<li><strong>Functional requirements:</strong> Drivers report their location. Riders request a ride. A nearby driver receives an offer and accepts or declines it. Both sides see progress live, and a trip can be cancelled until it starts.</li>
+<li><strong>Non-functional requirements:</strong> A driver is never on two trips at once, so assignment needs strong consistency. A match completes within about 5 seconds, locations are at most about 5 seconds old, and trip records are durable.</li>
+<li><strong>Out of scope:</strong> Payments, pricing, shared rides, ratings and driver onboarding.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Location updates:</strong> 250,000 writes a second at peak (below); at about 100 bytes each, 25 MB/s.</li>
-<li><strong>Ride requests:</strong> 10 million ÷ 86,400 s ≈ 116 a second; about 350 at a 3x rush-hour peak. Writes outnumber matches about 700 to 1.</li>
-<li><strong>Latest positions:</strong> 1 million × 100 bytes = 100 MB. The live map fits in one machine's memory.</li>
-<li><strong>Trip history:</strong> a 20-minute trip with a point every 4 seconds has 1,200 ÷ 4 = 300 points, 30 KB. 10 million × 30 KB = 300 GB a day, about 110 TB a year.</li>
-<li><strong>Riders watching a car:</strong> 5 minutes waiting plus 20 riding gives 10 million × 25 ÷ 1,440 ≈ 174,000 watchers, each updated every 4 seconds: about 43,000 pushes a second.</li>
+<li><strong>Location updates:</strong> One million drivers each sending every 4 seconds produce 250,000 writes a second. At about 100 bytes each, that is 25 MB/s of incoming data.</li>
+<li><strong>Ride requests:</strong> 10 million rides a day divided by 86,400 seconds is about 116 requests a second, or about 350 a second at three times the average. Location writes outnumber requests about 700 to 1.</li>
+<li><strong>Latest positions:</strong> One million drivers at about 100 bytes each is 100 MB, which fits in the memory of one machine.</li>
 </ul>
 
 <x-estimate title="Location write rate">
@@ -49,17 +47,17 @@
   "accept": ["100 thousand/s", "1 million/s"],
   "choices": ["2,500/s", "25 thousand/s", "250 thousand/s", "2.5 million/s"],
   "steps": ["10<sup>6</sup> drivers ÷ 4 s = 250,000 updates a second"],
-  "note": "Far more row updates than one relational database should take, but each only replaces the last. That points at an in-memory store of latest positions."
+  "note": "Each update only replaces the previous position, which points to an in-memory store of latest positions."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="3" title="Define the API">
 <x-task>
-<p>Write the driver's location update, the rider's request, and how an offer reaches a driver and is accepted. How do the apps stay connected?</p>
+<p>Write down how a driver's location update travels, how a rider requests a trip, and how an offer reaches a driver and is accepted. Decide how the apps stay connected to the server.</p>
 </x-task>
 <x-answer>
-<p>Drivers keep a persistent connection: locations up, offers down. Riders create a trip with an idempotency key. Accepting names the offer ID, so a late accept is refused and a repeat is harmless.</p>
+<p>Drivers keep a persistent connection that carries locations up to the server and offers down to the driver. Riders create a trip with an idempotency key, so a retried request does not create a second trip. Accepting an offer names the offer id, so a late accept is refused and a repeated accept is harmless.</p>
 </x-answer>
 </x-tryit>
 
@@ -67,32 +65,34 @@
 
 <x-code single title="Driver and rider API">
 <pre lang="text">
-Driver connection (WebSocket), app -> server:
+Driver connection (WebSocket), app to server:
   location { lat, lng, heading, speed, sent_at }      every 4 s, no reply
   status   { "available" | "offline" }
 
-Driver connection, server -> app:
+Driver connection, server to app:
   offer { offer_id, trip_id, pickup, expires_in_s: 15 }
-Driver connection, app -> server:
+Driver connection, app to server:
   accept { offer_id }
     -> accepted { trip }  |  refused: offer expired or already answered
 
 POST /v1/trips   Idempotency-Key: 7f3a...
   body { pickup, dropoff, quote_id }
   202 { trip_id, state: "MATCHING" }
-POST /v1/trips/{id}/cancel     200 | 409 trip already completed
-Rider connection, server -> app: trip state changes, driver position
+POST /v1/trips/{id}/cancel     200 | 409 trip already in progress or completed
+Rider connection, server to app: trip state changes, driver position
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>how location updates travel</strong>. An HTTP request every 4 seconds from a million phones is 250,000 requests a second, each with headers and often a new connection. A persistent connection carries small messages cheaply, and the server needs it anyway to push offers. Locations get no reply and no retry: the next one, 4 seconds later, is fresher than a retry. The <a href="/system-design/realtime-communication.html">realtime communication</a> lesson covers the connection servers behind this.</p>
+<p>The decision worth arguing about is how location updates travel. An HTTP request every 4 seconds from a million phones is 250,000 requests a second, and each one carries headers and may need a new connection. A persistent connection carries small messages cheaply, and the server needs one anyway to push offers. Location updates are never retried, because the next one arrives 4 seconds later and is fresher. See <a href="/system-design/realtime-communication.html">realtime communication</a> for the connection servers.</p>
+
+<p>Creating a trip returns 202 because the match has not happened yet, and the rider learns the outcome over their connection.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Which data is disposable and which must be durable? Sketch where driver positions, driver status and trips live.</p>
+<p>Decide which data may be lost and which must be durable. Sketch where driver positions, driver status and trips are stored.</p>
 </x-task>
 <x-answer>
-<p>Latest positions are disposable: in memory, indexed by map cell, expiring if a driver goes quiet. Driver status decides assignments, so it needs conditional writes. Trips are the durable record in a database.</p>
+<p>Latest positions are disposable, so they live in memory, indexed by map cell, and expire when a driver goes quiet. Driver status decides who gets which driver, so it needs conditional writes. Trips are the durable record and live in a database.</p>
 </x-answer>
 </x-tryit>
 
@@ -100,7 +100,7 @@ Rider connection, server -> app: trip state changes, driver position
 
 <x-code single title="Records">
 <pre lang="sql">
--- in memory, sharded by region; rebuilt from updates within seconds
+-- in memory, sharded by region; rebuilt from incoming updates within seconds
 driver_pos:  driver_id -> { lat, lng, cell, updated_at }   expires after 30 s
 cell_index:  cell -> set of available driver_ids
 
@@ -115,14 +115,14 @@ trip_points: (trip_id, sent_at) PK, lat, lng
 </pre>
 </x-code>
 
-<p>Three stores for three kinds of data. Positions: an <strong>in-memory store</strong> (such as Redis); nothing lost there that the next update will not restore. Driver status and trips: a <strong>relational database</strong> or any store with per-row conditional writes, because correct assignment depends on "update only if the state is still X". Trip points: a high-volume append-only log read by trip ID, suiting a <strong>wide-column store</strong> (such as Cassandra).</p>
+<p>The service uses three stores because the three kinds of data have different needs. The latest positions go in an in-memory store such as Redis, because anything lost there is restored by the next update. Driver status and trips go in a relational database, or in any store that supports conditional writes on a single row, because correct assignment depends on being able to say "update this row only if its state is still available". Trip points are a large append-only log that is read by trip id, which suits a wide-column store such as Cassandra.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Draw the location and ride request paths. Where does matching read, and where does it write?</p>
+<p>Draw the path of a location update and the path of a ride request. Decide where matching reads data and where it writes.</p>
 </x-task>
 <x-answer>
-<p>Driver updates flow through a driver gateway into an in-memory geo index. A request goes to a trip service; a matching service reads candidates from the geo index and claims one with a conditional write on the driver's row. The offer goes out through the gateway.</p>
+<p>Driver updates flow through a driver gateway into an in-memory geo index. A ride request goes to a trip service, and a matching service reads candidate drivers from the geo index and claims one with a conditional write on that driver's row. The offer goes out to the driver through the gateway.</p>
 </x-answer>
 </x-tryit>
 
@@ -184,57 +184,47 @@ trip_points: (trip_id, sent_at) PK, lat, lng
   },
   "steps": [
     {
-      "caption": "Driver D7 sends a position, one of 250,000 this second.",
-      "arch": { "active": ["driver", "gw", ["driver", "gw"]], "dim": ["rider", "trip", "match", "trips", "dstate"] },
+      "caption": "Driver D7 sends a position, and the gateway overwrites it in the geo index.",
+      "arch": { "active": ["driver", "gw", "geo", ["driver", "gw"], ["gw", "geo"]], "dim": ["rider", "trip", "match", "trips", "dstate"] },
       "vars": { "D7 cell": "dr5ru7" }
     },
     {
-      "caption": "The gateway overwrites D7's position. D7 is still in cell <code>dr5ru7</code>, so the cell sets do not change; most updates are this cheap.",
-      "arch": { "active": ["geo", ["gw", "geo"]], "dim": ["rider", "trip", "match", "trips", "dstate"], "notes": { "geo": "overwrite D7" } },
-      "vars": { "D7 cell": "dr5ru7" }
-    },
-    {
-      "caption": "A rider requests a ride. The trip service first writes it as <code>MATCHING</code>, so a crash cannot lose it.",
+      "caption": "A rider requests a ride. The trip service first writes the trip as <code>MATCHING</code>, so a crash cannot lose the request.",
       "arch": { "active": ["rider", "trip", "trips", ["rider", "trip"], ["trip", "trips"]], "dim": ["driver", "gw"], "notes": { "trips": "MATCHING" } },
       "vars": { "trip": "T1" }
     },
     {
-      "caption": "Matching reads available drivers in the pickup cell and its 8 neighbours: 14. It ranks the closest few by driving time, not straight-line distance.",
+      "caption": "Matching reads the available drivers in the pickup cell and its 8 neighbours, which gives 14 drivers, and ranks the closest few by driving time.",
       "arch": { "active": ["match", "geo", ["trip", "match"], ["match", "geo"]], "dim": ["driver", "gw", "rider"], "notes": { "geo": "9 cells, 14" } },
       "vars": { "trip": "T1", "best": "D7, 2 min" }
     },
     {
-      "caption": "It claims D7 with a conditional write: set <code>offered</code> only if still <code>available</code>. It succeeds.",
+      "caption": "Matching claims D7 with a conditional write that sets <code>offered</code> only if D7 is still <code>available</code>. The write succeeds.",
       "arch": { "active": ["dstate", ["match", "dstate"]], "dim": ["driver", "gw", "rider"], "notes": { "dstate": "D7 offered" } },
       "vars": { "trip": "T1", "D7": "offered" }
     },
     {
-      "caption": "At the same moment, a matcher for a rider across the street tries the same claim. The condition fails, so it moves to its next candidate.",
+      "caption": "A matcher for another rider tries to claim D7 at the same moment. The condition fails, so it moves to its next candidate.",
       "arch": { "active": ["dstate", ["match", "dstate"]], "fail": [["match", "dstate"]], "dim": ["driver", "gw", "rider"], "notes": { "dstate": "claim refused" } },
       "vars": { "trip": "T1", "D7": "offered" }
     },
     {
-      "caption": "The offer goes to D7 through its gateway. D7 has 15 seconds to answer.",
+      "caption": "The offer goes to D7 through D7's gateway, and D7 has 15 seconds to answer.",
       "arch": { "active": ["gw", "driver", ["match", "gw"], ["gw", "driver"]], "dim": ["rider"], "notes": { "driver": "offer, 15 s" } },
       "vars": { "trip": "T1", "D7": "offered" }
     },
     {
-      "caption": "D7 accepts. Matching moves D7 from <code>offered</code> to <code>on_trip</code>, only if offer <code>o-981</code> is still live. First of two writes.",
+      "caption": "D7 accepts. In the first of two writes, matching moves D7 to <code>on_trip</code> only if offer <code>o-981</code> is still live.",
       "arch": { "active": ["driver", "gw", "match", "dstate", ["driver", "gw"], ["gw", "match"], ["match", "dstate"]], "mark": ["dstate"], "dim": ["geo", "rider"], "notes": { "dstate": "D7 on_trip" } },
       "vars": { "trip": "T1", "D7": "on_trip" }
     },
     {
-      "caption": "Second write: the trip service moves T1 from <code>MATCHING</code> to <code>DRIVER_ASSIGNED</code>, only if still matching. Had the rider cancelled, this would fail and D7 be released.",
+      "caption": "The second write moves T1 to <code>DRIVER_ASSIGNED</code>, only if it is still <code>MATCHING</code>. If the rider had cancelled, it would fail and D7 would be released.",
       "arch": { "active": ["trip", "trips", ["match", "trip"], ["trip", "trips"]], "mark": ["trips", "dstate"], "dim": ["geo", "driver", "gw"], "notes": { "trips": "ASSIGNED" } },
       "vars": { "trip": "T1", "D7": "on_trip" }
     },
     {
-      "caption": "During the trip, the gateway also streams D7's positions to the trip service, which pushes them to the rider.",
-      "arch": { "active": ["gw", "trip", ["gw", "trip"], ["trip", "rider"]], "mark": ["rider"], "dim": ["geo", "match"] },
-      "vars": { "trip": "T1", "D7": "on_trip" }
-    },
-    {
-      "caption": "Another time, the phone is in a pocket and the offer expires. A conditional write returns the driver to <code>available</code> only if the offer is still that one; matching tries the next candidate.",
+      "caption": "If D7 never answers, the offer expires, D7 returns to <code>available</code>, and matching tries the next candidate.",
       "arch": { "fail": ["driver"], "active": ["match", "dstate", ["match", "dstate"]], "dim": ["rider", "trip"], "notes": { "dstate": "offer expired" } },
       "vars": { "trip": "T1", "D7": "available" }
     }
@@ -245,17 +235,23 @@ trip_points: (trip_id, sent_at) PK, lat, lng
 
 <h2>Deep dives</h2>
 
-<h3>Location updates at 250,000 a second</h3>
+<h3>Handling 250,000 location updates a second</h3>
 
-<p>Each update replaces the last, so live positions need no durability, history or replicas, only a fast overwrite. If a geo index node dies, its drivers reappear within 4 seconds on the replacement. Say that out loud; it is why this part can be simple.</p>
+<p>Each location update replaces the previous one, so live positions need no history, no replicas and no durable writes, only a fast overwrite. If a geo index node dies, its drivers reappear on the replacement node within 4 seconds, when their next updates arrive.</p>
 
-<p>Shard the geo index by region, so a ride request touches one shard. Most updates do not change cell: at 50 km/h a car covers 50 ÷ 3.6 × 4 ≈ 56 metres between updates, and a cell is about 600 metres across, so it changes cell at most once every 10 or so updates.</p>
+<p>The geo index is sharded by region, so a ride request reads one shard. At 50 km/h a car moves about 56 metres between updates and a precision-6 cell is about 600 metres on its short side, so a driver changes cell only about once in 10 updates; the rest just overwrite coordinates.</p>
 
-<p>Only trip points need durability. For drivers on trips, the gateway appends each point to a stream feeding the trip-points store and the rider's screen: a fraction of the 250,000 a second.</p>
+<p>Positions of drivers who are on a trip are the only ones kept. The gateway appends them to a stream that feeds the trip-points store and the rider's screen.</p>
 
 <h3>Finding nearby drivers</h3>
 
-<p>Computing the distance to a million drivers is slow. Divide the map into cells, keep a set of available drivers per cell, and look only at cells near the pickup.</p>
+<p>Computing the distance to a million drivers for every request is too slow. Instead the map is divided into cells, the index keeps a set of available drivers per cell, and a request looks only at the cells around the pickup. There are three common ways to divide the map.</p>
+
+<p>A geohash divides the map into rectangular cells and names each cell with a short string. It interleaves the bits of the latitude and the longitude and encodes them in base 32, so each extra character makes the cell 32 times smaller, and a cell of precision 6 is about 1.2 km wide and 0.6 km high. Nearby cells usually share a prefix, and moving a driver is one removal from a set and one insertion into another. The cost is that cells have a fixed size, so a downtown cell may hold hundreds of drivers, and two neighbouring cells can have unrelated names.</p>
+
+<p>A quadtree splits a square into four smaller squares whenever it contains too many points, so the cells shrink where drivers are dense. That suits static data such as restaurants. With 250,000 moves a second, the tree would split and merge constantly.</p>
+
+<p>A hexagon grid, such as the one provided by H3, has cells where every neighbour is the same distance away, so a ring of cells around a point is even. It needs a library, and it helps mainly when uniform distances matter.</p>
 
 <x-tradeoffs caption="Ways to index driver positions">
 <script type="application/json">
@@ -263,63 +259,37 @@ trip_points: (trip_id, sent_at) PK, lat, lng
   "options": [
     {
       "name": "Geohash cells",
-      "good": "A cell is a short string; nearby points share a prefix. Precision 6 is about 1.2 km × 0.6 km. Easy to shard and update.",
-      "bad": "Fixed size: a downtown cell may hold hundreds of drivers, a rural one none. Neighbours can have unrelated strings.",
-      "pick": "Constantly moving points with a known search radius. My pick.",
+      "good": "Nearby points share a prefix, and moving a driver is a cheap set update.",
+      "bad": "Cells have a fixed size, so dense areas have crowded cells.",
+      "pick": "Points that move constantly and are searched within a known radius.",
       "default": true
     },
     {
       "name": "Quadtree",
-      "good": "Splits a square into four whenever it holds too many points, so cells adapt to density.",
-      "bad": "250,000 moves a second means constant splitting and merging; hard to shard and keep consistent.",
-      "pick": "Points that rarely move, like restaurants or shops."
+      "good": "Cells adapt to the density of the points.",
+      "bad": "Constant movement causes constant splitting and merging.",
+      "pick": "Points that rarely move, such as restaurants or shops."
     },
     {
       "name": "Hexagon grid",
-      "good": "Every neighbour is the same distance away, so rings of cells are even.",
-      "bad": "Needs a library; harder to explain from scratch.",
-      "pick": "Uniform distances matter, as in pricing by area."
+      "good": "Every neighbour is at the same distance, so rings of cells are even.",
+      "bad": "It needs a library, and the cell ids are not human readable.",
+      "pick": "Uniform distances matter, for example when pricing by area."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>A geohash interleaves the bits of latitude and longitude in base 32, so each extra character makes the cell 32 times smaller. (Cells narrow east-west away from the equator; the numbers above ignore that.)</p>
+<p>The part of this design that interviewers probe most is the neighbour-cell problem. A rider standing near the edge of a cell may have the nearest driver 50 metres away on the other side of the border, in a cell with a completely different string. For that reason the search always covers the pickup cell and its 8 neighbours, an area of about 9 × 1.2 × 0.6 ≈ 6.5 km². If that area contains too few drivers, the search widens by one more ring of cells or moves to a coarser precision.</p>
 
-<p>The trap is the <strong>neighbour-cell problem</strong>. A rider near a cell's edge may have the nearest driver 50 metres away, across the border, in a cell with a completely different string. Always search the cell plus its 8 neighbours: 9 × 1.2 × 0.6 ≈ 6.5 km². Too few drivers? Step out a ring or to a coarser precision. Straight-line distance is only a filter: a driver 300 metres away across a river may be 10 minutes out, so rank the top few by driving time from a routing service.</p>
+<p>Straight-line distance is only a filter for choosing candidates. A driver 300 metres away on the other side of a river may be 10 minutes away by road, so the matcher takes the closest few candidates and ranks them by estimated driving time from a routing service.</p>
 
 <h3>Matching without double assignment</h3>
 
-<p>Two riders across the street both see D7 as closest. If both matchers read "available" and both write "assigned", D7 gets two trips. This read-then-write race is the part interviewers care about most.</p>
+<p>Suppose two riders both see driver D7 as the closest. If both matchers read D7 as available and both write that D7 is assigned, D7 ends up with two trips. This read-then-write race is the part of the design interviewers care about most, and there are three ways to prevent it.</p>
 
-<x-tradeoffs caption="Ways to stop two riders getting one driver">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Conditional write on the driver row",
-      "good": "One atomic \"set offered if available\". One writer wins; the loser tries the next driver. No extra component.",
-      "bad": "Needs linearisable single-key writes. A store that accepts concurrent writes on several replicas and resolves them by last-write-wins would let both claims succeed.",
-      "pick": "Almost always. My default.",
-      "default": true
-    },
-    {
-      "name": "One matcher per region",
-      "good": "Matches run one at a time, so no race. Can match riders jointly.",
-      "bad": "A bottleneck and single point of failure; region borders need care.",
-      "pick": "Dense regions where batching requests every second or two gives better matches."
-    },
-    {
-      "name": "Distributed lock per driver",
-      "good": "Familiar pattern.",
-      "bad": "A lock can expire while its holder is paused, so you still need a check at write time, which alone would have done the job.",
-      "pick": "Rarely. Prefer the conditional write."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>The first is a conditional write on the driver's row, shown below. The matcher sends one atomic statement that sets the state to <code>offered</code> only if the state is currently <code>available</code>. The database applies the two competing statements one after the other, so exactly one of them updates a row and the other updates none. This needs no extra component, but it requires a store in which writes to one row are linearisable. A store that accepts writes for the same key on several replicas and resolves conflicts by last-write-wins would let both claims succeed, and a quorum read followed by a quorum write does not help, because two clients can both read "available" before either writes.</p>
 
 <x-code single title="Claiming a driver">
 <pre lang="sql">
@@ -330,44 +300,40 @@ WHERE  driver_id = 'D7' AND state = 'available';
 </pre>
 </x-code>
 
-<p>Quorum reads and writes alone do not make "read, check, write" atomic: two clients can each read "available" from a quorum before either writes.</p>
+<p>The second option is to give each region a single matcher that processes requests one at a time. With only one writer there is no race, and the matcher can also look at several waiting riders together and choose the best combination. The cost is that the matcher is a bottleneck and a single point of failure. It is worth it in very dense areas, where batching requests produces better matches.</p>
 
-<p>The offer is a lease with a 15-second expiry. Accepting is two conditional writes in a fixed order, not one transaction: the driver row (<code>offered</code> to <code>on_trip</code>, only if the offer is live), then the trip (<code>MATCHING</code> to <code>DRIVER_ASSIGNED</code>, only if still matching). If the trip write fails because the rider cancelled, release the driver. After a crash between the two, the app retries the accept with the same <code>offer_id</code>, and a sweeper releases any driver whose <code>trip_id</code> points at a trip that is not theirs.</p>
+<p>The third option is a distributed lock for each driver. A lock can expire while its holder is paused, and then a second matcher takes it while the first still believes it holds it. The write itself must therefore still check the driver's state, and once that check exists the lock adds nothing.</p>
+
+<p>After the claim, the offer works as a lease that lasts 15 seconds. Accepting it takes two conditional writes in a fixed order and not one transaction, because the driver row and the trip row may live in different stores. The first write moves the driver to <code>on_trip</code> if the offer is still live, and the second moves the trip to <code>DRIVER_ASSIGNED</code> if it is still <code>MATCHING</code>. If the second write fails because the rider cancelled, the driver is released. If the service crashes between the two writes, the driver app retries the accept with the same <code>offer_id</code>, and a sweeper releases any driver whose <code>trip_id</code> points to a trip that is not theirs.</p>
 
 <h3>The trip state machine</h3>
 
-<p>Many actors can change a trip at once: the rider cancels as the driver accepts, a timeout fires as the driver taps "arrived". Allow only these moves:</p>
+<p>Many actors can change a trip at the same time. The rider may cancel while the driver accepts, or a timeout may fire while the driver taps "arrived". To keep the result predictable, the trip service only allows the moves in the table below, and every move is a conditional update on <code>(trip_id, state, version)</code>. If a cancel and an accept arrive together, exactly one of them finds the state it expects, and the other gets a conflict and the app shows the real state of the trip.</p>
 
 <table>
 <thead><tr><th>From</th><th>To</th><th>Triggered by</th></tr></thead>
 <tbody>
-<tr><td>MATCHING</td><td>DRIVER_ASSIGNED</td><td>driver accepts a live offer</td></tr>
-<tr><td>MATCHING</td><td>NO_DRIVERS</td><td>no accept within 60 seconds</td></tr>
-<tr><td>DRIVER_ASSIGNED</td><td>DRIVER_ARRIVED</td><td>driver taps "arrived" near the pickup</td></tr>
-<tr><td>DRIVER_ARRIVED</td><td>IN_PROGRESS</td><td>driver starts the trip</td></tr>
-<tr><td>IN_PROGRESS</td><td>COMPLETED</td><td>driver ends the trip</td></tr>
-<tr><td>any state before IN_PROGRESS</td><td>CANCELLED</td><td>rider or driver cancels</td></tr>
+<tr><td>MATCHING</td><td>DRIVER_ASSIGNED</td><td>A driver accepts a live offer.</td></tr>
+<tr><td>MATCHING</td><td>NO_DRIVERS</td><td>No driver accepts in 60 seconds.</td></tr>
+<tr><td>DRIVER_ASSIGNED</td><td>DRIVER_ARRIVED</td><td>The driver taps "arrived" near the pickup point.</td></tr>
+<tr><td>DRIVER_ARRIVED</td><td>IN_PROGRESS</td><td>The driver starts the trip.</td></tr>
+<tr><td>IN_PROGRESS</td><td>COMPLETED</td><td>The driver ends the trip.</td></tr>
+<tr><td>Any state before IN_PROGRESS</td><td>CANCELLED</td><td>The rider or the driver cancels.</td></tr>
 </tbody>
 </table>
 
-<p>Each move is a conditional update on <code>(trip_id, state, version)</code>. If cancel and accept land together, exactly one finds the expected state; the other gets a conflict and the app shows the true state. Changes are published as events from the database's change log, so none is lost, and drive both apps and billing.</p>
-
-<x-callout type="mistake" title="Reading availability from the geo index and trusting it">
-<p>The geo index is a fast, slightly stale copy: use it to find candidates, never to assign. Claim in the driver-state store with a condition, or sooner or later two riders get the same car.</p>
-</x-callout>
-
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (2.5 million updates a second) the geo index needs smaller regional shards; a dense city may split by cell prefix. Update throughput, not memory, is the limit. Matching grows to about 3,500 requests a second at peak; partition driver state by region so claims stay local.</p>
+<p>At ten times the load there would be 2.5 million location updates a second, and the geo index would need smaller regional shards. A dense city can be split by cell prefix. Matching would reach about 3,500 requests a second, so driver state should be partitioned by region.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A geo index shard</td><td>No candidates in that region for a few seconds.</td><td>Route updates to a standby; it refills in about 4 seconds.</td></tr>
-<tr><td>A driver gateway server</td><td>Its drivers lose their connection.</td><td>Apps reconnect elsewhere; offers in flight expire and go to the next driver.</td></tr>
-<tr><td>The matching service</td><td>New requests wait in <code>MATCHING</code>.</td><td>Run several stateless matchers; the conditional write makes that safe.</td></tr>
-<tr><td>The driver-state primary</td><td>No new claims.</td><td>Fail over to a replica with every committed write (synchronous or consensus); matching pauses briefly rather than risk double assignment.</td></tr>
-<tr><td>A driver's phone</td><td>Updates stop.</td><td>The position expires after 30 seconds and the driver drops out.</td></tr>
+<tr><td>A geo index shard</td><td>Requests in that region find no candidates for a few seconds.</td><td>Route the updates to a standby node, which fills up again in about 4 seconds.</td></tr>
+<tr><td>A driver gateway server</td><td>The drivers connected to it lose their connection.</td><td>The apps reconnect to another gateway, and offers that were in flight expire and go to the next driver.</td></tr>
+<tr><td>The matching service</td><td>New requests wait in the <code>MATCHING</code> state.</td><td>Run several stateless matchers, which is safe because the conditional write prevents double assignment.</td></tr>
+<tr><td>The driver-state primary</td><td>No new claims can be made.</td><td>Fail over to a replica that has every committed write. Matching pauses briefly, which is better than a double assignment.</td></tr>
+<tr><td>A driver's phone</td><td>Its location updates stop.</td><td>The position expires after 30 seconds and the driver drops out of the index.</td></tr>
 </tbody>
 </table>
 
@@ -376,34 +342,31 @@ WHERE  driver_id = 'D7' AND state = 'available';
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Positions in a database table queried by distance; handles the race once it is pointed out.</td></tr>
-<tr><td>Mid</td><td>Estimates the update rate, keeps positions in memory, uses geohash cells and their neighbours.</td></tr>
-<tr><td>Senior</td><td>Separates disposable positions from durable assignments; claims with a conditional write and names the store guarantee; models a trip state machine; ranks by driving time.</td></tr>
+<tr><td>Junior</td><td>Stores positions in a database table, queries by distance, and handles the race only when prompted.</td></tr>
+<tr><td>Mid-level</td><td>Estimates the update rate, keeps positions in memory, and uses geohash cells together with their neighbours.</td></tr>
+<tr><td>Senior</td><td>Separates disposable positions from durable assignments, claims drivers with a conditional write and names the store guarantee, models the trip as a state machine, and ranks by driving time.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Defending the matching design" tone="strong">
-<x-interviewer>Two matchers pick the same driver. What happens?</x-interviewer>
-<x-you>Both try the same conditional update: set offered only if still available. The store applies them one at a time on that row, so one gets "1 row updated", the other 0, and it moves on. That needs a single authority for the row, a leader or a consensus group. A store that merges writes from several replicas later would let both succeed, so driver state does not go there.</x-you>
-<x-coach>The answer names the mechanism and the store property it depends on. "Use a lock" would invite a question about lock expiry.</x-coach>
+<x-interviewer>Two matchers pick the same driver at the same moment. What happens?</x-interviewer>
+<x-you>Both try the same conditional update, which sets the driver to offered only if the driver is still available. The store applies the two updates one after the other on that row, so one gets "1 row updated" and the other gets zero and moves on to its next candidate. This only works if one leader or consensus group owns the row, so I would not keep driver state in a store that merges concurrent writes.</x-you>
+<x-coach>The answer names the mechanism and the store property it depends on. Answering "use a lock" would invite a question about lock expiry.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>How would you do surge pricing?</h3>
-<p>Count open requests and available drivers per cell every minute and publish a multiplier per area. The pricing team owns the formula; we supply fresh counts.</p>
+<h3>How would you support surge pricing?</h3>
+<p>Count open requests and available drivers in each cell every minute, and publish a price multiplier for each area from the ratio of the two. Smoothing the multiplier across neighbouring cells avoids a price that jumps at a cell border.</p>
 
-<h3>How do you estimate arrival time?</h3>
-<p>A routing service over the road graph with live traffic: a shortest-path search like <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> with heavy precomputation. Call it only for candidates that pass the straight-line filter.</p>
+<h3>How do you estimate the arrival time?</h3>
+<p>A routing service computes it over the road graph using live traffic data. It runs a shortest-path search such as <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a>. It is expensive, so matching calls it only for the few candidates that pass the straight-line filter.</p>
 
-<h3>Could you match better by waiting?</h3>
-<p>Yes. In dense areas, batch requests for a second or two and assign them together to minimise total pickup time.</p>
+<h3>What if a driver's GPS jumps by a kilometre?</h3>
+<p>The gateway rejects updates that imply an impossible speed, such as a kilometre in 4 seconds, and keeps the last good position instead. Positions are also snapped to the road network before matching or billing, which removes smaller errors.</p>
 
-<h3>How do riders see the car move smoothly?</h3>
-<p>The server pushes a position every 4 seconds and the app animates between points along the road.</p>
-
-<h3>What if a driver's GPS jumps a kilometre?</h3>
-<p>Reject updates that imply an impossible speed, and snap positions to roads before matching or billing.</p>
+<h3>Do you offer a ride to one driver at a time or to several?</h3>
+<p>Offering to one driver at a time, nearest first, is simplest and avoids drivers racing for the same trip, but a decline or a timeout costs up to 15 seconds. Offering to the best three at once is faster, though it needs the first accept to win through the same conditional write on the trip, and the other drivers must be told the offer is gone. Most designs start with one at a time and shorten the offer time in busy areas.</p>
 
 <x-checklist title="Self-review: ride sharing">
 <script type="application/json">
@@ -412,7 +375,7 @@ WHERE  driver_id = 'D7' AND state = 'available';
     { "title": "Before drawing", "items": ["I asked about drivers online and rides per day", "I required no driver on two trips and a match-time target", "I separated disposable locations from durable trips"] },
     { "title": "Numbers and interfaces", "items": ["I computed the location write rate", "I showed live positions fit in memory", "I used a persistent connection for locations and offers"] },
     { "title": "Design and depth", "items": ["I searched the pickup cell and its neighbours", "I ranked candidates by driving time", "I claimed drivers with a conditional write and named the store guarantee", "I modelled the trip as a state machine"] },
-    { "title": "Failure", "items": ["I said what breaks first at 10x and sharded by region", "I covered a geo shard, a gateway and the driver-state store dying"] }
+    { "title": "Failure", "items": ["I said what breaks first at 10x and sharded by region", "I covered a geo shard, gateway and driver-state failure"] }
   ]
 }
 </script>
