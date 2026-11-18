@@ -19,7 +19,7 @@ export const DESIGN_SECTIONS = [
   'Follow-up questions',
 ];
 export const DESIGN_MODULES = ['classic-designs', 'harder-designs', 'product-designs', 'realtime-location-designs', 'infrastructure-designs'];
-const WORDS = { concept: [600, 1250], design: [1300, 2500] };
+const WORDS = { concept: [600, 2400], design: [1300, 3000] };
 
 export function legacySlugs() {
   return listFiles(join(CONTENT, 'legacy'), '.html').map((f) => f.replace(/\.html$/, ''));
@@ -114,9 +114,8 @@ export function checkLessonFile(file, cur, resolveLink) {
 function checkConceptLesson(body, W) {
   const u = body.used;
   if (!u['x-arch'] && !u['x-tracer'] && !u['x-figure']) W('Quality bar: show how it works with an <x-arch> diagram, an <x-tracer> or an <x-figure>.');
-  if (!u['x-tradeoffs']) W('Quality bar: compare the options with an <x-tradeoffs> table.');
-  if (!u['x-callout'] || !/callout--mistake/.test(body.html)) W('Quality bar: add at least one <x-callout type="mistake">.');
-  if (!body.outline.h2s.some((h) => /^in the interview\b/i.test(h.text))) W('Quality bar: add an <h2>In the interview</h2> section (when to bring it up, phrases that show judgement, follow-up questions).');
+  if (!body.outline.h2s.some((h) => /^in the interview\b/i.test(h.text))) W('Quality bar: add an <h2>In the interview</h2> section (how to choose between the options, the questions interviewers ask with real answers, one strong exchange).');
+  if (body.outline.h2s.some((h) => /numbers worth remembering/i.test(h.text))) W('Quality bar: remove the "Numbers worth remembering" section. Use a number only where it changes a decision (authoring guide, section 10.9).');
 }
 
 // A design case study must use the fixed section headings, in order, and the

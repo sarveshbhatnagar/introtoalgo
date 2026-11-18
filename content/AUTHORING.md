@@ -37,14 +37,21 @@ Contents:
 
 ## 2. Voice rules
 
-These apply to every word a learner reads: lesson text, captions, quiz options, hints, stories, walkthroughs.
+These apply to every word a learner reads: lesson text, descriptions, headings, captions, quiz options, hints, stories, walkthroughs.
 
-- Write like a friendly senior engineer explaining to one person at a whiteboard. Second person ("you"). Short sentences. Plain words.
-- Start with the problem or a concrete everyday picture, then the idea, then the code. Never start with a definition or history.
-- One idea per paragraph. If a sentence does not help the learner do or understand something, cut it.
-- Use small concrete examples with real numbers the reader can trace by hand. Show the trace.
-- Say why, not just what. Name the common mistake and how to avoid it.
-- Be crisp. Say each thing once, in the fewest plain words that keep it clear. No warm-up sentences, no restating what a figure, table or code block already shows, no second example that teaches what the first already did, no "as we saw" recaps. Prefer a short list or table to a long paragraph when items are parallel. If a paragraph runs past four sentences, look for the one to cut.
+- **Write the way an engineer explains something to a colleague.** Second person ("you"), plain words, complete sentences. Test every sentence: would you say it out loud, exactly like that, to a colleague? If not, rewrite it.
+- **State the point first.** A lesson opens by saying what the thing is and what problem it solves ("A cache is a fast store of copies of data that is slow to fetch. It is used to take read load off a database and to cut latency."). An example or a "without it, this breaks" picture comes after the statement, and supports it. Never open a lesson or a section with a story, a scenario or a set of numbers.
+- **No clipped, rhythmic prose.** These are the patterns that make a page read like a poem or like generated text. Do not write them:
+  - fragments standing in for sentences: "A row per slot." "Four layers, briefly." "Almost always." "The price: two copies that can disagree."
+  - strings of very short sentences: "Check it first. On a hit, return the copy. On a miss, read the source and keep a copy." Write one normal sentence: "The application checks the cache first; if the value is there it returns it, and if not it reads the database and stores a copy for next time."
+  - a colon used for drama or to bolt a keyword list onto a sentence: "Spread requests over many servers: layer 4 vs 7, algorithms, health checks."
+  - slogans and aphorisms as paragraph endings: "Most of caching is deciding how much disagreement you can live with."
+- **Headings name their content.** "Layer 4 and layer 7 load balancers", "Write-through", "What happens when the cache goes down". Not "Spreading requests and surviving a crash", "Four ways to wire a cache", "The stampede" or anything a reader cannot understand before reading the section.
+- **The front-matter `description` is one plain sentence** that says what the page teaches, because it is shown as the page's lead line. "How load balancers distribute requests across servers, how layer 4 and layer 7 balancers differ, and what interviewers ask about them." No imperative slogans and no keyword list after a colon.
+- **Be concise by leaving things out, not by compressing sentences.** Cut content the reader does not need: side facts, arithmetic nobody asked for, a second example that teaches what the first did, recaps. Then write what remains in normal sentences. Do not shorten a sentence until it becomes a fragment. One idea per paragraph.
+- **Go deep where it matters.** Each important variant, option or technique gets its own explanation: how it works, when to use it, and what goes wrong. A table may summarise options that the text has already explained; a table is never the only explanation.
+- **Examples serve the concept.** Use a small concrete example when it makes the mechanism clearer, and keep it short. Do not thread one scenario's numbers through the whole lesson. Use numbers only where they change a decision.
+- Say why, not just what.
 - Be direct: "Use a hash map." not "One might consider utilising a hash map."
 - Banned: "delve", "dive in/into", "let's explore", "in today's world", "in the realm of", "it's important to note", "crucial", "leverage", "unlock", "harness", "game-changer", "navigate the landscape", "tapestry", "robust", "seamless", "In conclusion", "buckle up", rhetorical question openers, emoji, exclamation-mark hype, "not just X but Y" constructions, and summaries that only repeat the lesson.
 - No filler intros ("In this lesson we will...") and no filler outros. End when the content ends.
@@ -68,7 +75,7 @@ A lesson file is a front-matter block followed by an HTML fragment.
   "legacy": ["mergesort"]
 }
 -->
-<p>First paragraph: the concrete problem or picture.</p>
+<p>First paragraph: what this is and what problem it solves.</p>
 
 <h2>First section</h2>
 <p>…</p>
@@ -79,7 +86,7 @@ Front matter is strict JSON (double quotes, no trailing commas) inside an HTML c
 | Key | Required | Rules |
 |---|---|---|
 | `title` | yes | 3 to 70 characters. Usually the same as the curriculum title. Shown as the page `<h1>`. |
-| `description` | yes | Plain text, at most 155 characters (aim for 80 to 155). Used as the page lead and by search engines. Say what the reader will be able to do. |
+| `description` | yes | Plain text, at most 155 characters (aim for 80 to 155). Shown as the page lead and used by search engines. One plain sentence saying what the page teaches (see the voice rules). |
 | `minutes` | yes | Whole number, 3 to 40. Reading time plus time to use the tracer and quiz. Roughly words ÷ 150, plus 3. |
 | `tags` | no | List of short lowercase strings. |
 | `kind` | system design only | `"design"` for a case study (every lesson in modules 5 to 9 of the system design track, and only those). Leave it out for every other lesson. See [section 10](#10-system-design-track). |
@@ -403,20 +410,21 @@ The article discusses a company's migration…
 
 This is the bar for the algorithms and AI tracks. System design lessons follow [section 10](#10-system-design-track) instead.
 
-Structure, in this order (headings are yours to word):
+Structure, in this order (headings are yours to word, and must name their content):
 
-1. **Hook.** One or two paragraphs with a concrete problem or everyday picture. No heading before it. No definitions, no history.
-2. **The idea.** In plain words, before any code.
-3. **A hand-traced example** with small real numbers, usually as an `<x-tracer>`.
-4. **Code** in `<x-code>`, JavaScript and Python.
-5. **Complexity** in `<x-complexity>` with a one-line reason (algorithms track; optional in AI).
-6. **Common mistakes**: at least one `<x-callout type="mistake">`, ideally two or three.
-7. **Quiz**: one `<x-quiz>` near the end, 2 to 4 questions.
-8. **What to practise next**: a final short `<h2>` section with one or two sentences linking to the next lesson(s) and, if you know them, problems. Then stop. No summary.
+1. **What it is and what it is for.** Two or three plain sentences, with no heading before them: what the technique or idea is, what problem it solves, and when you would reach for it. No story, no scenario.
+2. **How it works**, in plain words, then **a hand-traced example** with small real numbers, usually as an `<x-tracer>`. The example illustrates the idea; it is not the frame of the lesson.
+3. **Code** in `<x-code>`, JavaScript and Python (algorithms track; optional in AI).
+4. **Complexity** in `<x-complexity>` with a one-line reason (algorithms track; optional in AI).
+5. **Variants, and when to use each.** Every important variant gets its own short subsection: how it differs, when it applies, what goes wrong. Say when the technique does not apply at all.
+6. **Pitfalls and nuances.** The specific things people get wrong or get asked about, each explained with its fix. Use `<x-callout type="mistake">` for a real, specific pitfall. Do not add a generic "Common mistakes" section to fill a slot.
+7. **Where it comes up.** Algorithms: an `<h2>In the interview</h2>` section saying how to recognise that a problem needs this technique, and the follow-up questions interviewers ask, each with a real answer. AI: how the idea changes what you do in practice.
+8. **Quiz**: one `<x-quiz>` near the end, 2 to 4 questions.
+9. **What to practise next**: a final short `<h2>` section with one or two sentences linking to the next lesson(s) and, if you know them, problems. Then stop. No summary.
 
 Requirements:
 
-- 600 to 1,250 words (the validator counts prose, captions and quiz text, not code).
+- 600 to 2,400 words (the validator counts prose, captions and quiz text, not code). The upper limit is a ceiling for the largest topics, not a target: most lessons need 1,000 to 1,600. Spend the words on steps 2, 5, 6 and 7.
 - At least one `<x-tracer>` or `<x-figure>` (AI lessons may use `<x-prompt>` instead). Algorithms lessons should usually have both a tracer and a figure.
 - AI lessons: include an `<x-tryit>`. Prefer `<x-prompt>` examples over describing prompts in prose. For ML lessons, code can be small NumPy-free Python/JS that shows the idea (a gradient step, a dot product).
 - Every number in a trace, table, quiz and figure is correct. Check them by hand or with a quick script.
@@ -694,8 +702,8 @@ The track teaches people preparing for system design interviews. Every lesson an
 
 | Kind | Which lessons | Front matter | Length (validator) |
 |---|---|---|---|
-| Concept | modules 1 to 4 and 7: building blocks and ideas | no `kind` | 600 to 1,250 words |
-| Case study | modules 5 and 6: every `design-a-…` slug | `"kind": "design"` | 1,300 to 2,500 words |
+| Concept | modules 1 to 4 and 7: building blocks and ideas | no `kind` | 600 to 2,400 words |
+| Case study | modules 5 and 6: every `design-a-…` slug | `"kind": "design"` | 1,300 to 3,000 words |
 
 - Code is optional in this track. If you show code, the normal `<x-code>` rules apply (JavaScript and Python tabs, or `single` for HTTP, SQL, JSON or pseudocode, which is the usual case here).
 - `minutes` is still words ÷ 150 + 3, plus time for exercises. Case studies are usually 25 to 35.
@@ -847,7 +855,7 @@ Two to six options compared on the same three questions. On phones it becomes on
 </x-tradeoffs>
 ```
 
-- `name`, `good` ("Good at"), `bad` ("Bad at") and `pick` ("Pick it when") are required; inline HTML is allowed. Keep each cell to one or two short sentences.
+- `name`, `good` ("Good at"), `bad` ("Bad at") and `pick` ("Pick it when") are required; inline HTML is allowed. Keep each cell to one or two full sentences. The table summarises options the text has already explained; it is not the explanation.
 - `"default": true` (at most one option) marks the usual choice with a "Usual default" badge. Leave it out when there is no usual answer.
 - `caption` is optional.
 
@@ -868,7 +876,7 @@ A short exchange between the interviewer and the candidate, to show how to ask c
 - Children: `<x-interviewer>`, `<x-you>` and optional `<x-coach>` notes (a "Coach's note" aside that explains what the answer shows), in any order. At least one interviewer and one you turn.
 - Turn text is normal HTML (`<code>`, `<strong>`, lists); plain text is wrapped in a paragraph for you. It counts as prose, so the voice rules apply.
 - Optional `tone="strong"` or `tone="weak"` colours the "You" turns green or red and labels the block "Strong answer" / "Weak answer". Use a weak and a strong script in a pair to contrast two answers to the same question.
-- Keep it to 3 to 7 turns. Write the way people talk in interviews: short, specific, with numbers.
+- Keep it to 3 to 7 turns. Write the way people talk in interviews: specific, in complete sentences, with the reason for each choice.
 
 ### 10.7 "Your turn" step: `<x-tryit variant="turn">`
 
@@ -910,25 +918,41 @@ A rubric the learner ticks after attempting the design. Ticks are saved in the b
 
 ### 10.9 Quality bar: concept lesson
 
-For building blocks and ideas (modules 1 to 4 and 7). In this order; headings are yours to word, except "In the interview".
+For building blocks and ideas (modules 1 to 4 and 7). A reader comes to a concept lesson to learn the thing well enough to choose between its options in an interview and to answer the questions an interviewer asks about it. Before writing, list (a) the variants or options an interviewer expects you to know and (b) the five to eight questions interviewers most often ask on this topic. Every item on both lists must be answered in the lesson, or linked to the lesson that owns it.
 
-1. **Hook: a concrete failure or scaling pain**, with numbers. "During a sale the product page does 4,000 reads a second and the database starts timing out." No heading before it.
-2. **The idea in plain words**, before any mechanism. What it is, why it helps, what it costs.
-3. **How it works**, with an `<x-arch>` diagram or an `<x-tracer>` with `"arch"` (usually both: a static diagram of where it sits, then a tracer of a request moving through it, including one step where something fails).
-4. **The options and their trade-offs** in an `<x-tradeoffs>` table, then the details that matter (for caching: eviction, stampedes).
-5. **Real numbers worth remembering**: a short list of rounded figures and an `<x-estimate>` that uses them.
-6. **`<h2>In the interview</h2>`**: when to bring this up (which requirement or number triggers it); the exact phrases that show judgement ("Reads outnumber writes 100 to 1, so…"); an `<x-interview>`; and the follow-up questions interviewers ask, each with a short answer.
-7. **Common mistakes**: at least one `<x-callout type="mistake">`.
-8. **Quiz**: one `<x-quiz>`, 2 to 4 questions, at least one that needs a calculation or a choice between options.
-9. **What to practise next**: one or two sentences linking to the next lessons and to a case study that uses this block. Then stop.
+In this order; headings are yours to word and must name their content, except "In the interview".
 
-The validator warns if a concept lesson has no diagram or tracer, no `<x-tradeoffs>`, no mistake callout, no quiz, or no "In the interview" section.
+1. **What it is and the problem it solves.** Two or three plain sentences, no heading before them. "A load balancer sits in front of a group of identical servers and decides which one handles each request. It is how a service uses more than one server and keeps working when one of them fails."
+2. **What happens without it.** One short paragraph. This is the only place for a motivating scenario, and it comes after the statement.
+3. **Where it sits**: one `<x-arch>` diagram of the component in a system.
+4. **The core variants or options, each in its own `<h2>` or `<h3>` subsection.** For each: how it works (with a small `<x-arch>`, `<x-tracer>` or `<x-figure>` when the flow differs from the others), when to pick it, and what goes wrong, especially at scale. For caching that is cache-aside, read-through, write-through and write-behind; for load balancing, layer 4 and layer 7, then each selection algorithm. An `<x-tradeoffs>` table may follow as a summary. It never replaces the explanations.
+5. **Nuances and failure modes.** The things interviewers probe, each as a short subsection: the problem, then the fix. For caching: invalidation races, stampedes, penetration, hot keys, what happens when the cache is down, scaling the cache across nodes.
+6. **`<h2>In the interview</h2>`**:
+   - how to choose between the options and justify the choice in a sentence or two;
+   - the likely interviewer questions as a list, each with a real answer of two to four sentences (not one line);
+   - one `<x-interview>` showing a strong exchange.
+7. **Quiz**: one `<x-quiz>`, 2 to 4 questions about choosing between options or about a nuance.
+8. **What to practise next**: one or two sentences linking to the next lessons and to a case study that uses this block. Then stop.
+
+Length: the validator allows 600 to 2,400 words. The ceiling is for the largest building blocks (caching, replication); most lessons need 1,200 to 1,800. Never pad to reach a number.
+
+Not in a concept lesson:
+
+- An opening story or scenario with numbers.
+- A "Numbers worth remembering" section, or an `<x-estimate>` added to fill a slot. Reference numbers live in `numbers-to-know`; estimation lives in `back-of-the-envelope-estimation` and the case studies. Use a number only where it changes a decision.
+- Arithmetic an interviewer would not ask for (deriving latency from the speed of light, for example).
+- A generic "Common mistakes" section. A real pitfall belongs in step 5, where it is explained. `<x-callout type="mistake">` is still available for one.
+- One scenario threaded through every section.
+
+Lessons about the interview itself or about a process (the `interview` and `interview-craft` modules, and lessons such as `data-modeling` and `requirements-and-scope`) have no "variants". For those, step 4 is the steps of the process. Say plainly which steps an interviewer expects every time and which are worth doing only when asked or when the problem needs them, and keep the optional ones short.
+
+The validator warns if a concept lesson has no diagram or tracer, no quiz, no "In the interview" section, or a "Numbers worth remembering" heading.
 
 ### 10.10 Quality bar: case study (`"kind": "design"`)
 
 Every case study follows the framework taught in `a-framework-for-any-design`, with **exactly these `<h2>` headings, in this order** (the validator enforces them; use `<h3>` inside a section):
 
-1. Intro (no heading): one or two paragraphs on what the product does and why interviewers ask this question. Link to `/system-design/a-framework-for-any-design.html`.
+1. Intro (no heading): one or two plain paragraphs on what the product does and what makes it hard to design, which is why interviewers ask it. No story. Link to `/system-design/a-framework-for-any-design.html`.
 2. `<h2>Clarify the problem</h2>`: an `<x-interview>` where you ask about features, scale and priorities; then a short list of **functional** requirements, **non-functional** requirements (latency, availability, durability, consistency, with numbers) and what is **out of scope**.
 3. `<h2>Estimate the scale</h2>`: requests per second (average and peak), storage, bandwidth, memory for a cache, as needed, with the arithmetic shown. At least one `<x-estimate>`.
 4. `<h2>Define the API</h2>` (the build marks this section "Optional" and adds a note that candidates may skip it in a real interview; keep it short): the endpoints or messages, usually as `<x-code single>` with `lang="text"`, including error cases, plus the one API decision worth arguing (status codes, pagination, push vs pull).
@@ -944,12 +968,14 @@ Also required, and checked: an `<x-tryit variant="turn">` at the end of "Estimat
 
 No quiz in case studies; the turn boxes and the checklist do that job.
 
+The voice rules in section 2 apply in full: complete sentences, headings and `<h3>` titles that name their content, no clipped fragments. A deep dive explains each option properly (how it works and what goes wrong) before the `<x-tradeoffs>` table summarises them, and a follow-up answer is two to four real sentences.
+
 ### 10.11 Facts, numbers and names in this track
 
 - All voice rules in section 2 apply.
 - **Teach the category, not the vendor.** Name well-known technologies only as examples of a category: "a wide-column store such as Cassandra", "an in-memory cache such as Redis". The lesson must make sense with the names removed. No product comparisons, version numbers or pricing.
-- **Numbers come from arithmetic on the page.** Use rounded, widely known orders of magnitude (memory read about 100 ns, a round trip in one data center about 0.5 ms, a disk seek about 10 ms) and derive everything else from the question's givens, showing the steps. Never state statistics about real companies ("X serves 2 billion users", "Y's cache hit rate is 99%"); invent a plausible scenario instead and say it is the scenario.
-- Use the same numbers throughout a lesson: if the estimate says 4,000 reads a second, the tracer, the failure table and the quiz say 4,000 too. Recheck every number after editing.
+- **Numbers come from arithmetic on the page, and only where they matter.** In a case study the estimates drive the design, so show them. In a concept lesson use a number only where it changes a decision. Use rounded, widely known orders of magnitude (memory read about 100 ns, a round trip in one data center about 0.5 ms, a disk seek about 10 ms) and derive everything else from the question's givens, showing the steps. Never state statistics about real companies ("X serves 2 billion users", "Y's cache hit rate is 99%"); invent a plausible scenario instead and say it is the scenario.
+- In a case study, use the same numbers throughout: if the estimate says 4,000 reads a second, the tracer, the failure table and the follow-ups say 4,000 too. Recheck every number after editing.
 - Round like an interviewer: 86,400 seconds a day is "about 100,000" for quick maths, but say so when you round.
 - Be honest about trade-offs: every choice in a case study names what it costs.
 
