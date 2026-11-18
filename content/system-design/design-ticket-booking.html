@@ -32,7 +32,7 @@
 <p><strong>Non-functional requirements:</strong></p>
 <ul>
 <li>A seat is never sold twice, so inventory needs strong consistency, and a paid order always ends with tickets or a refund.</li>
-<li>The system stays available when demand is about 80 times the supply of seats.</li>
+<li>The system stays available when the number of fans waiting is about 80 times the number of orders that can be sold.</li>
 <li>A hold lasts 10 minutes.</li>
 </ul>
 
@@ -40,9 +40,9 @@
 
 <h2>Estimate the scale</h2>
 
-<p>On a normal day, 5 million orders a month is 5,000,000 ÷ 2,600,000 seconds, about 2 orders a second. Browsing at 100 times that is 200 reads a second, which one database handles easily. The numbers that matter are the ones for an on-sale.</p>
+<p>On a normal day, 5 million orders a month is 5,000,000 ÷ 2,600,000 seconds, about 2 orders a second. Browsing adds about 200 reads a second, which one database handles easily, so the on-sale is what matters.</p>
 
-<p>A 50,000-seat show sells about 25,000 orders at 2 seats per order, so with two million people waiting there are about 80 fans for every order. If each of those fans refreshed the page every 5 seconds without any control, the load would be 2,000,000 ÷ 5 = 400,000 requests a second, all aimed at the same 50,000 seat rows. Storage is small, so the difficulty is contention on a few rows and not size. If waiting fans check their place every 10 seconds, two million fans send 2,000,000 ÷ 10 = 200,000 requests a second, which is far too much for a database, so the waiting room must answer without one.</p>
+<p>A 50,000-seat show sells about 25,000 orders at 2 seats per order, so with two million people waiting there are about 80 fans for every order. Storage is small, so the difficulty is contention on the same 50,000 seat rows and not size. If each waiting fan checks their place in line every 10 seconds, two million fans send 2,000,000 ÷ 10 = 200,000 requests a second. That is far too much for a database, so the waiting room must answer those checks without using one.</p>
 
 <x-estimate title="How fast to let fans in">
 <script type="application/json">
@@ -138,14 +138,12 @@ orders
 
 <p>Claiming two seats must succeed or fail as a unit, so the inventory belongs in a relational database with transactions, partitioned by <code>event_id</code> when one machine is not enough. A key-value store can do a conditional write on one row, but it cannot claim two seats atomically.</p>
 
-<p>The hold is stored in the seat row instead of being a database lock, because a database lock lasts for milliseconds while a fan takes minutes to pay.</p>
-
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
 <p>Sketch the boxes. Where do fans wait, what checks that they were admitted, where does the seat map come from, and where are holds and sales written?</p>
 </x-task>
 <x-answer>
-<p>A waiting room served from a CDN, a gateway that checks a signed pass, a booking service in front of a seat map cache and the inventory database, and a payment processor.</p>
+<p>Fans wait in a waiting room that a CDN serves. A gateway checks a signed pass, and the booking service sits in front of a seat map cache, the inventory database and the payment processor.</p>
 </x-answer>
 </x-tryit>
 
@@ -316,7 +314,7 @@ COMMIT;
 
 <p>This is safe because the second transaction to update a row waits for the first one's row lock. At the read-committed level in databases such as PostgreSQL, it then re-checks its <code>WHERE</code> clause, sees the seat is held, and changes nothing. At repeatable read or serializable it fails with a serialization error, which you treat like a 409. Databases differ here (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>), so name the isolation level you rely on. Two orders that claim overlapping seats in opposite order can deadlock, and sorting the seat ids before claiming avoids that.</p>
 
-<h3>Surviving the on-sale spike</h3>
+<h3>Handling the on-sale spike with a waiting room</h3>
 
 <p>Adding booking servers does not help, because all 50,000 seats live in one partition and more servers only send it more conflicting writes. Returning a 429 error to the excess traffic protects the database, but it rewards whoever retries fastest, which usually means bots. A <strong>virtual waiting room</strong> limits how many fans reach booking and gives the rest a fair place in line.</p>
 
@@ -330,11 +328,11 @@ COMMIT;
 <li>When no seat is available or held, the event is announced as sold out and waiting fans are told at once.</li>
 </ul>
 
-<p>The seat map cache is rebuilt about once a second. The map is only advice and the conditional update is the source of truth, so a stale map costs a fan one 409 and never causes a double sale.</p>
+<p>The seat map cache is rebuilt about once a second. The conditional update is the source of truth, so a stale map costs a fan one 409 and never causes a double sale.</p>
 
 <h3>Holds, payment and releasing seats</h3>
 
-<p>Most bugs in a booking system live between "held" and "sold". Storing the hold in the seat row, with an expiry time, means an abandoned hold becomes claimable without any cleanup, because the claim query already treats it as free. The cleanup job only refreshes the seat map and the order status.</p>
+<p>The hardest cases in a booking system happen between the "held" and "sold" states. Storing the hold in the seat row, with an expiry time, means an abandoned hold becomes claimable without any cleanup, because the claim query already treats it as free. The cleanup job only refreshes the seat map and the order status.</p>
 
 <p>The second problem is that a hold must outlive the payment. If a hold lapses at 10:31:04 and the charge succeeds at 10:31:05, another fan may already have claimed the seat. So when the fan presses pay, the order moves to <code>paying</code> and <code>held_until</code> is extended beyond the longest time the processor can take. The sale then runs as <code>UPDATE seats SET status = 'sold' WHERE order_id = 9001 AND status = 'held'</code> and must change both rows. If it does not, the order is refunded automatically.</p>
 
@@ -379,13 +377,14 @@ COMMIT;
 <p>Keep a count of remaining tickets per section and decrement it with a conditional update such as <code>SET remaining = remaining - 2 WHERE remaining &gt;= 2</code>. All claims then wait for the lock on that one row, so split the count across about 10 rows and have each request try a random row that still has tickets.</p>
 
 <h3>How do you stop bots from buying everything?</h3>
-<p>Allow one place in line per verified account and add a challenge when joining the line.</p>
+<p>Allow one place in line per verified account, and add a challenge such as a CAPTCHA when a fan joins the line. Also limit the seats one account can buy per event. These measures reduce bots without removing them.</p>
+
+<h3>Why not use a distributed lock on each seat?</h3>
+<p>A lock service adds a second system that can disagree with the database about who owns a seat, and a lock that expires while its holder is paused can let two buyers in. The database already provides an atomic update on the seat row, so the claim can be made there with no extra component.</p>
 
 <h3>A group wants six seats together. What changes?</h3>
 <p>Offer a "best available" option in which the booking service searches for six adjacent free seats and claims them with the same all-or-nothing update. If one was taken in the meantime, fewer than six rows change, so it rolls back and searches again.</p>
 
-<h3>Could you push seat changes to the map instead of polling?</h3>
-<p>Yes, with server-sent events. That reduces 409 responses, but it adds 10,000 open connections and a fan-out for every seat change. A map that is one second stale does little harm, so I would add push only if fans see too many 409s.</p>
 
 <x-checklist title="Self-review: ticket booking">
 <script type="application/json">

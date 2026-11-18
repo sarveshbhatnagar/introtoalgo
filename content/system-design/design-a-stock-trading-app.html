@@ -40,7 +40,7 @@
 <li><strong>Market data coming in:</strong> the exchange feed delivers up to 200,000 quote updates a second across 10,000 symbols. Nobody can read a price that changes dozens of times a second, so each symbol is sent at most once a second, which is 10,000 updates.</li>
 <li><strong>Updates going out:</strong> a screen shows about 10 symbols, so 2 million screens need 20 million symbol updates a second. Sent as one frame per client per second, that is 2 million frames, or 25,000 per push server, and about 800 MB/s in total at 40 bytes per symbol.</li>
 <li><strong>Orders:</strong> a trading day is 6.5 hours, or 23,400 seconds, so 5 million orders a day is about 214 orders a second on average.</li>
-<li><strong>Storage:</strong> an order with its history takes about 2 KB, so 5 million orders add 10 GB a day, or about 2.5 TB a year over 252 trading days.</li>
+<li><strong>Storage:</strong> an order with its history takes about 2 KB, so 5 million orders add about 10 GB a day.</li>
 </ul>
 
 <x-estimate title="Orders in the first minute">
@@ -95,7 +95,7 @@ GET /quotes?symbols=ACME,ZETA     a snapshot for the first paint
 </pre>
 </x-code>
 
-<p>Prices are integer cents, because floating-point dollars produce rounding errors in money calculations.</p>
+<p>Prices are integer cents, because floating-point dollars cause rounding errors.</p>
 
 <p>The API decision worth discussing is what <code>POST</code> and <code>DELETE</code> promise. Because the exchange decides later, <code>POST</code> returns 201 as soon as the order is durably recorded, <code>DELETE</code> returns 202 because the cancel has only been requested, and the result arrives as an event on the stream. An app that showed "Cancelled" on the 202 would eventually show a cancelled order that had already filled.</p>
 
@@ -312,20 +312,20 @@ positions
       "name": "Call the exchange, then write",
       "good": "The database never holds an order that was not sent.",
       "bad": "A crash after the call leaves a live order with no row and no reserved cash.",
-      "pick": "Never, when real money is involved."
+      "pick": "Do not use it when real money is involved."
     },
     {
       "name": "Write first, then call",
       "good": "Every order the exchange can know about has a row first, and a crash leaves a <code>pending</code> row that can be resolved by asking the exchange.",
       "bad": "Some <code>pending</code> rows were never sent, so a reconciler has to settle them.",
-      "pick": "The same service writes the row and sends the order, which is the usual answer.",
+      "pick": "Use it when the same service writes the row and sends the order, which is the usual case.",
       "default": true
     },
     {
       "name": "Write with an outbox",
       "good": "The order and the outbox row commit together, and a separate sender handles the exchange.",
       "bad": "It adds a component, and the sender must still check the status before any resend.",
-      "pick": "Sending is a separate service that must keep working while the order service is down."
+      "pick": "Use it when sending is a separate service that must keep working while the order service is down."
     }
   ]
 }
@@ -334,7 +334,7 @@ positions
 
 <p>The rule is that the row holding the client order id must be durable, which means committed on a synchronous replica as well, before the exchange can hear about the order. Three practices follow.</p>
 
-<p>The first is never to resend a <code>pending</code> order blindly, since it may have reached the exchange. Exchange protocols such as FIX carry the client order id on every message, so the reconciler asks the exchange whether it knows that id and sends the order only if the answer is no. It asks only after the crashed server's session is closed, so the original message cannot still be in transit. Sending at least once with a check before each resend has the effect of sending once.</p>
+<p>The first is never to resend a <code>pending</code> order blindly, since it may have reached the exchange. Exchange protocols such as FIX carry the client order id on every message, so the reconciler asks the exchange whether it knows that id and sends the order only if the answer is no. It asks only after the crashed server's session is closed, so the original message cannot still be in transit.</p>
 
 <p>The second is to apply exchange reports idempotently and only forward: fills are keyed by execution id, and a late "accepted" after "filled" changes nothing. The third is to reconcile continuously for stuck <code>pending</code> or <code>cancel_pending</code> orders, and daily against the clearing firm's trade report.</p>
 
@@ -344,7 +344,6 @@ positions
 
 <p>The spike comes at the same time every trading day, and autoscaling that reacts to load is too slow, so the system scales the push servers, order servers and database on a schedule so that they are ready by 9:15. Clients add jitter to their reconnect delay, and snapshots are served from memory.</p>
 
-<p>Orders placed overnight are queued and sent at a controlled rate, because exchange connections have message limits. With 10 connections at 1,000 messages a second and 100,000 queued orders, live orders use about 4,200 of the 10,000 messages a second, so the queue drains at 5,800 a second in about 17 seconds. If the system is overloaded it drops charts and news first and never drops orders.</p>
 
 <h2>Bottlenecks and failures</h2>
 
@@ -389,6 +388,9 @@ positions
 <h3>An order fills 4 of 10 shares and then the user cancels. What happens?</h3>
 <p>The exchange cancels the remaining 6 shares, so the order ends as <code>cancelled</code> with <code>filled_qty</code> of 4, and the cash reserved for the 6 unfilled shares is released. A late fill and the cancel confirmation can arrive in either order, so the service must never let a report lower <code>filled_qty</code>.</p>
 
+<h3>What do you do when the market is closed or the exchange is down?</h3>
+<p>The order service knows the trading calendar, so outside market hours it either rejects market orders with a "market closed" error or queues orders the user chose to place for the next open. If the exchange connection drops during the day, the service stops sending, marks every order in flight as unknown, and reconnects. After reconnecting it queries the exchange for each open order before it resumes sending, which is the same reconciliation used after a crash.</p>
+
 <x-checklist title="Self-review: stock trading app">
 <script type="application/json">
 {
@@ -396,7 +398,7 @@ positions
     { "title": "Before drawing", "items": ["I asked whether we are the broker or the exchange", "I separated the price path from the order path", "I asked about the busiest moment"] },
     { "title": "Numbers and interfaces", "items": ["I estimated connections, push servers and stream bandwidth", "I turned daily orders into a peak rate", "I made the client generate and reuse the order id", "I returned 202 for cancel and sent the result as an event", "I kept money in integer cents"] },
     { "title": "Design and depth", "items": ["I conflated ticks and fanned out per push server", "I wrote the order durably before calling the exchange", "I resolved unknown orders by asking, not resending", "I made fills idempotent with the execution id"] },
-    { "title": "Failure", "items": ["I scaled for the open on a schedule and drained the overnight queue at a set rate", "I said what the user sees when the feed is stale or a push server dies"] }
+    { "title": "Failure", "items": ["I scaled for the open on a schedule", "I said what the user sees when the feed is stale or a push server dies"] }
   ]
 }
 </script>

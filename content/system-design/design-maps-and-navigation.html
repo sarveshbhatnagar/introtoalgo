@@ -85,7 +85,7 @@ POST /nav/{route_id}/pings
 
 <p>The decision worth arguing is how the phone hears about a faster route. A WebSocket per driver would mean 5 million open connections for a message that is rarely sent. Putting the news in the reply to the next ping costs nothing extra and arrives at most 5 seconds late, so it is the better fit here; <a href="/system-design/realtime-communication.html">realtime communication</a> covers when push is worth its cost.</p>
 
-<p>The tile URL contains the map version (<code>v812</code>), so a new map has new URLs, no CDN purge is needed, and a phone never mixes tiles from two builds. A new version starts with a cold CDN, so copy popular tiles into it first.</p>
+<p>The tile URL contains the map version (<code>v812</code>), so a new map has new URLs, no CDN purge is needed, and a phone never mixes tiles from two builds.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -140,7 +140,7 @@ ping       trip_token, t, lat, lng, speed, heading
 
 <h2>High-level design</h2>
 
-<p>The three flows share only the phone and the gateway, so a failure in one of them does not stop the others.</p>
+<p>The tile flow is independent of the other two, and routing depends on traffic only through the live speeds, so a failure in one flow does not stop the others.</p>
 
 <x-arch caption="Tiles never touch the API servers. Routing servers hold the graph and live speeds in memory, and pings flow through a stream into the aggregator that produces the speeds.">
 <script type="application/json">
@@ -222,7 +222,7 @@ ping       trip_token, t, lat, lng, speed, heading
     {
       "caption": "While she drives, the phone sends 5 GPS points every 5 seconds. The gateway streams each batch, finds no better route, and replies.",
       "arch": { "active": ["pings", "active", ["phone", "gw"], ["gw", "pings"], ["gw", "active"], ["gw", "phone"]], "dim": ["cdn", "tiles", "route"] },
-      "vars": { "trip time": "10 min", "pings per second": "1,000,000" }
+      "vars": { "trip time": "10 min", "ping batches per second": "1,000,000" }
     },
     {
       "caption": "A crash blocks the road ahead, and phones on that 3 km stretch report 20 km/h instead of 90. The aggregator matches their points to segments and averages each speed.",
@@ -260,7 +260,7 @@ ping       trip_token, t, lat, lng, speed, heading
 
 <p>The map is too large to send as one file, so it is cut into square tiles. At zoom level 0 a single tile covers the whole world, and each further zoom level splits every tile into four. A tile is named <code>z/x/y</code>, so the phone can work out for itself which tiles cover its screen and ask for them by name.</p>
 
-<p>A <strong>pre-rendered image tile</strong> is a finished picture. The phone only has to show it, so it works on any device, and it is the right choice for a satellite photo layer. The drawbacks are that images down to street level take about 1.8 PB, labels cannot rotate because they are part of the picture, and a new map style means rendering every tile again.</p>
+<p>A <strong>pre-rendered image tile</strong> is a finished picture. The phone only has to show it, so it works on any device, and it is the right choice for a satellite photo layer. The drawbacks are that images for every zoom level down to street level take far more storage than vector data, labels cannot rotate because they are part of the picture, and a new map style means rendering every tile again.</p>
 
 <p>A <strong>vector tile</strong> contains the geometry and labels as data, and the phone draws it. Vector tiles are stored only down to zoom 14, which is about 3.6 TB, because the phone can draw closer zoom levels from the same data. The phone can also rotate the map or switch to night colours without new data. The costs are that the phone does the drawing work and that the tile builder must simplify shapes for each zoom level. Vector tiles are the usual choice for a modern app.</p>
 
@@ -268,9 +268,7 @@ ping       trip_token, t, lat, lng, speed, heading
 
 <p>A route is a shortest path in which the weight of each road segment is its travel time. <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> gives the correct answer, but it settles junctions in a growing circle around the start until it reaches the destination. On a long trip that circle can hold 20 million junctions. At about 1 µs per junction, for a heap operation and a memory miss, one query takes 20 seconds, while the goal is 200 ms.</p>
 
-<p>Searching from both ends, or using A*, shrinks the circle only slightly, so the work has to be done before anyone asks for a route.</p>
-
-<p>There are two well-known ways to do that. <strong>Contraction hierarchies</strong> rank every junction by importance and add shortcut edges that skip the unimportant junctions, so a query climbs up to the important ones, crosses the country and comes back down. Queries are extremely fast, but the shortcuts are computed from the travel times, so in the basic form every speed change means a rebuild. That suits a router whose weights rarely change.</p>
+<p>Searching from both ends or using A* shrinks the circle only slightly, so the work has to be done before anyone asks for a route. There are two well-known ways to do that. <strong>Contraction hierarchies</strong> rank every junction by importance and add shortcut edges that skip the unimportant junctions, so a query climbs up to the important ones, crosses the country and comes back down. Queries are extremely fast, but the shortcuts are computed from the travel times, so in the basic form every speed change means a rebuild. That suits a router whose weights rarely change.</p>
 
 <p><strong>Cells with border shortcuts</strong> split the graph into cells along natural borders such as rivers and motorways, so that each cell has only a few <strong>border junctions</strong>. The builder precomputes the fastest time between every pair of border junctions in a cell, and these become shortcut edges. A query runs Dijkstra on real roads inside the start and end cells and uses only shortcuts everywhere else. Using several levels of cells, a long query settles tens of thousands of junctions and the result is still exact for the current speeds. Queries are somewhat slower than with a full hierarchy, but when a speed changes, only the shortcuts of that segment's cell are recomputed.</p>
 
@@ -328,7 +326,7 @@ ping       trip_token, t, lat, lng, speed, heading
 
 <p>The stream is partitioned by map tile, so one aggregator instance owns all the pings of an area. A speed is published only when several phones agree, because one car stopped for fuel is not a traffic jam. A segment with few samples blends in its typical speed for that 15-minute slot of the week.</p>
 
-<p>The ETA is the sum of the travel times of the route's segments. On Mia's 11 km route, the 3 km crash segment takes 2 minutes at 90 km/h and 9 minutes at 20 km/h, which moves the total from 10 to 17 minutes. Live speeds are reliable only for the next few minutes, so a segment the driver will reach in 50 minutes should use its typical speed instead.</p>
+<p>The ETA is the sum of the travel times of the route's segments. On Mia's 11 km route, the 3 km crash segment takes 2 minutes at 90 km/h and 9 minutes at 20 km/h, which moves the total from 10 to 17 minutes.</p>
 
 <h3>Rerouting</h3>
 
@@ -379,8 +377,11 @@ ping       trip_token, t, lat, lng, speed, heading
 <h3>How do you protect users' privacy?</h3>
 <p>Pings carry a random token for each trip instead of a user id, and the start and end of every trip are trimmed so that home addresses stay hidden. Raw pings are deleted after a few hours.</p>
 
-<h3>How do you handle road closures and turn restrictions?</h3>
-<p>A closure sets the weight of the segment to infinity and goes through the same shortcut refresh as a traffic change. Turn restrictions are stored in the graph as allowed transitions between segments, so the search can never return an illegal turn.</p>
+<h3>How would you support offline maps?</h3>
+<p>The phone downloads the vector tiles, a compact road graph and the typical speed curves for a region. It can then draw the map and compute routes locally, without live traffic.</p>
+
+<h3>How do you predict traffic for a trip that starts later or lasts an hour?</h3>
+<p>Live speeds are reliable only for the next few minutes, so the router blends them with the typical speed, and the further ahead a segment is, the more weight the typical speed gets.</p>
 
 <x-checklist title="Self-review: maps and navigation">
 <script type="application/json">

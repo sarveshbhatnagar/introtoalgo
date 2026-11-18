@@ -35,8 +35,6 @@
 <li><strong>Location updates:</strong> One million drivers each sending every 4 seconds produce 250,000 writes a second. At about 100 bytes each, that is 25 MB/s of incoming data.</li>
 <li><strong>Ride requests:</strong> 10 million rides a day divided by 86,400 seconds is about 116 requests a second, or about 350 a second at three times the average. Location writes outnumber requests about 700 to 1.</li>
 <li><strong>Latest positions:</strong> One million drivers at about 100 bytes each is 100 MB, which fits in the memory of one machine.</li>
-<li><strong>Trip history:</strong> A 20-minute trip has 300 points, about 30 KB, so 10 million rides add 300 GB a day, or about 110 TB a year.</li>
-<li><strong>Riders watching a car:</strong> With about 25 minutes of watching per trip, 10 million × 25 ÷ 1,440 gives about 174,000 riders watching at any moment, which is about 43,000 pushes a second at one update every 4 seconds.</li>
 </ul>
 
 <x-estimate title="Location write rate">
@@ -85,9 +83,9 @@ Rider connection, server to app: trip state changes, driver position
 </pre>
 </x-code>
 
-<p>The decision worth arguing about is how location updates travel. An HTTP request every 4 seconds from a million phones is 250,000 requests a second, and each one carries headers and may need a new connection. A persistent connection carries small messages cheaply, and the server needs one anyway to push offers. Location updates get no reply and are never retried, because the next update arrives 4 seconds later and is fresher than any retry would be. See <a href="/system-design/realtime-communication.html">realtime communication</a> for the connection servers.</p>
+<p>The decision worth arguing about is how location updates travel. An HTTP request every 4 seconds from a million phones is 250,000 requests a second, and each one carries headers and may need a new connection. A persistent connection carries small messages cheaply, and the server needs one anyway to push offers. Location updates are never retried, because the next one arrives 4 seconds later and is fresher. See <a href="/system-design/realtime-communication.html">realtime communication</a> for the connection servers.</p>
 
-<p>Creating a trip returns 202 because the match has not happened yet; the rider learns the outcome over their connection.</p>
+<p>Creating a trip returns 202 because the match has not happened yet, and the rider learns the outcome over their connection.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -241,9 +239,9 @@ trip_points: (trip_id, sent_at) PK, lat, lng
 
 <p>Each location update replaces the previous one, so live positions need no history, no replicas and no durable writes, only a fast overwrite. If a geo index node dies, its drivers reappear on the replacement node within 4 seconds, when their next updates arrive.</p>
 
-<p>The geo index is sharded by region, so a ride request reads one shard. At 50 km/h a car moves about 56 metres between updates and a cell is about 600 metres across, so a driver changes cell only about once in 10 updates; the rest just overwrite coordinates.</p>
+<p>The geo index is sharded by region, so a ride request reads one shard. At 50 km/h a car moves about 56 metres between updates and a precision-6 cell is about 600 metres on its short side, so a driver changes cell only about once in 10 updates; the rest just overwrite coordinates.</p>
 
-<p>Only positions of drivers on a trip are kept: the gateway appends them to a stream that feeds the trip-points store and the rider's screen.</p>
+<p>Positions of drivers who are on a trip are the only ones kept. The gateway appends them to a stream that feeds the trip-points store and the rider's screen.</p>
 
 <h3>Finding nearby drivers</h3>
 
@@ -251,9 +249,9 @@ trip_points: (trip_id, sent_at) PK, lat, lng
 
 <p>A geohash divides the map into rectangular cells and names each cell with a short string. It interleaves the bits of the latitude and the longitude and encodes them in base 32, so each extra character makes the cell 32 times smaller, and a cell of precision 6 is about 1.2 km wide and 0.6 km high. Nearby cells usually share a prefix, and moving a driver is one removal from a set and one insertion into another. The cost is that cells have a fixed size, so a downtown cell may hold hundreds of drivers, and two neighbouring cells can have unrelated names.</p>
 
-<p>A quadtree splits a square into four smaller squares whenever it contains too many points, so the cells shrink where drivers are dense. That suits static data such as restaurants. For drivers who move 250,000 times a second, the tree would split and merge constantly and would be hard to shard.</p>
+<p>A quadtree splits a square into four smaller squares whenever it contains too many points, so the cells shrink where drivers are dense. That suits static data such as restaurants. With 250,000 moves a second, the tree would split and merge constantly.</p>
 
-<p>A hexagon grid, such as the one provided by H3, has cells where every neighbour is the same distance away, so a ring of cells around a point is even. This helps when uniform distances matter, for example when pricing by area, but it needs a library.</p>
+<p>A hexagon grid, such as the one provided by H3, has cells where every neighbour is the same distance away, so a ring of cells around a point is even. It needs a library, and it helps mainly when uniform distances matter.</p>
 
 <x-tradeoffs caption="Ways to index driver positions">
 <script type="application/json">
@@ -275,7 +273,7 @@ trip_points: (trip_id, sent_at) PK, lat, lng
     {
       "name": "Hexagon grid",
       "good": "Every neighbour is at the same distance, so rings of cells are even.",
-      "bad": "It needs a library and takes longer to explain.",
+      "bad": "It needs a library, and the cell ids are not human readable.",
       "pick": "Uniform distances matter, for example when pricing by area."
     }
   ]
@@ -359,16 +357,16 @@ WHERE  driver_id = 'D7' AND state = 'available';
 <h2>Follow-up questions</h2>
 
 <h3>How would you support surge pricing?</h3>
-<p>Count open requests and available drivers per cell every minute and publish a multiplier per area.</p>
+<p>Count open requests and available drivers in each cell every minute, and publish a price multiplier for each area from the ratio of the two. Smoothing the multiplier across neighbouring cells avoids a price that jumps at a cell border.</p>
 
 <h3>How do you estimate the arrival time?</h3>
 <p>A routing service computes it over the road graph using live traffic data. It runs a shortest-path search such as <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a>. It is expensive, so matching calls it only for the few candidates that pass the straight-line filter.</p>
 
-<h3>Could you match riders better by waiting a moment?</h3>
-<p>Yes. In a dense area the matcher can collect requests for a second or two and assign drivers to all of them together, minimising total pickup time. This adds up to two seconds of delay, which fits inside the 5-second target.</p>
-
 <h3>What if a driver's GPS jumps by a kilometre?</h3>
-<p>The gateway rejects updates that imply an impossible speed, such as a kilometre in 4 seconds, and positions are snapped to roads before matching or billing.</p>
+<p>The gateway rejects updates that imply an impossible speed, such as a kilometre in 4 seconds, and keeps the last good position instead. Positions are also snapped to the road network before matching or billing, which removes smaller errors.</p>
+
+<h3>Do you offer a ride to one driver at a time or to several?</h3>
+<p>Offering to one driver at a time, nearest first, is simplest and avoids drivers racing for the same trip, but a decline or a timeout costs up to 15 seconds. Offering to the best three at once is faster, though it needs the first accept to win through the same conditional write on the trip, and the other drivers must be told the offer is gone. Most designs start with one at a time and shorten the offer time in busy areas.</p>
 
 <x-checklist title="Self-review: ride sharing">
 <script type="application/json">

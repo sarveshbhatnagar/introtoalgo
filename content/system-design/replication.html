@@ -8,7 +8,7 @@
 -->
 <p>Replication means keeping copies of the same data on several machines, so that every change made on one machine is also applied to the others. It is used so that data survives the loss of a machine, so that another copy can take over when a machine fails, and so that reads can be spread over several machines. The cost is that the copies can briefly disagree, so most replication decisions are about how long they may disagree and who is allowed to see it.</p>
 
-<p>Without replication, a database on one machine is a single point of failure. If its disk fails, everything since the last backup is lost, and restoring a large backup can take hours of downtime. That machine also serves every read, so reads can overload it even when nothing has failed.</p>
+<p>Without replication, a database on one machine is a single point of failure. If its disk fails, everything since the last backup is lost, and that machine also serves every read, so reads can overload it even when nothing has failed.</p>
 
 <h2>Where replication sits</h2>
 
@@ -89,7 +89,7 @@
 
 <h3>Synchronous replication</h3>
 
-<p>With synchronous replication the leader waits until a follower confirms it has stored the change, and only then replies to the client. An acknowledged write therefore exists on at least two machines, so losing the leader cannot lose it. The cost is one extra round trip per write, and the leader cannot accept writes while that follower is down, so one slow follower stalls everything if all followers are synchronous.</p>
+<p>With synchronous replication the leader waits until a follower confirms it has stored the change, and only then replies to the client. An acknowledged write therefore exists on at least two machines, so losing the leader cannot lose it. The cost is one extra round trip per write, and if every follower is synchronous, one slow or dead follower stalls all writes.</p>
 
 <h3>Asynchronous replication</h3>
 
@@ -121,7 +121,7 @@
 
 <p>In multi-leader replication several nodes accept writes and forward their changes to the other leaders. The usual setup is one leader per region. A user writes to the nearest leader, so writes are fast, and a region can go offline while the others keep accepting writes.</p>
 
-<p>The price is write conflicts. Two users can change the same row in different regions at the same time, and each leader accepts its own write before it learns about the other, so the database needs a rule for the final value, as described below. Choose multi-leader only when writes must be local to several regions or must work offline.</p>
+<p>The cost is write conflicts. Two users can change the same row in different regions at the same time, and each leader accepts its own write before it learns about the other, so the database needs a rule for the final value, as described below. Choose multi-leader only when writes must be local to several regions or must work offline.</p>
 
 <h2>Leaderless replication</h2>
 
@@ -175,41 +175,17 @@
 </script>
 </x-tracer>
 
-<p>W = N with R = 1 makes reads fast but lets one dead replica block every write, and W = 1 with R = N does the opposite. A majority for both W and R tolerates a minority of replicas being down.</p>
+<p>W = N with R = 1 makes reads fast but lets one dead replica block every write, and W = 1 with R = N does the opposite. A majority for both tolerates a minority of replicas being down.</p>
+
+<h3>How stale replicas catch up</h3>
+
+<p>A replica that missed a write while it was down does not fix itself, so leaderless stores use two repair mechanisms. In <strong>read repair</strong>, a read that sees different versions from its R replicas writes the newest version back to the replicas that returned an old one. In <strong>anti-entropy</strong>, a background process compares replicas, often using hash trees so that it only transfers the ranges that differ, and copies missing data.</p>
 
 <h3>What a quorum does not guarantee</h3>
 
 <p>R + W &gt; N guarantees overlap, but it does not make the system behave like one up-to-date copy. Concurrent writes to the same key can both succeed, so the store still needs a conflict rule. A write that reached fewer than W replicas is reported as failed but can still be seen by later reads. With a <strong>sloppy quorum</strong>, which accepts writes on stand-in nodes when the owners are unreachable, a read may miss the write until the stand-in hands the data back.</p>
 
-<x-tradeoffs caption="Summary of the three arrangements">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Single-leader",
-      "good": "There are no write conflicts, and reads scale with followers.",
-      "bad": "Writes are limited to one machine, and failover can lose writes.",
-      "pick": "Almost every system, and the usual interview answer.",
-      "default": true
-    },
-    {
-      "name": "Multi-leader",
-      "good": "Each region writes locally and survives other regions failing.",
-      "bad": "Concurrent writes to the same data conflict and must be resolved.",
-      "pick": "Local writes in several regions, or offline-first apps."
-    },
-    {
-      "name": "Leaderless",
-      "good": "There is no failover, and slow or dead nodes are tolerated.",
-      "bad": "Every operation contacts several nodes, and concurrent writes conflict.",
-      "pick": "Highly available key-value stores that tolerate stale reads."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
-
-<h2>Problems that interviewers ask about</h2>
+<h2>Replication lag, failover and conflict resolution</h2>
 
 <h3>Replication lag and what users see</h3>
 
@@ -223,7 +199,7 @@
 
 <h3>Failover, promotion and split brain</h3>
 
-<p>When the leader fails, the system must detect the failure, choose a new leader and point clients at it. Detection is usually a timeout without heartbeats: a short timeout replaces leaders that were only slow, and a long one leaves the system without writes for longer. The new leader should be the follower with the most complete log. With asynchronous replication, writes that the old leader had acknowledged but not shipped to that follower are lost.</p>
+<p>When the leader fails, the system must detect the failure, choose a new leader and point clients at it. Detection is usually a timeout without heartbeats: a short timeout replaces leaders that were only slow, and a long one leaves the system without writes for longer. The new leader should be the follower with the most complete log. With asynchronous replication, writes that the old leader had acknowledged but not shipped to that follower are lost. Some teams therefore require a person to confirm a failover for databases where a lost write is serious.</p>
 
 <p><strong>Split brain</strong> happens when two nodes both believe they are the leader and both accept writes. The standard defence is to elect the leader through a consensus service that issues an increasing term number, and to make storage reject writes carrying an older term, which is called fencing. The old leader rejoins as a follower and discards log entries the new leader never received. See <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>.</p>
 
@@ -235,7 +211,7 @@
 <li><strong>Avoid conflicts.</strong> Route all writes for a given record to the same leader, for example by assigning each user a home region. This is the simplest approach and works whenever the data has a natural owner.</li>
 <li><strong>Last write wins.</strong> Each write gets a timestamp and the highest one is kept. It is simple, but it silently discards the other write, and clocks differ between machines, so the winner may not be the later write.</li>
 <li><strong>Keep both versions.</strong> The store detects concurrent writes, for example with version vectors, and returns both to the application, which merges them. A shopping cart can merge by taking the union of items.</li>
-<li><strong>Merge automatically.</strong> Data types called CRDTs, such as counters and sets, combine concurrent updates without conflicts. Collaborative editors use this idea.</li>
+<li><strong>Merge automatically.</strong> Data types called CRDTs, such as counters and sets, combine concurrent updates without conflicts.</li>
 </ul>
 
 <h3>Read replicas help reads, not writes</h3>
@@ -244,17 +220,18 @@
 
 <h2>In the interview</h2>
 
-<p>Bring up replication when the data must not be lost, the service must stay available, or reads exceed what one database serves. Name the arrangement, say whether it is synchronous, and say how a user who has just written reads their own data. The default is single-leader with one synchronous follower and the rest asynchronous.</p>
+<p>Bring up replication when data must not be lost, the service must stay available, or reads exceed what one database serves. Name the arrangement, say whether it is synchronous, and say how a user who has just written reads their own data. The default is single-leader with one synchronous follower and the rest asynchronous.</p>
 
 <p>Questions to expect:</p>
 
 <ul>
+<li><strong>"Should replication be synchronous or asynchronous?"</strong> It depends on whether an acknowledged write may be lost. Fully synchronous replication stalls writes when any follower is down, and fully asynchronous replication can lose acknowledged writes when the leader fails. Semi-synchronous, with one synchronous follower and the rest asynchronous, is the usual compromise.</li>
 <li><strong>"What happens to writes when the leader dies?"</strong> A follower is promoted after a few seconds of detection and an election. With asynchronous replication, writes that had not reached that follower are lost, so use a synchronous follower when that is not acceptable.</li>
 <li><strong>"A user saves a change and then sees the old data. Why?"</strong> The read went to a follower that had not applied the write yet. Fix it with read-your-writes by sending that user's reads to the leader shortly after they write.</li>
 <li><strong>"How do you avoid two leaders after a failover?"</strong> Elect the leader through a consensus service that issues term numbers, and have storage reject writes from an older term. The old leader rejoins as a follower and drops writes the new leader does not have.</li>
-<li><strong>"Why does R + W &gt; N give you the latest value?"</strong> Any read set and any write set share at least one replica, so a read always reaches a replica with the latest successful write. It does not stop concurrent writes from conflicting, and a sloppy quorum weakens the overlap.</li>
+<li><strong>"Why does R + W &gt; N give you the latest value?"</strong> Any read set and any write set share at least one replica, so a read always reaches a replica with the latest successful write.</li>
+<li><strong>"How does a leaderless store repair a replica that missed a write?"</strong> Read repair writes the newest version back to stale replicas whenever a read notices a difference. A background anti-entropy process compares replicas and copies missing data, so keys that are never read are repaired too.</li>
 <li><strong>"How do you handle conflicting writes in two regions?"</strong> First avoid them by giving each record one home region. Otherwise use a merge that fits the data, such as a union for sets, and avoid last write wins where updates must not be lost.</li>
-<li><strong>"Will adding read replicas fix a write bottleneck?"</strong> No, because every write is applied on every replica. Writes need sharding to spread over several leaders.</li>
 </ul>
 
 <x-interview title="Replicating a profile service" tone="strong">

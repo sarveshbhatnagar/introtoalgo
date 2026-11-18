@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design Post Search",
-  "description": "How to design keyword search over social media posts sorted by recency or likes, covering indexing, like counts, sharding by time, caching and follow-ups.",
+  "description": "How to design keyword search over social media posts sorted by recency or likes, and what interviewers ask about the index, like counts and sharding.",
   "minutes": 27,
   "kind": "design",
   "tags": ["case study", "search", "inverted index", "sharding", "caching", "write-heavy"]
@@ -20,7 +20,6 @@
 <x-you>How many posts, likes and searches are there per day?</x-you>
 <x-interviewer>500 million posts a day, 10 billion likes a day and 200 million searches a day. Search covers every post ever made.</x-interviewer>
 <x-you>Then the index receives far more writes than queries. I will aim for new posts to be searchable within 10 seconds, results in under 500 ms, and like order that may lag by a minute.</x-you>
-<x-coach>Comparing the write rate with the query rate early turns "add a search cluster" into a real design discussion.</x-coach>
 </x-interview>
 
 <p>The functional requirements are to search public posts by keywords that must all match, sort by newest or most liked, optionally limit the time window, and page through results.</p>
@@ -79,7 +78,7 @@ GET /v1/search?q=ferry+strike&sort=likes&since=2026-10-15&limit=20
 
 <p>The decision worth arguing about is pagination. For <code>sort=recent</code>, post ids are ordered by time (see <a href="/system-design/unique-ids.html">Unique IDs</a>), so the cursor can mean "ids smaller than the last one shown", and new posts never shift the pages already seen.</p>
 
-<p>That does not work for <code>sort=likes</code>, because a post can gain 500 likes between two page requests and move in the list. The server therefore ranks once and keeps the ordered ids for 10 minutes, and the cursor refers to that saved list. The <code>partial</code> field tells the client that some shards did not answer in time,, since a result missing a few posts beats an error.</p>
+<p>That does not work for <code>sort=likes</code>, because a post can gain 500 likes between two page requests and move in the list. The server therefore ranks once and keeps the ordered ids for 10 minutes, and the cursor refers to that saved list. The <code>partial</code> field tells the client that some shards did not answer in time, since a result missing a few posts beats an error.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -225,21 +224,25 @@ like_counts (key-value, partitioned by post_id)
 
 <p>Postings lists are sorted and compressed, which makes them cheap to read and expensive to edit. At peak there are about 17,000 new posts a second, or about 510,000 postings a second (17,000 × 30 tokens), so editing lists in place would mean locking and rewriting them constantly.</p>
 
-<p>The alternative is immutable segments. The indexer buffers new posts in memory and, once a second, writes them as a small new segment with its own postings lists. A search reads every segment of a shard and merges the results, and a background job merges small segments into larger ones. This is the same idea as the log-structured storage in a <a href="/system-design/design-a-key-value-store.html">key-value store</a>. The cost is that each query touches several segments. A deleted id goes on a list that search skips and is removed at the next merge.</p>
+<p>The alternative is immutable segments. The indexer buffers new posts in memory and, once a second, writes them as a small new segment with its own postings lists. A search reads every segment of a shard and merges the results, and a background job merges small segments into larger ones. This is the same idea as log-structured storage in a <a href="/system-design/design-a-key-value-store.html">key-value store</a>. A deleted id goes on a list that search skips and is removed at the next merge.</p>
 
 <p>Time-ordered ids also help, because a new post is appended to the end of each list it appears in, and a newest-first query can read the lists from the end and stop as soon as it has 20 ids that appear in all of them. The older entries are never read.</p>
+
+<h3>Answering a multi-word query</h3>
+
+<p>Every word of a query must match, so a shard looks up the postings list of each word and intersects them, meaning it keeps only the post ids that appear in all of the lists. The shard starts with the shortest list and checks its ids against the longer ones, so a query that contains a rare word does little work even if another word appears in millions of posts.</p>
 
 <h3>Sorting by likes without rewriting the index</h3>
 
 <p>The problem is that the likes sort needs a number that changes 116,000 times a second, and the index is expensive to update. There are four ways to handle it.</p>
 
-<p><strong>Update the document on every like.</strong> The index always holds the exact count, but that is 116,000 delete-and-reinsert operations a second, mostly for posts nobody searches for. It only suits counts that rarely change.</p>
+<p><strong>Update the document on every like.</strong> The index always holds the exact count, but that is 116,000 delete-and-reinsert operations a second, mostly for posts nobody searches for.</p>
 
-<p><strong>Keep counts outside the index only.</strong> Likes never touch the index, but a query such as "most liked posts about weather" may match 10 million posts, and each needs a count lookup before sorting. It only suits queries that match few documents.</p>
+<p><strong>Keep counts outside the index only.</strong> Likes never touch the index, but a query such as "most liked posts about weather" may match 10 million posts, and each needs a count lookup before sorting.</p>
 
-<p><strong>Refresh the counts in bulk.</strong> A batch job rewrites changed counts every 10 minutes. It still rewrites every liked post, and a viral post shows a count that is up to 10 minutes old.</p>
+<p><strong>Refresh the counts in bulk.</strong> A batch job rewrites changed counts every 10 minutes. A viral post shows a count that is up to 10 minutes old.</p>
 
-<p><strong>Store a tier in the index and exact counts outside it.</strong> The tier is the number of digits in the like count (0 to 9 likes, 10 to 99, 100 to 999 and so on), so it changes only when the count crosses a power of ten. The exact counts live in the key-value store and order the posts within a tier.</p>
+<p><strong>Store a tier in the index and exact counts outside it.</strong> The tier is the number of digits in the like count minus one (0 to 9 likes is tier 0, 10 to 99 is tier 1, 100 to 999 is tier 2 and so on), so it changes only when the count crosses a power of ten. The exact counts live in the key-value store and order the posts within a tier.</p>
 
 <x-tradeoffs caption="Keeping like counts sortable">
 <script type="application/json">
@@ -249,25 +252,25 @@ like_counts (key-value, partitioned by post_id)
       "name": "Update the document on every like",
       "good": "Sorting is built in and the count is exact.",
       "bad": "It causes 116,000 index rewrites a second.",
-      "pick": "Counts change rarely."
+      "pick": "Choose this when counts change rarely."
     },
     {
       "name": "Counts outside the index only",
       "good": "Likes never touch the index.",
       "bad": "A broad query needs millions of count lookups.",
-      "pick": "Queries match few documents."
+      "pick": "Choose this when queries match few documents."
     },
     {
       "name": "Periodic bulk refresh",
       "good": "Changed counts are written in one batch.",
       "bad": "Counts are up to 10 minutes old.",
-      "pick": "Fresh popularity matters little."
+      "pick": "Choose this when fresh popularity matters little."
     },
     {
       "name": "Tiers in the index, exact counts outside",
       "good": "The index changes only a few times per post.",
       "bad": "Two stores must stay in step.",
-      "pick": "Like rates and queries are both large, as here.",
+      "pick": "Choose this when both the like rate and the query rate are large, as here.",
       "default": true
     }
   ]
@@ -275,11 +278,11 @@ like_counts (key-value, partitioned by post_id)
 </script>
 </x-tradeoffs>
 
-<p>The choice is tiers. A post with 1 million likes changes tier 6 times, not a million times, and even if every new post crossed two boundaries that would be 2 × 5,800 = 11,600 updates a second, a tenth of the like rate.</p>
+<p>The choice is tiers. A post with 1 million likes changes tier 6 times, not a million times, so the index sees far fewer updates than the like stream.</p>
 
 <p>A likes query reads the highest tier first and works down. Suppose "ferry strike" matches 4 posts in tier 4 and 150 in tier 3. Every post in a lower tier has fewer likes than every post in tier 3, so these 154 posts contain the top 20. The service fetches their exact counts in one batch, sorts them and returns 20.</p>
 
-<p>A broad word over 30 days can put 50,000 matches into one tier. Each shard then sends only its newest few hundred from that tier, which bounds the work but makes the order approximate. The aggregator sums likes per post once a second before writing, as in <a href="/system-design/design-photo-sharing.html">Design Photo Sharing</a>, and stores the last applied stream offset with the count so that replaying events cannot add the same likes twice.</p>
+<p>A broad word over 30 days can put 50,000 matches into one tier. Each shard then sends only its newest few hundred from that tier, which bounds the work but makes the order approximate. The aggregator sums likes per post once a second before writing, as in <a href="/system-design/design-photo-sharing.html">Design Photo Sharing</a>, and stores the last applied stream offset with each count so that replayed events are not counted twice.</p>
 
 <h3>Sharding the index</h3>
 
@@ -297,11 +300,11 @@ like_counts (key-value, partitioned by post_id)
 
 <p>The problem is that almost every newest-first query is answered from recent posts, while the whole index is too large for memory. The recent 7 days of index (525 GB) are kept in memory with 3 replicas, and older data (about 27 TB a year) sits on SSDs with fewer replicas. If the older index is unavailable, the service returns recent results with <code>partial: true</code>.</p>
 
-<p>During a news event thousands of users search for the same words, so the service caches the ranked ids for 15 seconds, keyed by normalised query, sort order and window. For days that are over, it also caches per-shard results for an hour, because those indexes change only through deletes and tier moves. Deleted posts are removed when the text is fetched, so no cached list can show one.</p>
+<p>During a news event thousands of users search for the same words, so the service caches the ranked ids for 15 seconds, keyed by normalised query, sort order and window. For finished days it also caches per-shard results for an hour, because those indexes rarely change.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load (5 billion posts a day), today's index receives about 170,000 posts a second at peak and needs about 10 times as many shards. The like stream reaches 1.2 million events a second, and because it is partitioned by post id the aggregators scale out. Fan-out latency suffers first, and rolling old days into larger indexes and narrowing the default windows reduces it.</p>
+<p>At 10 times the load (5 billion posts a day), today's index receives about 170,000 posts a second at peak and needs about 10 times as many shards. The like aggregators scale out because the stream is partitioned by post id. Fan-out latency suffers first, and rolling old days into larger indexes and narrowing the default windows reduces it.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -342,13 +345,13 @@ like_counts (key-value, partitioned by post_id)
 <p>It disappears from results immediately, because the service filters out deleted ids when it fetches the text. The index entry is marked dead within a few seconds and removed at the next merge.</p>
 
 <h3>How would you search hashtags or a single user's posts?</h3>
-<p>A hashtag is stored as one more token in the index document. Searching one user's posts needs an <code>author_id</code> field in the document and a filter on it in the query.</p>
+<p>A hashtag is one more token in the index document. A single user's posts need an <code>author_id</code> field and a filter on it.</p>
 
 <h3>How do you change the analyser, for example to add stemming?</h3>
 <p>You build new indexes beside the old ones from the posts database, newest days first, and switch reads over one day at a time. Because each day has its own index, the change can be rolled back for a single day.</p>
 
 <h3>Why not use the database's full-text search?</h3>
-<p>The system adds about 75 GB of index a day and about 5,800 inserts a second, which one database's text index cannot handle or split by time. For a few million posts it would be the right first answer.</p>
+<p>The system adds about 75 GB of index a day and about 5,800 new posts a second, which is more than the text index of a single database can absorb, and such an index cannot easily be split by time. For a few million posts it would be the right first answer.</p>
 
 <x-checklist title="Self-review: post search">
 <script type="application/json">

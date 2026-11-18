@@ -318,6 +318,7 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 <ul>
 <li>Limit the number of active series for each team, and refuse new series beyond the limit while the existing ones keep working.</li>
 <li>Keep unbounded values such as user ids and request ids out of labels; they belong in logs and traces.</li>
+<li>Track the number of new series created per minute for each service and alert on a sudden jump, so that a bad deploy is noticed in minutes instead of when memory runs out.</li>
 </ul>
 
 <h3>The query path</h3>
@@ -330,8 +331,6 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 <li><strong>Fan out.</strong> Series are sharded across ingesters by id, so the query service asks every shard that holds a match for recent data, and object storage for older blocks, all in parallel.</li>
 <li><strong>Aggregate early.</strong> Each shard returns partial sums grouped by <code>status</code>, and the query service adds the partial results.</li>
 </ol>
-
-<p>During an incident many engineers open the same dashboards. Caching results by query, step and time range, with start and end aligned to the step, means that a refresh only computes the newest points.</p>
 
 <h3>Alerting that keeps working during an outage</h3>
 
@@ -379,14 +378,11 @@ blocks      every 2 hours: chunks + index for that window, written as immutable
 <h3>How do you compute p99 latency across 1,000 servers?</h3>
 <p>You cannot average each server's p99, because the average of percentiles is not the percentile of the combined traffic. Each server instead records latency as a histogram with counts per bucket, the query adds the bucket counts from all servers, and the 99th percentile is read from the combined histogram.</p>
 
-<h3>How do you support many teams fairly?</h3>
-<p>Give every team limits on sample rate, active series and query cost. When a team goes over a limit, ingest returns 429 for that team only and expensive queries are rejected, so other teams are not affected. The largest teams also get their own shard groups.</p>
+<h3>Why not store the samples in a regular SQL database?</h3>
+<p>A relational database can hold the rows, but 5 million inserts a second with indexes and row overhead would need a very large cluster, and it would not compress timestamps and values the way a time-series store does. Time-series stores also provide rollups, retention rules and range queries over label sets, which you would otherwise have to build yourself.</p>
 
-<h3>What about very short-lived jobs?</h3>
-<p>A 3-second batch job can start and finish between two collections, so its metrics are never seen. The job pushes its final values to the agent on its host before it exits, and the agent includes them in the next batch.</p>
-
-<h3>How do you handle counters that reset?</h3>
-<p>A counter such as total requests goes back to zero when a process restarts, so the raw value is not meaningful on its own. The query function that computes a rate treats a drop in the value as a reset and continues from the new value.</p>
+<h3>How do you avoid alert noise?</h3>
+<p>The hold duration keeps a short spike from paging anyone, because the condition must stay true for the whole period before the alert fires. The notifier also groups alerts that share labels such as the service, so one outage sends one page instead of hundreds, and it silences alerts that the on-call engineer has already acknowledged.</p>
 
 <x-checklist title="Self-review: metrics monitoring">
 <script type="application/json">

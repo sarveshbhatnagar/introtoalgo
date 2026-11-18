@@ -9,7 +9,7 @@
 -->
 <p>A local delivery service lets customers order groceries and household items and receive them within an hour. The company runs hundreds of small warehouses, called centres, and a driver brings each order from a centre near the customer. A customer opens the app, sees only the products that a nearby centre can deliver in time, and pays for a basket.</p>
 
-<p>Three things make the design hard. "Near" has to mean travel time rather than distance. The product pages must show stock from several centres without overloading the database that takes orders. And an order for many items must reserve every item exactly once, even when two customers want the last carton at the same moment. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and you should try each "Your turn" box before you read the section after it.</p>
+<p>Three things make the design hard. "Near" has to mean travel time rather than distance. The product pages must show stock from several centres without overloading the database that takes orders. And an order for many items must reserve every item exactly once, even when two customers want the last carton at the same moment. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -23,11 +23,11 @@
 <x-coach>The candidate separates the source of truth, which is the order transaction, from the copy of stock that pages read. The rest of the design follows from that split.</x-coach>
 </x-interview>
 
-<p><strong>Functional requirements.</strong> For a delivery address, show the products that can be delivered within the hour. Let the customer order a basket. If an item has just sold out, reject the order or offer a change to it.</p>
+<p><strong>Functional requirements.</strong> For a given delivery address, the app shows the products that can be delivered within the hour. The customer can order a basket of items. If an item has just sold out, the service rejects the order or offers a change to it.</p>
 
 <p><strong>Non-functional requirements.</strong> Catalogue pages respond in under 200 ms. The availability shown is at most a few seconds out of date. The system never oversells, meaning every confirmed order has its stock reserved. A failure in one region does not stop the others.</p>
 
-<p><strong>Out of scope.</strong> Driver dispatch (see <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a>), picking, restocking and pricing.</p>
+<p><strong>Out of scope.</strong> Driver dispatch (see <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a>), picking, restocking and pricing are not part of this design.</p>
 
 <h2>Estimate the scale</h2>
 
@@ -126,7 +126,7 @@ orders                               -- same regional partition as inventory
 <p>Sketch the read path for a catalogue page and the write path for an order. Say where each one gets its stock from.</p>
 </x-task>
 <x-answer>
-<p>An availability service answers pages from an in-memory copy of stock that is fed by a change stream. An order service runs the reservation as a transaction on the region's partition. Both use a precomputed table that maps map cells to centres.</p>
+<p>An availability service answers pages from an in-memory copy of stock that is fed by a change stream. An order service runs the reservation as a transaction on the region's partition. Both use a precomputed table that maps cells to centres.</p>
 </x-answer>
 </x-tryit>
 
@@ -238,15 +238,15 @@ orders                               -- same regional partition as inventory
 
 <h3>Mapping a customer to centres by travel time</h3>
 
-<p>The promise is a delivery within the hour, so a centre is near a customer when the travel time is short, not the distance. A centre 3 km away across a river can be 30 minutes by road, while one 6 km away along a highway can be 10. Picking and handover take about 15 minutes, so a driving limit of 30 minutes fits the hour. There are three ways to find the qualifying centres.</p>
+<p>The promise is a delivery within the hour, so a centre is near a customer when the travel time is short, not the distance. A centre 3 km away across a river can be 30 minutes by road, while one 6 km away on a highway can be 10. Picking and handover take about 15 minutes, so a driving limit of 30 minutes fits the hour. There are three ways to find the qualifying centres.</p>
 
 <p><strong>A straight-line radius</strong> keeps the centres within some distance of the customer. It needs no road data, but it offers centres that are far by road and hides centres that are close by road.</p>
 
-<p><strong>A routing engine call per request</strong> computes the real driving time for this address, including live traffic. At 4,600 pages a second and about 3 candidate centres per page, that is about 14,000 routes a second, each adding tens of milliseconds, which is too much for browsing but fine at checkout to refine the promised time.</p>
+<p><strong>A routing engine call per request</strong> computes the real driving time for this address, including live traffic. At 4,600 pages a second and about 3 candidate centres per page, that is about 14,000 routes a second, which is too much for browsing but fine at checkout to refine the promised time.</p>
 
 <p><strong>A precomputed cell table</strong> divides the map into cells, and an offline job computes the driving time from each centre to every cell within reach, for a few time-of-day buckets. A page then needs one key lookup. The times are not live, and the table has to be rebuilt when a centre opens or a road changes.</p>
 
-<p>The table is small. At 0.75 km² per geohash cell (see <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>) and about 50 km² per centre, 500 centres need at most about 33,000 cells, or 3.3 MB. A centre that is <code>paused</code> because its pickers are overloaded, or <code>closed</code>, is skipped when a cell's centres are read, so live conditions need no rebuild.</p>
+<p>The table is small. A geohash cell covers about 0.75 km² (see <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>), so even 100,000 cells at about 100 bytes each come to 10 MB per time bucket. A centre that is <code>paused</code> because its pickers are overloaded, or <code>closed</code>, is skipped when a cell's centres are read, so live conditions need no rebuild.</p>
 
 <h3>Reading availability across centres quickly</h3>
 
@@ -254,9 +254,9 @@ orders                               -- same regional partition as inventory
 
 <p><strong>The inventory database</strong> is always exact, but even with read replicas it becomes the busiest part of the system, for pages that do not need exact answers.</p>
 
-<p><strong>A shared cache fed by the change stream</strong> keeps one hash per centre in an in-memory store, and a page does one batched read per centre. It suits stock that is too large to copy onto every server, at the cost of a network call per centre and a cache cluster.</p>
+<p><strong>A shared cache fed by the change stream</strong> keeps one hash per centre in an in-memory store, and a page does one batched read per centre. It suits stock that is too large to copy onto every server.</p>
 
-<p><strong>An in-process copy fed by the change stream</strong> keeps the whole stock table in the memory of each availability server. A server loads a snapshot at start-up, notes its position in the <a href="/system-design/message-queues-and-streams.html">change stream</a>, and applies every later change, like a database replica. The data is 250 MB, so this fits, and a page's 100 lookups cost microseconds. Two servers can briefly disagree.</p>
+<p><strong>An in-process copy fed by the change stream</strong> keeps the whole stock table in the memory of each availability server. A server loads a snapshot at start-up, notes its position in the <a href="/system-design/message-queues-and-streams.html">change stream</a>, and applies every later change, like a database replica. The data is 250 MB, so this fits, and a page's 100 lookups cost microseconds.</p>
 
 <x-tradeoffs caption="Where catalogue pages read stock from">
 <script type="application/json">
@@ -306,19 +306,19 @@ COMMIT;
 </pre>
 </x-code>
 
-<p>The conditional update is safe because every row it changes stays locked until the transaction ends. A second order for the same product waits for that lock. At the read committed isolation level in databases such as PostgreSQL, it then re-evaluates its <code>WHERE</code> clause against the new values, finds too little stock, and skips the row, so its count comes up short and it rolls back. At stricter isolation levels the database raises a serialization error instead, and the service handles it the same way (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>). Two baskets that lock the same products in different orders can deadlock. The database aborts one of them, and the service retries it once. The <code>CHECK (reserved &lt;= on_hand)</code> constraint is a last defence against application bugs.</p>
+<p>The conditional update is safe because every row it changes stays locked until the transaction ends. A second order for the same product waits for that lock. At the read committed isolation level in databases such as PostgreSQL, it then re-evaluates its <code>WHERE</code> clause against the new values, finds too little stock, and skips the row, so its count comes up short and it rolls back. At stricter isolation levels the database raises a serialization error instead, and the service handles it the same way (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>). Two baskets that lock the same products in different orders can deadlock. The database aborts one of them, and the service retries it once. The <code>CHECK</code> constraint on <code>reserved</code> is a last defence against bugs.</p>
 
 <x-callout type="mistake" title="Deciding from the catalogue copy">
 <p>The catalogue copy showed oat milk in stock to both Ana and Ben. An order service that trusted the copy and subtracted one would promise the same carton twice. The copy decides what to show, and only the conditional update decides what to sell.</p>
 </x-callout>
 
-<p>The rest of the flow follows <a href="/system-design/design-ticket-booking.html">ticket booking</a>: reserve, authorize the card, then confirm. An unpaid reservation expires after a few minutes, when a sweeper moves the order from <code>reserved</code> to <code>cancelled</code> only if it is still <code>reserved</code> and releases the stock in the same transaction. Before cancelling, it checks with the payment processor in case the card was authorized just before a crash.</p>
+<p>The rest of the flow follows <a href="/system-design/design-ticket-booking.html">ticket booking</a>: reserve, authorize the card, then confirm. An unpaid reservation expires after a few minutes, when a sweeper moves the order from <code>reserved</code> to <code>cancelled</code> only if it is still <code>reserved</code> and releases the stock in the same transaction.</p>
 
 <h2>Bottlenecks and failures</h2>
 
 <h3>What breaks first at 10 times the load</h3>
 
-<p>At 10 times the load there are 46,000 page views and 460 orders a second. Availability servers scale by adding servers that each hold a full copy, and orders are only about 1 a second per centre. The first strain is a hot product during a promotion, because many orders queue on one row's lock. The fixes are to cap the quantity per order and, if needed, to split the stock into several rows and reserve from a random one.</p>
+<p>At 10 times the load there are 46,000 page views and 460 orders a second at peak. Availability servers scale by adding servers that each hold a full copy, and orders are only about 1 a second per centre. The first strain is a hot product during a promotion, because many orders queue on one row's lock. The fixes are to cap the quantity per order and, if needed, to split the stock into several rows.</p>
 
 <h3>When an availability server fails</h3>
 
@@ -326,7 +326,7 @@ COMMIT;
 
 <h3>When the change stream fails or lags</h3>
 
-<p>The availability copies stop updating, so pages show stock as it was when the stream stopped. Orders remain correct because the reservation checks the real stock, but customers get more 409 responses. Lag should raise an alert, and the pages can hide low-stock items until the stream recovers.</p>
+<p>The availability copies stop updating, so pages show stock as it was when the stream stopped. Orders remain correct because the reservation checks the real stock, but customers get more 409 responses. Lag should raise an alert.</p>
 
 <h3>When a region's inventory primary fails</h3>
 
@@ -334,7 +334,7 @@ COMMIT;
 
 <h3>When the payment processor is unavailable</h3>
 
-<p>Orders can reserve stock but cannot be authorized. Release the reservations after a short timeout and ask customers to retry.</p>
+<p>Orders can reserve stock but cannot be authorized. The service releases the reservations after a short timeout and asks customers to retry.</p>
 
 <h2>What a strong answer sounds like</h2>
 
@@ -363,7 +363,10 @@ COMMIT;
 <p>The time is the travel time from the cell table for the chosen centre plus that centre's current picking time, which each centre publishes every few seconds. A routing call at checkout can refine it before the customer is promised the time.</p>
 
 <h3>Could you reserve stock when an item goes into the cart?</h3>
-<p>That would avoid surprises at checkout, but abandoned carts would hide stock from customers who are ready to pay,. It is better to reserve at checkout and let the cart warn when the availability copy shows an item has run out.</p>
+<p>That would avoid surprises at checkout, but abandoned carts would hide stock from customers who are ready to pay. It is better to reserve at checkout and let the cart warn when the availability copy shows an item has run out.</p>
+
+<h3>Why not use a distributed lock per product instead of a database transaction?</h3>
+<p>A lock service is another system that can fail, and it cannot undo earlier items when a later one is short. The database already locks the rows it changes and rolls the whole basket back atomically.</p>
 
 <x-checklist title="Self-review: local delivery">
 <script type="application/json">

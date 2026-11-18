@@ -26,7 +26,7 @@
 <ul>
 <li><strong>Functional:</strong> create, edit and delete events; invites and replies; repeating events with changes to single occurrences; day, week and month views; free/busy lookups for several people; reminders; sync to every device.</li>
 <li><strong>Non-functional:</strong> events are durable; the owner reads their own writes; attendees see a change within 5 seconds; the week view loads in under 200 ms; reminders arrive within 60 seconds and are never skipped; local times are correct across daylight saving changes.</li>
-<li><strong>Out of scope:</strong> other providers' calendars, video calls, and any room rules beyond "a room has a calendar".</li>
+<li><strong>Out of scope:</strong> other providers' calendars, video calls.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
@@ -36,7 +36,6 @@
 <ul>
 <li><strong>Writes:</strong> each active user makes 2 changes a day, so 100 million ÷ 86,400 is about 1,200 a second on average and 3,500 at peak.</li>
 <li><strong>Reads:</strong> each active user loads calendar views 20 times a day, so 1 billion ÷ 86,400 is about 12,000 a second on average and 35,000 at peak.</li>
-<li><strong>Free/busy:</strong> if half of the 50 million events created each day involve a lookup, the peak is about 870 lookups a second, or about 4,300 per-person reads with 5 people each.</li>
 <li><strong>Reminders:</strong> 50 million users × 4 meetings is 200 million reminders a day, about 2,300 a second on average. If 3% of them fall due at the busiest top of the hour and must go out within 60 seconds, that is 6 million ÷ 60 = 100,000 a second, about 43 times the average.</li>
 </ul>
 
@@ -94,7 +93,7 @@ GET  /calendars/{cal}/changes?since=token
 </pre>
 </x-code>
 
-<p>The decision worth arguing is who expands a repeating event. The view endpoint expands on the server, so a web page needs no calendar logic. The sync endpoint sends the raw rule and exceptions, so a phone can expand any month offline. Both must use the same expansion library, or they will disagree on edge cases.</p>
+<p>The decision worth arguing is who expands a repeating event. The view endpoint expands on the server, so a web page needs no calendar logic. The sync endpoint sends the raw rule and exceptions, so a phone can expand any month offline. Both must use the same expansion library.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -285,10 +284,10 @@ changes                      -- per calendar, for device sync
 </tbody>
 </table>
 
-<p>The UTC column shows why the zone matters. New York changes its clocks on March 14, 2027, so Ana's 9:00 moves from 14:00 to 13:00 in UTC. London changes on March 28, so for two weeks Ben sees the meeting at 13:00 and then at 14:00 again. This is correct, because the meeting means "9:00 for the organizer", and it only works if the service <strong>expands the series in the event's own time zone and converts to the viewer's zone afterwards</strong>.</p>
+<p>The UTC column shows why the zone matters. New York changes its clocks on March 14, 2027, so Ana's 9:00 moves from 14:00 to 13:00 in UTC. London changes on March 28, so for two weeks Ben sees the meeting at 13:00 and then at 14:00 again. This is correct because the meeting means "9:00 for the organizer", and it works only if the service <strong>expands the series in the event's own time zone and converts to the viewer's zone afterwards</strong>.</p>
 
 <ul>
-<li>A repeating event must store a zone name such as <code>America/New_York</code>, never a fixed offset such as −05:00, because an offset is correct for only part of the year.</li>
+<li>A repeating event must store a zone name such as <code>America/New_York</code>, never a fixed offset such as −05:00, which is correct for only part of the year.</li>
 <li>On the night the clocks go forward, 2:30 does not exist, and on the night they go back, 1:30 happens twice. Pick one rule and apply it everywhere. The iCalendar convention is to move a missing time forward by the length of the gap and to use the first of a repeated time.</li>
 </ul>
 
@@ -296,7 +295,7 @@ changes                      -- per calendar, for device sync
 
 <p>When Chen asks when Ana, Ben and five other people are all free next week, the service must read seven people's schedules, each stored on a different shard and each containing series that need expanding. The answer needs only busy intervals, not titles, so private details stay hidden. There are two ways to compute it.</p>
 
-<p><strong>Expand on every lookup.</strong> The service reads each person's events from their shard and expands the series itself. The answer is always exact, but the slowest shard sets the latency. It suits small scale and works as the fallback when the cache is down.</p>
+<p><strong>Expand on every lookup.</strong> The service reads each person's events and expands the series itself. The answer is always exact, but the slowest shard sets the latency.</p>
 
 <p><strong>A cached list of busy intervals per person.</strong> The service keeps a sorted list of each person's busy intervals for roughly the next eight weeks. At four meetings a day that is about 224 intervals, and at 16 bytes each about 3.6 KB per person. A lookup is one cache read per person, and the times are exact. The cost is that the list must be rebuilt whenever the person's calendar changes or the time zone database is updated.</p>
 
@@ -311,7 +310,7 @@ changes                      -- per calendar, for device sync
 </script>
 </x-tradeoffs>
 
-<p>The choice here is the cached busy intervals. The service reads the seven cached lists in parallel, merges them with the <a href="/algorithms/intervals.html">interval merging</a> technique and returns the gaps that fall inside working hours. The cache for 100 million users is about 360 GB, which fits on a modest cluster. A few seconds of staleness is acceptable because the result only suggests slots.</p>
+<p>The choice here is the cached busy intervals. The service reads the seven cached lists in parallel, merges them with the <a href="/algorithms/intervals.html">interval merging</a> technique and returns the gaps that fall inside working hours. The cache for 100 million users is about 360 GB.</p>
 
 <h3>Reminders at scale</h3>
 
@@ -349,6 +348,17 @@ changes                      -- per calendar, for device sync
 
 <h2>What a strong answer sounds like</h2>
 
+<p>Interviewers for this question mostly listen for how the candidate handles repeating events and time zones, because those are the parts that do not look like a standard web service. The table shows how the answers differ by level.</p>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer contains</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Draws an events table with a start and end time in UTC, stores each occurrence of a repeating event as its own row, and does not discuss invites to other users or reminders at scale.</td></tr>
+<tr><td>Mid-level</td><td>Stores a repeat rule plus exceptions, keeps the local time and zone name, copies events to each attendee, and uses a queue to send reminders, but does not say what happens to the data when a worker crashes or two devices edit at once.</td></tr>
+<tr><td>Senior</td><td>Does everything above, and also expands the series in the event's own zone across clock changes, versions edits with <code>If-Match</code>, makes the fan-out idempotent, plans reminders in a rolling horizon, and names the large-guest-list problem before being asked.</td></tr>
+</tbody>
+</table>
+
 <x-interview title="The daylight saving question" tone="strong">
 <x-interviewer>Ana has a weekly meeting at 9:00. What do you store, and what does Ben in London see in March?</x-interviewer>
 <x-you>I store 09:00 with the zone <code>America/New_York</code> and the repeat rule, not a UTC time. I expand the series in New York time and then convert to the viewer's zone. Ben sees 14:00, then 13:00 for the two weeks between the US and UK clock changes, and then 14:00 again. That is correct, because the meeting means 9:00 for the organizer.</x-you>
@@ -365,10 +375,7 @@ changes                      -- per calendar, for device sync
 <p>It is stored as an exception on that attendee's own entry, keyed by the occurrence's original start time. The shared event and every other attendee's entry are untouched.</p>
 
 <h3>Why not store all times in UTC?</h3>
-<p>UTC is right for a single instant such as a flight. It is wrong for a repeating event, because "9:00 every Monday" means local time and its UTC value changes when the clocks change. It also cannot be corrected when zone rules change unless the original local time and zone are kept.</p>
-
-<h3>How do invites to people at other companies work?</h3>
-<p>The service sends the invite by email with an iCalendar attachment, and replies come back the same way. Each reply is matched to the event by its unique ID and a sequence number, so an old reply cannot override a newer version.</p>
+<p>UTC is right for a single instant such as a flight. It is wrong for a repeating event, because "9:00 every Monday" means local time and its UTC value changes when the clocks change.</p>
 
 <x-checklist title="Self-review: calendar">
 <script type="application/json">

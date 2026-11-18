@@ -1,7 +1,7 @@
 <!--
 {
   "title": "API Design",
-  "description": "How to design REST endpoints, pagination, idempotency keys, versioning and errors, when RPC, GraphQL or events fit better, and what interviewers ask.",
+  "description": "How to design a REST API with pagination, idempotency keys, versioning and errors, when RPC, GraphQL or events fit better, and what interviewers ask.",
   "minutes": 18,
   "tags": ["interview", "api", "rest", "idempotency"]
 }
@@ -36,13 +36,15 @@
 </script>
 </x-arch>
 
-<p>The public API is the hardest to change because you do not control the clients. The examples in this lesson use a restaurant reservation service where diners search for free times, book a table and list their bookings.</p>
+<p>The examples in this lesson use a restaurant reservation service where diners search for free times, book a table and list their bookings.</p>
 
 <h2>REST resources and methods</h2>
 
 <p>In a REST API the URL names a thing, such as a reservation or a restaurant, and the HTTP method says what to do with it. Use plural nouns for collections (<code>/reservations</code>) and put the id after the collection (<code>/reservations/r-5521</code>). A verb in the URL, such as <code>/createReservation</code>, is a sign that the resources were not worked out, because the method already is the verb.</p>
 
 <p>The methods differ in how safe they are to repeat. <code>GET</code> only reads, so repeating it changes nothing. <code>PUT</code> replaces a resource with the body you send and <code>DELETE</code> removes it, so doing either twice leaves the same state as doing it once. <code>POST</code> creates a new resource each time, so repeating it creates a second one. This difference decides which calls need the idempotency keys described below.</p>
+
+<p>For updates, <code>PUT</code> sends the whole resource and replaces it, while <code>PATCH</code> sends only the fields that change. <code>PATCH</code> suits large resources because clients do not have to resend, and accidentally overwrite, fields they did not touch. A successful create returns <code>201</code> with the new resource or its URL, and a successful delete with nothing to return uses <code>204</code>. Filters go in query parameters.</p>
 
 <x-code single title="Reservation API, version 1">
 <pre lang="text">
@@ -61,7 +63,7 @@ GET    /v1/users/me/reservations?limit=20&cursor=...
 </pre>
 </x-code>
 
-<p>The client sends a time and a party size, and the server chooses which table to assign. Because the client does not name a table, a blind retry would book a second table, which is why the booking call needs a key.</p>
+<p>The client sends a time and a party size, and the server chooses which table to assign. A blind retry would therefore book a second table, which is why the booking call needs a key.</p>
 
 <h2>Idempotency keys</h2>
 
@@ -119,7 +121,7 @@ GET    /v1/users/me/reservations?limit=20&cursor=...
 
 <p>The key is stored in the same database transaction as the booking. In a separate cache, a crash between the two writes would leave a booking with no key, and the retry would book again.</p>
 
-<p>Three details come up in interviews. If a retry arrives while the first attempt is still running, the second request must not run in parallel, so the first attempt claims the key row before doing any work, and the second waits or receives a "request in progress" error. If the same key arrives with a different body, the client has a bug, and the server rejects the request with a 422 instead of replaying an unrelated response. Keys are kept for longer than any client keeps retrying, which is typically 24 hours. <a href="/system-design/idempotency-and-retries.html">Idempotency and retries</a> covers this in more depth.</p>
+<p>Three details come up in interviews. If a retry arrives while the first attempt is still running, the second request must not run in parallel, so the first attempt claims the key row before doing any work, and the second waits or receives a "request in progress" error. If the same key arrives with a different body, the client has a bug, and the server rejects the request with a 422 instead of replaying an unrelated response. Keys are kept for longer than any client keeps retrying, typically 24 hours. <a href="/system-design/idempotency-and-retries.html">Idempotency and retries</a> covers this in more depth.</p>
 
 <h2>Pagination</h2>
 
@@ -149,81 +151,48 @@ LIMIT 21;   -- one extra row tells the server whether another page exists
 
 <h2>Error responses</h2>
 
-<p>The HTTP status code gives the category of the failure and the response body gives the detail. A 4xx status means the client sent something that must change before the request can succeed: 400 or 422 for an invalid request, 404 for a missing resource, and 409 when the request conflicts with the current state, such as booking a slot that was just taken. A 5xx status means the server failed, and 429 means the client is sending too many requests. Both may succeed on a later retry, and 429 should carry a <code>Retry-After</code> header.</p>
+<p>The HTTP status code gives the category of the failure and the response body gives the detail. A 4xx status means the client sent something that must change before the request can succeed: 400 or 422 for an invalid request, 404 for a missing resource, and 409 when the request conflicts with the current state, such as booking a slot that was just taken. A 5xx status means the server failed, and 429 means the client is sending too many requests. Both may succeed on a later retry, and 429 should carry a <code>Retry-After</code> header. A request with missing or invalid credentials gets 401, and a request from a caller who is known but not allowed to do this gets 403. <a href="/system-design/rate-limiting.html">Rate limiting</a> covers how the server decides to send a 429.</p>
 
-<p>The body should have a stable shape that programs can read, for example <code>{"error": {"code": "slot_taken", "message": "Table 7 was just booked", "retryable": false}}</code>. The client reacts to the machine-readable <code>code</code>, such as offering other times, and uses <code>retryable</code> to decide whether to try again. Use the same format on every endpoint.</p>
+<p>The body should have a stable shape that programs can read, for example <code>{"error": {"code": "slot_taken", "message": "Table 7 was just booked", "retryable": false}}</code>. The client reacts to the <code>code</code>, for example by offering other times, and uses <code>retryable</code> to decide whether to retry.</p>
 
 <h2>Versioning</h2>
 
 <p>Adding a field to a response is safe, because clients ignore fields they do not know. Removing a field, renaming it or changing its meaning breaks existing clients, and mobile apps stay installed for years. A breaking change therefore needs a new version. The most common approach is to put the major version in the path, as in <code>/v1/reservations</code>, because it is easy to see and route. Run both versions side by side until the old one has little traffic left, then retire it.</p>
 
+<p>The alternative is to send the version in a request header, which keeps URLs stable but is harder to see in logs and to test from a browser. Whichever you choose, announce the retirement date of an old version ahead of time.</p>
+
 <h2>When REST is not the best fit</h2>
 
-<p>REST over HTTP is the default for public APIs. The alternatives below fit specific situations, and an interviewer who asks about them wants to hear which situation, not a feature list.</p>
+<p>REST over HTTP is the default for public APIs. The alternatives below fit specific situations,.</p>
 
 <h3>RPC and gRPC</h3>
 
-<p>In an RPC style, the client calls a named operation on a server, such as <code>ReserveTable(request)</code>, and the request and response types are defined in a schema file. A framework such as gRPC generates typed client and server code from that schema and sends compact binary messages over a persistent HTTP/2 connection. It fits high-volume calls between your own services, because it is faster than JSON and the generated code catches contract mismatches at build time. Browsers cannot call it directly without a proxy, and third-party developers expect REST.</p>
+<p>In an RPC style, the client calls a named operation on a server, such as <code>ReserveTable(request)</code>, and the request and response types are defined in a schema file. A framework such as gRPC generates typed client and server code from that schema and sends compact binary messages over a persistent HTTP/2 connection. It fits high-volume calls between your own services, because it is faster than JSON and catches contract mismatches at build time. Browsers cannot call it without a proxy, and third parties expect REST.</p>
 
 <h3>GraphQL</h3>
 
-<p>With GraphQL the server publishes one endpoint and a typed schema, and the client sends a query that lists exactly the fields it wants, including related objects. A screen that needs a reservation and its restaurant gets both in one round trip. It fits an API whose many clients need different shapes of the same data. It costs more on the server: a client can write an expensive query, so you need depth and cost limits, and plain HTTP caching of GET requests no longer works because every request is a POST to one URL.</p>
+<p>With GraphQL the server publishes one endpoint and a typed schema, and the client sends a query that lists exactly the fields it wants, including related objects. It fits an API whose many clients need different shapes of the same data. It costs more on the server: a client can write an expensive query, so you need depth and cost limits, and plain HTTP caching of GET requests no longer works because every request is a POST to one URL.</p>
 
 <h3>Events</h3>
 
-<p>Sometimes nobody needs a reply. When a booking is confirmed, the email service and the analytics pipeline need to know, but the booking request should not wait for them. The reservation service publishes a "booking confirmed" event to a <a href="/system-design/message-queues-and-streams.html">queue or stream</a>, and each consumer reads it on its own schedule. The cost is that there is no direct response, and consumers can receive the same event twice and must handle that.</p>
+<p>Sometimes nobody needs a reply. When a booking is confirmed, the email service and the analytics pipeline need to know, but the booking request should not wait for them. The reservation service publishes a "booking confirmed" event to a <a href="/system-design/message-queues-and-streams.html">queue or stream</a>, and each consumer reads it on its own schedule. The cost is that there is no direct response, and consumers must handle receiving the same event twice.</p>
 
-<x-tradeoffs caption="Summary of the request styles">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "REST over HTTP",
-      "good": "Every client understands it, and browsers and CDNs can cache GET requests.",
-      "bad": "The contract is loose without a schema, and complex screens need several calls.",
-      "pick": "Public and mobile APIs. This is the default.",
-      "default": true
-    },
-    {
-      "name": "RPC (gRPC)",
-      "good": "It has typed, generated clients and compact binary messages.",
-      "bad": "Browsers need a proxy, and it is harder to inspect by hand.",
-      "pick": "High-volume calls between internal services."
-    },
-    {
-      "name": "GraphQL",
-      "good": "Each client fetches exactly the fields it needs in one request.",
-      "bad": "Expensive queries need limits, and HTTP caching is lost.",
-      "pick": "Many clients that need different shapes of the same data."
-    },
-    {
-      "name": "Events on a queue",
-      "good": "The sender does not wait, and consumers can be added freely.",
-      "bad": "There is no direct reply, and consumers must handle duplicates and ordering.",
-      "pick": "Other systems need to react to something that happened."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
-
-<h2>Problems interviewers probe</h2>
-
-<h3>Two requests change the same resource at once</h3>
+<h2>Concurrent updates to the same resource</h2>
 
 <p>Two users editing the same record can silently overwrite each other if each sends a full update. The fix is optimistic concurrency: the server returns a version number or an <code>ETag</code> with the resource, the client sends it back in an <code>If-Match</code> header with the update, and the server rejects the update with 412 (or 409) if the version has changed.</p>
 
 <h2>In the interview</h2>
 
-<p>Name the two or three core calls in a sentence each, and then spend your words on the one decision that changes the design. Choose REST by default, cursor pagination for any list that grows, and an idempotency key for any call that creates something and that clients retry. Give the reason in one clause, for example "booking is retried on bad networks, so it takes an idempotency key".</p>
+<p>Name the two or three core calls in a sentence each, then spend your words on the one decision that changes the design. Choose REST by default, cursor pagination for any list that grows, and an idempotency key for any call that creates something and that clients retry.</p>
 
 <p>Questions to expect:</p>
 
 <ul>
-<li><strong>"Who generates the idempotency key?"</strong> The client generates it, once per user action and before the first attempt. A key made by the server cannot recognise a retry, because the retry has no way to know the key from a reply it never received.</li>
+<li><strong>"Who generates the idempotency key?"</strong> The client generates it, once per user action and before the first attempt. A key made by the server cannot recognise a retry, because the client never received it.</li>
 <li><strong>"Offset or cursor pagination?"</strong> Cursor for anything that grows or changes while it is read, because the pages stay correct and every page costs the same. Offset only for small, stable lists or when the user must jump to a page number.</li>
 <li><strong>"How do you change the API without breaking clients?"</strong> Make additive changes whenever possible, because clients ignore new fields. For a breaking change, add a new major version in the path, run both versions together and retire the old one when its traffic is gone.</li>
-<li><strong>"Would you use GraphQL or gRPC?"</strong> I would use REST for the public API. gRPC is a good choice between internal services that call each other at a high rate, and GraphQL is worth it only when many clients need different shapes of the same data, because of its query cost and caching problems.</li>
+<li><strong>"How do you retry a request that returned a 5xx or timed out?"</strong> The client retries with exponential backoff and random jitter, so that many clients do not retry at the same moment, and it sends the same idempotency key on every attempt. It stops after a few attempts. A 4xx response other than 429 is not retried, because the same request will fail again.</li>
+<li><strong>"What if the operation takes a long time, such as generating a report?"</strong> The server accepts the request, returns <code>202</code> with the URL of a status resource, and does the work in the background. The client polls that URL, or the server calls a webhook or publishes an event when the work is done.</li>
 </ul>
 
 <x-interview title="Defending the booking endpoint" tone="strong">

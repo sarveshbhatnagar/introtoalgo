@@ -38,7 +38,7 @@
 
 <p>Each table has a counter that the database increments on every insert. The IDs are small, dense and strictly ordered, and no application code is needed. This is the right choice when there is one database and it will stay that way.</p>
 
-<p>The counter lives in one database, so it does not work once the table is sharded. A common workaround is to give shard <code>k</code> of <code>N</code> the sequence <code>k, k + N, k + 2N, ...</code>, which keeps IDs unique across shards. It stops IDs from clashing, but the IDs are no longer in time order across shards, and adding a shard means changing the step on every existing shard. Auto-increment IDs are also guessable, which is covered under the exposure problem below.</p>
+<p>The counter lives in one database, so it does not work once the table is sharded. A common workaround is to give shard <code>k</code> of <code>N</code> the sequence <code>k, k + N, k + 2N, ...</code>, which keeps IDs unique across shards. The IDs no longer clash, but they are not in time order across shards, and adding a shard means changing the step on every existing shard.</p>
 
 <h3>Random UUID (version 4)</h3>
 
@@ -50,7 +50,7 @@
 
 <p>These keep the no-coordination property of a random UUID but place a millisecond timestamp in the first 48 bits and fill the remaining bits with random data. UUID version 7 has the standard UUID format, so existing UUID columns and libraries accept it. A ULID has the same layout, with 80 random bits after the timestamp, and is usually written as a 26-character string that sorts correctly as text.</p>
 
-<p>New IDs are larger than older ones, so inserts go to the end of the index, as they do with auto-increment. Pick these when 128 bits is acceptable and you want time ordering without any setup. Two limits apply. IDs created in the same millisecond are in random order unless the library implements a monotonic counter, and IDs from different machines are only as well ordered as the machines' clocks. The ID also reveals when the record was created.</p>
+<p>New IDs are larger than older ones, so inserts go to the end of the index, as they do with auto-increment. Pick these when 128 bits is acceptable and you want time ordering without any setup. Two limits apply. IDs created in the same millisecond are in random order unless the library implements a monotonic counter, and IDs from different machines are only as well ordered as the machines' clocks.</p>
 
 <h3>Snowflake-style 64-bit IDs</h3>
 
@@ -154,11 +154,11 @@
 
 <p>Pick this when you want compact, dense integers, such as the codes in a URL shortener, and when a short outage of the allocator is tolerable because each server still has a block in hand. The costs are that the allocator must be replicated, since if it is lost the counter is lost, and that IDs are ordered only within a block. Across servers they are not in creation order.</p>
 
-<h2>Problems interviewers probe</h2>
+<h2>Clock, machine number, index and exposure problems</h2>
 
 <h3>Clocks that move backwards</h3>
 
-<p>A time-based generator assumes that the clock never goes back. It can: time synchronisation can step the clock back a few milliseconds, and a restarted server can come up with a clock that is behind what it used before. If the generator then reuses a millisecond and its sequence starts again from 0, it creates an ID that already exists. The standard fix is to remember the last timestamp used and refuse to create IDs, or wait, until the clock passes it. A small jump needs a short wait, and a large jump should raise an alert instead of blocking for minutes. Clock differences are also why IDs from different machines are only roughly ordered.</p>
+<p>A time-based generator assumes that the clock never goes back. It can: time synchronisation can step the clock back a few milliseconds, and a restarted server can come up with a clock that is behind what it used before. If the generator then reuses a millisecond and its sequence starts again from 0, it creates an ID that already exists. The standard fix is to remember the last timestamp used and refuse to create IDs, or wait, until the clock passes it. A large jump should raise an alert instead of blocking for minutes.</p>
 
 <h3>Machine numbers that are not unique</h3>
 
@@ -189,6 +189,7 @@
 <li><strong>"Why not use random UUIDs as the primary key?"</strong> They are twice the size of a 64-bit key, and because they are random they spread inserts over the whole index. On a large table that causes constant page reads and splits. A time-ordered ID keeps inserts at the end of the index.</li>
 <li><strong>"What happens if the clock goes backwards?"</strong> The generator could repeat a timestamp and create a duplicate. It records the last timestamp it used and waits or refuses until the clock passes it. A large jump should raise an alert instead of blocking.</li>
 <li><strong>"Are the IDs in exact order?"</strong> Only roughly. IDs from one machine are ordered, but IDs from different machines depend on their clocks, and within one millisecond the machine bits decide. If exact order is required inside a conversation or an account, let one owner assign sequence numbers for it.</li>
+<li><strong>"Why not use the current timestamp as the ID?"</strong> Two records created in the same millisecond, on one machine or on two, get the same value, so it is not unique. A Snowflake-style ID fixes this by adding a machine number and a per-millisecond sequence after the timestamp.</li>
 <li><strong>"Is it a problem to put sequential IDs in URLs?"</strong> It lets people enumerate records and estimate your volume. Authorisation checks deal with the first, and a separate random public ID deals with both.</li>
 </ul>
 

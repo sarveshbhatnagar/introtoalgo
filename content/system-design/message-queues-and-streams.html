@@ -8,7 +8,7 @@
 -->
 <p>A message broker is a service that stores messages written by one part of a system until another part reads them. The writer is called the producer and the reader is called the consumer. Brokers move slow or unreliable work out of the request path, absorb bursts of traffic, and let several services react to the same event without the producer knowing about them. They come in two kinds, queues and logs, which behave differently once a message has been read.</p>
 
-<p>Without a broker, the request handler does all the work itself. If a signup endpoint calls an email provider before it responds, a slow provider makes every signup slow, and the worker threads fill up with requests that are waiting on the provider. With a broker, the endpoint writes a "send welcome email" message and responds immediately, and if the provider is down, the messages wait until it recovers.</p>
+<p>Without a broker, the request handler does all the work itself. If a signup endpoint calls an email provider before it responds, a slow provider makes every signup slow,. With a broker, the endpoint writes a "send welcome email" message and responds immediately, and if the provider is down, the messages wait until it recovers.</p>
 
 <h2>Where a broker sits</h2>
 
@@ -38,15 +38,15 @@
 
 <h3>Message queue</h3>
 
-<p>A queue, such as RabbitMQ or Amazon SQS, delivers each message to one consumer and deletes it once that consumer acknowledges it. Several workers on one queue share the messages, and a message that is not acknowledged is given to another worker.</p>
+<p>A queue, such as RabbitMQ or Amazon SQS, delivers each message to one consumer and deletes it once that consumer acknowledges it. Several workers on one queue share the messages, and a message that is not acknowledged is given to another worker. A queue does not promise strict order once several workers share it, because a message that is redelivered after a failure arrives later than the ones behind it.</p>
 
-<p>Choose a queue when each message is a job that one worker should do once, such as sending an email or resizing an image. The limits are that a processed message is gone, so you cannot replay it after fixing a bug, and a second kind of consumer, such as analytics, needs its own queue, which the broker's fan-out feature or the producer has to fill.</p>
+<p>Choose a queue when each message is a job that one worker should do once, such as sending an email or resizing an image. The limits are that a processed message is gone, so you cannot replay it after fixing a bug, and a second kind of consumer, such as analytics, needs its own queue that receives a copy of every message. The producer or the broker's fan-out feature has to put that copy there.</p>
 
 <h3>Log</h3>
 
 <p>A log, such as Kafka or Amazon Kinesis, appends messages to an ordered file and keeps them for a fixed time or size, whether or not anyone has read them. Consumers do not remove messages. Each consumer group stores an <strong>offset</strong>, its position in the log, and reads forward from it. Moving the offset back makes the group read old messages again.</p>
 
-<p>Choose a log when several services need the same events, or when you may need to reprocess history, for example after fixing a consumer bug. The limits are that parallelism is capped by the number of partitions, and that a message which keeps failing blocks everything behind it in its partition. A log also has no per-message acknowledgement. The consumer commits an offset, which means that everything before that point is done.</p>
+<p>Choose a log when several services need the same events, or when you may need to reprocess history, for example after fixing a consumer bug. A log has no per-message acknowledgement. The consumer commits an offset, which means that everything before that point is done.</p>
 
 <h2>Delivery guarantees</h2>
 
@@ -54,7 +54,7 @@
 
 <h3>At most once</h3>
 
-<p>The consumer acknowledges first and then does the work. If it crashes after the acknowledgement, the broker never sends the message again, so the work is lost. Use it only for data such as debug metrics, where losing a message is acceptable.</p>
+<p>The consumer acknowledges first and then does the work. If it crashes after the acknowledgement, the broker never sends the message again, so the work is lost. Use it only where losing a message is acceptable, such as debug metrics.</p>
 
 <h3>At least once</h3>
 
@@ -62,13 +62,13 @@
 
 <h3>Exactly once</h3>
 
-<p>No broker can guarantee that a consumer's effect on the outside world happens exactly once, because the consumer can crash after sending an email and before acknowledging. What systems provide is <em>exactly-once effect</em>: at-least-once delivery combined with a consumer that handles duplicates safely, as described under idempotent consumers below. Some brokers offer an exactly-once mode only for consumers that read from the broker and write back to the same broker, and it does not cover an email provider or a separate database.</p>
+<p>No broker can guarantee that a consumer's effect on the outside world happens exactly once, because the consumer can crash after sending an email and before acknowledging. What systems provide is <em>exactly-once effect</em>: at-least-once delivery combined with a consumer that handles duplicates safely, as described under idempotent consumers below. Some brokers offer an exactly-once mode, but only for consumers that read from the broker and write back to it.</p>
 
 <h2>Acknowledgements, visibility timeouts, retries and dead letters</h2>
 
 <p>In a queue, the broker keeps a message after delivering it but hides it from other consumers for a period called the <strong>visibility timeout</strong>. If no acknowledgement arrives before the timeout ends, the broker assumes the consumer failed and makes the message visible again. The timeout must be longer than the slowest normal processing time, because otherwise a healthy but slow consumer has its message handed to someone else, which creates a duplicate without any crash. A log has no visibility timeout, because the consumer commits its offset after finishing a batch.</p>
 
-<p>When processing fails, the message is left unacknowledged and is retried. The delay between retries should grow with each attempt, with a random offset added, because an overloaded downstream service needs time to recover. A message that fails every time is a <strong>poison message</strong>, such as one with data the code can never process. After a fixed number of attempts it is moved to a <strong>dead-letter queue</strong>, a separate queue that holds failed messages for inspection. An alert on the size of that queue shows that something needs fixing, and after the fix the messages can be replayed. Without the limit, one bad message is retried forever, wasting workers in a queue or blocking its whole partition in a log.</p>
+<p>When processing fails, the message is left unacknowledged and is retried. The delay between retries should grow with each attempt, with a random offset added, because an overloaded downstream service needs time to recover. A message that fails every time is a <strong>poison message</strong>, such as one with data the code can never process. After a fixed number of attempts it is moved to a <strong>dead-letter queue</strong>, a separate queue that holds failed messages for inspection. An alert on the size of that queue shows that something needs fixing, and after the fix the messages can be replayed. Without the limit, one bad message is retried forever.</p>
 
 <x-tracer title="At-least-once delivery: a crash, a redelivery and a poison message">
 <script type="application/json">
@@ -134,29 +134,28 @@
 
 <h3>Partitions and the partition key</h3>
 
-<p>One consumer cannot read a busy log fast enough, so a log is divided into <strong>partitions</strong>, each an ordered sequence of its own. Messages are ordered only within a partition. The producer picks the partition by hashing a <strong>partition key</strong> attached to the message, so all messages with the same key go to the same partition and stay in order. If the key is the order id, the "created", "paid" and "shipped" events of one order are read in that sequence, while events of different orders may be processed in any order, which is normally fine.</p>
+<p>One consumer cannot read a busy log fast enough, so a log is divided into <strong>partitions</strong>, each an ordered sequence of its own. Messages are ordered only within a partition. The producer picks the partition by hashing a <strong>partition key</strong> attached to the message, so all messages with the same key go to the same partition and stay in order. If the key is the order id, the "created", "paid" and "shipped" events of one order are read in that sequence.</p>
 
-<p>The key must therefore be whatever has to stay in order, and it also decides how evenly the load spreads. If one customer produces half the traffic and the key is the customer id, that traffic lands on one partition and one consumer. A workaround is to add a random suffix to that customer's key, which spreads its messages over several partitions but gives up their order.</p>
+<p>The key must therefore be whatever has to stay in order, and it also decides how evenly the load spreads. If one customer produces half the traffic and the key is the customer id, that traffic lands on one partition and one consumer.</p>
 
 <h3>Consumer groups</h3>
 
-<p>A <strong>consumer group</strong> is a set of consumers that share the reading of a topic. Within a group, each partition is read by exactly one consumer at a time, so a topic with 8 partitions keeps at most 8 consumers of one group busy, and extra consumers wait idle as standbys. Scaling further needs more partitions, so choose the partition count with growth in mind. Adding partitions later changes which partition each key hashes to, which can break per-key order during the change.</p>
+<p>A <strong>consumer group</strong> is a set of consumers that share the reading of a topic. Within a group, each partition is read by exactly one consumer at a time, so a topic with 8 partitions keeps at most 8 consumers of one group busy, and extra consumers wait idle as standbys. Scaling further needs more partitions. Adding partitions later changes which partition each key hashes to, which can break per-key order during the change. When a consumer joins, leaves or crashes, the group rebalances, which means the partitions are reassigned among the remaining consumers. Reading pauses briefly during a rebalance, and the new owner of a partition continues from the last committed offset, so messages handled after that offset are processed again.</p>
 
 <h3>Publish and subscribe fan-out</h3>
 
-<p>Consumer groups are independent: each receives every message and keeps its own offset. This is how publish/subscribe works on a log. The email service and the analytics service form separate groups on one topic,. A queue needs one queue per subscriber for the same effect.</p>
+<p>Consumer groups are independent: each receives every message and keeps its own offset. This is how publish/subscribe works on a log. The email service and the analytics service form separate groups on one topic. A queue needs one queue per subscriber for the same effect.</p>
 
 <h2>Backpressure and consumer lag</h2>
 
-<p>A broker absorbs a short burst, but if consumers are slower than producers on average, the backlog grows without limit. <strong>Consumer lag</strong> is how many messages, or how many seconds of messages, a consumer is behind the newest one, and a steadily rising lag means the consumers cannot keep up. There are three responses, often combined.</p>
+<p>A broker absorbs a short burst, but if consumers are slower than producers on average, the backlog grows without limit. <strong>Consumer lag</strong> is how many messages, or how many seconds of messages, a consumer is behind the newest one, and a steadily rising lag means the consumers cannot keep up. There are two responses, often combined.</p>
 
 <ul>
 <li>Add consumers. This helps only up to the partition count of a log, and does nothing if the bottleneck is a database or external service that the consumers call.</li>
 <li>Apply backpressure, which means making producers slow down. If the queue has a size limit, publishing fails or blocks when it is full, and the API can return 429 or 503 so that clients retry later.</li>
-<li>Drop or sample low-value messages, such as debug events, so that high-value ones such as payments are still processed in time.</li>
 </ul>
 
-<h2>Problems interviewers probe</h2>
+<h2>Idempotent consumers and the outbox pattern</h2>
 
 <h3>Idempotent consumers</h3>
 
@@ -193,18 +192,19 @@
 <ul>
 <li><strong>"Can you guarantee exactly-once delivery?"</strong> Not across a network to an external system, because a consumer can crash after doing the work and before acknowledging. What I can build is exactly-once effect, which is at-least-once delivery plus a consumer that detects duplicates with an idempotency key or a unique constraint on the message id.</li>
 <li><strong>"How do you keep messages in order?"</strong> Order holds only within a partition, so I choose a partition key that groups the messages that must stay in order, such as the order id. Messages with different keys can be processed in any order, which is what lets consumers run in parallel.</li>
+<li><strong>"When would you pick a queue and when a log?"</strong> A queue fits jobs that one worker should do once and that nobody needs to read again, such as sending emails. A log fits events that several services consume independently, or that you may need to replay after a bug fix or to build a new consumer from history. The cost of a log is that parallelism is limited by the partition count and that a failing message blocks its partition.</li>
 <li><strong>"What do you do with a message that always fails?"</strong> I limit the attempts, increase the delay between them, and then move the message to a dead-letter queue and alert on its size. Someone fixes the cause and replays it.</li>
-<li><strong>"The consumers are falling behind. What do you do?"</strong> I check consumer lag to confirm the trend and then look at where consumers spend their time. If they are limited by CPU, I add consumers up to the partition count. If a downstream database is the limit, more consumers make it worse, so I slow the producers, bound the queue or drop low-value messages.</li>
+<li><strong>"The consumers are falling behind. What do you do?"</strong> I check consumer lag to confirm the trend and then look at where consumers spend their time. If they are limited by CPU, I add consumers up to the partition count. If a downstream database is the limit, more consumers make it worse, so I slow the producers or bound the queue.</li>
 </ul>
 
 <x-interview title="Sending order emails" tone="strong">
 <x-interviewer>After checkout we send a confirmation email and update analytics. Where does that happen?</x-interviewer>
 <x-you>Not in the checkout request. Checkout publishes an OrderPlaced event to a log, keyed by order id. Email and analytics are separate consumer groups, so a slow email provider delays neither analytics nor checkout.</x-you>
 <x-interviewer>Can a customer get two emails?</x-interviewer>
-<x-you>With at-least-once delivery, yes, unless I prevent it. The email worker passes the event id to the provider as an idempotency key, so a redelivered event sends nothing. An event that fails five times goes to a dead-letter queue and raises an alert.</x-you>
+<x-you>With at-least-once delivery, yes, unless I prevent it. The email worker passes the event id to the provider as an idempotency key, so a redelivered event sends nothing.</x-you>
 <x-interviewer>What if checkout saves the order and then crashes before publishing?</x-interviewer>
-<x-you>That would lose the event, so checkout writes the order and an outbox row in one transaction, and a relay publishes the outbox rows. The relay may publish a row twice, which the idempotent consumers already handle.</x-you>
-<x-coach>The candidate raises both the duplicate problem and the lost-message problem before being cornered, and gives each a specific mechanism.</x-coach>
+<x-you>That would lose the event, so checkout writes the order and an outbox row in one transaction, and a relay publishes the outbox rows.</x-you>
+<x-coach>The candidate names both the duplicate problem and the lost-message problem, with a specific mechanism for each.</x-coach>
 </x-interview>
 
 <x-quiz>

@@ -230,11 +230,11 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 
 <h3>Merging concurrent edits with OT or a CRDT</h3>
 
-<p>Suppose the document is <code>dog</code>. Ana inserts <code>s</code> at position 3, and at the same moment Ben inserts <code>my </code> at position 0. If each client applies the other's operation as it was sent, Ana ends with <code>my dogs</code>, but Ben applies "insert <code>s</code> at 3" to <code>my dog</code> and gets <code>my sdog</code>. The copies have diverged, because Ben's insert moved the text that Ana's position referred to. Keeping only the last uploaded copy of the document would discard all but one of the concurrent edits.</p>
+<p>Suppose the document is <code>dog</code>. Ana inserts <code>s</code> at position 3, and at the same moment Ben inserts <code>my </code> at position 0. If each client applies the other's operation as it was sent, Ana ends with <code>my dogs</code>, but Ben applies "insert <code>s</code> at 3" to <code>my dog</code> and gets <code>my sdog</code>. The copies have diverged, because Ben's insert moved the text that Ana's position referred to.</p>
 
 <p><strong>Operational transformation (OT)</strong> repairs the position before an operation is applied. For two inserts, if the other insert landed before yours, yours moves right by the length of the other one, and at the same position the one committed first goes left. In the example, the server commits Ben's insert as revision 8, sees that Ana's operation was based on revision 7, and moves her insert from position 3 to 3 + 3 = 6. Ana's client moves her pending operation the same way, and every copy shows <code>my dogs</code>. Deletes need their own rules, such as overlapping deletes shrinking each other, and these cases are where real implementations get hard. A central server keeps OT manageable, because one order for all operations means the transform only has to make "A then transformed B" equal "B then transformed A". Peer-to-peer OT has no such order and needs a much harder condition.</p>
 
-<p>A <strong>CRDT</strong> (conflict-free replicated data type) removes positions altogether. Every character gets a permanent unique id, such as <code>(ben, 1)</code>, and an insert says "place this after the character with id X". Ana's <code>s</code> is stored as "after the id of <code>g</code>", which stays true whatever is inserted elsewhere. Operations can be applied in any order once the character they refer to has arrived, applying one twice changes nothing, and two inserts at the same place are ordered by id. A deleted character stays as a hidden <strong>tombstone</strong>, because a later insert may refer to it. The price is metadata: every character carries an id, tombstones pile up until they are compacted, and some algorithms interleave two people's words when both type at the same place.</p>
+<p>A <strong>CRDT</strong> (conflict-free replicated data type) removes positions altogether. Every character gets a permanent unique id, such as <code>(ben, 1)</code>, and an insert says "place this after the character with id X". Ana's <code>s</code> is stored as "after the id of <code>g</code>", which stays true whatever is inserted elsewhere. Operations can be applied in any order once the character they refer to has arrived, applying one twice changes nothing, and two inserts at the same place are ordered by id. A deleted character stays as a hidden <strong>tombstone</strong>, because a later insert may refer to it. The cost is extra metadata: every character carries an id, tombstones pile up until they are compacted, and some algorithms interleave two people's words when both type at the same place.</p>
 
 <x-tradeoffs caption="Merging concurrent edits">
 <script type="application/json">
@@ -272,7 +272,7 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 
 <h3>Storing operations and compacting them</h3>
 
-<p>Replaying a long log on every open would be slow, so a compactor writes a snapshot of the full text every 1,000 operations. Opening a document then reads one 50 KB snapshot and at most 999 operations, about 150 KB in total. The log is kept for 30 days, and snapshots are kept selectively, the newest plus a few older ones for history. A corrupt snapshot is rebuilt from the previous one and the operations after it. To show last Tuesday's version, take the nearest earlier snapshot and apply operations up to that moment.</p>
+<p>Replaying a long log on every open would be slow, so a compactor writes a snapshot of the full text every 1,000 operations. Opening a document then reads one 50 KB snapshot and at most 999 operations, about 150 KB in total. The log is kept for 30 days. To show last Tuesday's version, take the nearest earlier snapshot and apply operations up to that moment.</p>
 
 <h3>Cursors, reconnecting and offline editing</h3>
 
@@ -317,6 +317,9 @@ snapshots  -- blob store, key "docs/{doc_id}/{rev}", about 50 KB
 
 <h3>How does undo work with several editors?</h3>
 <p>Undo should reverse only the user's own edits. The client keeps the inverse of each of its operations, such as a delete for an insert, transforms that inverse against everything committed since, and sends it as a new operation.</p>
+
+<h3>Why not lock the paragraph someone is typing in?</h3>
+<p>Locking works for forms but not for a shared document, because it makes people wait and a lock held by a closed laptop blocks everyone else.</p>
 
 <h3>How would you add formatting such as bold?</h3>
 <p>Add range operations, such as "bold from position 10 to 18", whose ends the transform moves when text changes before or inside the range. The rest of the design stays the same.</p>

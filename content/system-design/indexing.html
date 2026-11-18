@@ -29,7 +29,7 @@
 </script>
 </x-arch>
 
-<p>The index is part of the database, and the query planner decides for each query whether to use it. In an interview you choose which indexes exist by naming one for each main query of the design.</p>
+<p>The query planner decides for each query whether to use an index.</p>
 
 <h2>How indexes are stored</h2>
 
@@ -37,7 +37,7 @@
 
 <h3>B-tree</h3>
 
-<p>A B-tree stores sorted keys in pages of a few kilobytes, with hundreds of keys in each page. The tree is wide and shallow; see <a href="/algorithms/balanced-trees.html">balanced trees</a> for the general idea. With about 500 keys per page, three levels hold roughly 125 million entries, so a lookup in a large table reads about three pages. The top levels stay in memory, so a lookup usually costs one or two disk reads, and because the keys are sorted, range queries and sorted output are cheap.</p>
+<p>A B-tree stores sorted keys in pages of a few kilobytes, with hundreds of keys in each page. The tree is wide and shallow; see <a href="/algorithms/balanced-trees.html">balanced trees</a> for the general idea. With about 500 keys per page, three levels hold roughly 125 million entries, so a lookup in a large table reads about three pages. The top levels stay in memory, and because the keys are sorted, range queries and sorted output are cheap.</p>
 
 <p>A write finds the right leaf page and changes it in place. If the page is full it is split in two. Each index therefore costs one random page write per row change. B-trees are the default in most relational databases and suit read-heavy and mixed workloads, but under a very high write rate the random writes become the bottleneck.</p>
 
@@ -45,7 +45,7 @@
 
 <p>A log-structured merge tree (LSM-tree) never changes data in place. A write goes into a sorted table in memory and an append-only log used for crash recovery. When the in-memory table is full, it is written to disk as a new sorted, immutable file. A background process called <strong>compaction</strong> merges these files, and it throws away values that were overwritten or deleted.</p>
 
-<p>All disk writes are sequential, so an LSM-tree handles a much higher write rate than a B-tree on the same hardware. The cost falls on reads. A key may be in memory or in any of several files, so a read checks them from newest to oldest. A Bloom filter on each file says when a key is definitely not in it, so most files are skipped. Compaction uses disk and CPU in the background and can cause latency spikes when it falls behind. LSM-trees are common in wide-column and key-value stores for write-heavy data such as events and metrics.</p>
+<p>All disk writes are sequential, so an LSM-tree handles a much higher write rate than a B-tree on the same hardware. The cost falls on reads. A key may be in memory or in any of several files, so a read checks them from newest to oldest. A Bloom filter on each file says when a key is definitely not in it, so most files are skipped. Compaction uses disk and CPU in the background and can cause latency spikes if it falls behind. LSM-trees are common in wide-column and key-value stores for write-heavy data such as events and metrics.</p>
 
 <h2>Kinds of index</h2>
 
@@ -106,7 +106,7 @@
 </script>
 </x-tracer>
 
-<p>The rule is to put the columns tested with equality first and then at most one column that is tested with a range or used for sorting. An index on <code>(a, b, c)</code> can serve queries on <code>a</code>, on <code>a</code> and <code>b</code>, and on all three, but not on <code>b</code> alone. This is the <strong>leftmost prefix</strong> rule. The same index also returns rows in order, so <code>(customer_id, created_at)</code> serves "the latest 20 orders for this customer" without a sort.</p>
+<p>The rule is to put the columns tested with equality first and then at most one column that is tested with a range or used for sorting. An index on <code>(a, b, c)</code> can serve queries on <code>a</code>, on <code>a</code> and <code>b</code>, and on all three, but not on <code>b</code> alone. This is the <strong>leftmost prefix</strong> rule.</p>
 
 <h3>Covering indexes</h3>
 
@@ -136,7 +136,7 @@
 
 <p>Every index is updated by every insert and delete on the table, and by every update that changes an indexed column. A table with a primary key and three secondary indexes does four index updates for each inserted row. On a B-tree each is a random page write, so write throughput falls as indexes are added. The indexes also take disk space and compete with table data for memory.</p>
 
-<p>Drop indexes that no query uses. Adding an index to a large live table can usually be done without blocking writes, but it reads the whole table, so it is normally run during a quiet period.</p>
+<p>Drop indexes that no query uses. Building an index on a large live table reads the whole table, so it is normally run during a quiet period.</p>
 
 <h2>Secondary indexes in a partitioned database</h2>
 
@@ -144,11 +144,11 @@
 
 <h3>Local secondary index</h3>
 
-<p>Each shard keeps an index only for its own rows. Writes are cheap, because a row and its index entries are updated on the same shard in one operation. A query that filters by the indexed column does not know which shard holds the match, so it must ask every shard and merge the answers. This scatter-gather read is as slow as the slowest shard. A query that includes the shard key still goes to one shard.</p>
+<p>Each shard keeps an index only for its own rows. Writes are cheap, because a row and its index entries are updated on the same shard in one operation. A query that filters by the indexed column does not know which shard holds the match, so it must ask every shard and merge the answers. This scatter-gather read is as slow as the slowest shard.</p>
 
 <h3>Global secondary index</h3>
 
-<p>The index is itself partitioned by the indexed value, so all entries for one email address sit on one index shard. A query by that column reads a single shard. The cost moves to writes: a row lives on one shard, but its index entries live on others, so one write touches several shards. These updates are usually asynchronous, so a read through the index may briefly miss a row that was just written. Choose a global index when reads by the indexed column are frequent and a short lag is acceptable, and a local index when writes dominate.</p>
+<p>The index is itself partitioned by the indexed value, so all entries for one email address sit on one index shard. A query by that column reads a single shard. The cost moves to writes: a row lives on one shard, but its index entries live on others, so one write touches several shards. These updates are usually asynchronous, so a read through the index may briefly miss a row that was just written. Choose a global index when reads by the indexed column are frequent and a short lag is acceptable.</p>
 
 <h2>In the interview</h2>
 
@@ -158,10 +158,11 @@
 
 <ul>
 <li><strong>"Why not index every column?"</strong> Each index slows every write and takes space and memory. Index the columns in the filters and sort orders of real queries, and remove the rest.</li>
-<li><strong>"What order do the columns of a composite index go in?"</strong> Columns compared with equality come first and a range or sort column comes last. The index serves any leftmost prefix of its columns, so it cannot be used for a query that skips the first column.</li>
+<li><strong>"What order do the columns of a composite index go in?"</strong> Columns compared with equality come first and a range or sort column comes last. The index serves any leftmost prefix of its columns, so it cannot be used for a query that skips the first column. When two columns are both tested with equality, either order serves that query equally well, so choose the order that also lets the index serve other queries through its leftmost prefix.</li>
 <li><strong>"There is an index on the column and the query is still slow. Why?"</strong> Look at the query plan, and check for low selectivity, a function on the column, a leading wildcard or a type mismatch.</li>
 <li><strong>"B-tree or LSM-tree?"</strong> A B-tree gives fast, predictable reads and is the default. An LSM-tree turns random writes into sequential ones for a very high write rate, and pays with slower reads and compaction.</li>
 <li><strong>"How do secondary indexes work when the data is sharded?"</strong> A local index is cheap to write but forces queries to ask every shard. A global index sends a query to one shard but makes each write update other shards, usually asynchronously, so it can lag.</li>
+<li><strong>"A table has a very high write rate and many indexes. What do you do?"</strong> Remove every index that no query needs, because each one adds a write to every insert. If the write rate is still too high, move the data to a store built on an LSM-tree, which turns the index writes into sequential ones, and accept slower reads and background compaction.</li>
 </ul>
 
 <x-interview title="Indexing an order history" tone="strong">
@@ -207,4 +208,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Read <a href="/system-design/replication.html">Replication</a> next to see how copies of an indexed table are kept on several machines. <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a> uses prefix lookups on an index.</p>
+<p>Read <a href="/system-design/replication.html">Replication</a> next to see how copies of a table are kept on several machines. <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a> uses prefix lookups on an index.</p>

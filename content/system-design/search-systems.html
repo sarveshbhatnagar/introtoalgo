@@ -8,7 +8,7 @@
 -->
 <p>A search system finds the documents that match the words in a query and puts the best matches first. It is built on an inverted index, a data structure that maps each word to the list of documents containing it, so a query looks up a few lists instead of reading every document. The index is a copy of data that lives in a database.</p>
 
-<p>Without an inverted index, search is usually written as <code>WHERE title LIKE '%red shoes%'</code>. A pattern that starts with <code>%</code> cannot use an ordinary database index, so every query reads every row. It also misses "Red Shoe", cannot rank matches, and cannot tolerate a typo.</p>
+<p>Without an inverted index, search is usually written as <code>WHERE title LIKE '%red shoes%'</code>. A pattern that starts with <code>%</code> cannot use an ordinary database index, so every query reads every row. It also misses "Red Shoe" and can neither rank matches nor tolerate typos.</p>
 
 <h2>Where search sits in a system</h2>
 
@@ -102,17 +102,21 @@
 
 <p>This walk is the <a href="/algorithms/two-pointers.html">two-pointer</a> technique on sorted lists. Its cost depends on how many documents contain each word, not on the total number of documents. The token dictionary is kept sorted or in a <a href="/algorithms/tries.html">trie</a>, which also allows prefix queries such as "sho".</p>
 
+<h3>Positions and segments</h3>
+
+<p>A postings list can also store the position of the word in each document, which is what makes phrase queries such as "red running shoes" possible: the engine checks that the words appear next to each other. In practice the index is written as immutable segments. New documents go into a small new segment that becomes searchable after a refresh, normally about a second later, and a delete only marks the document as removed. Background merges combine small segments into larger ones and drop the deleted documents.</p>
+
 <h2>Text analysis</h2>
 
 <p>Analysis is the pipeline that turns raw text into tokens. It runs once when a document is indexed and again, with the same settings, on every query. If the two differ, the query tokens do not match the indexed tokens, and a search for "shoes" finds nothing in an index that stores the stem "shoe".</p>
 
 <h3>Tokenising</h3>
 
-<p>Tokenising splits the text into words, usually at spaces and punctuation. The details matter: whether "e-mail" is one token or two, how a model number such as "RTX-4090" is split, and how languages without spaces are cut into words. A wrong split makes a document unfindable.</p>
+<p>Tokenising splits the text into words, usually at spaces and punctuation. The details matter: whether "e-mail" is one token or two, how a model number such as "RTX-4090" is split, and how languages without spaces are cut into words.</p>
 
 <h3>Lowercasing</h3>
 
-<p>Every token is converted to lower case, so "Red" and "red" are the same token. Accent folding, which treats "café" and "cafe" as equal, is often applied too.</p>
+<p>Every token is converted to lower case, so "Red" and "red" are the same token.</p>
 
 <h3>Stemming</h3>
 
@@ -126,7 +130,7 @@
 
 <p>Matching decides which documents are candidates, and ranking decides their order. The standard text score has two parts. Term frequency (TF) rewards a document in which the query word appears many times. Inverse document frequency (IDF) weights each query word by how rare it is across all documents, so a match on "waterproof" counts for more than a match on "black" when "waterproof" is in far fewer documents.</p>
 
-<p>BM25 is the formula most search engines use by default, and it refines TF-IDF in two ways. The benefit of repeated occurrences levels off, so a document that mentions a word 50 times does not score 50 times higher than one that mentions it five times. The score is also adjusted for document length, so a match in a short title counts for more than the same match in a long description. Products combine this score with signals such as title matches, popularity and recency.</p>
+<p>BM25 is the formula most search engines use by default, and it refines TF-IDF in two ways. The benefit of repeated occurrences levels off, so a document that mentions a word 50 times does not score 50 times higher than one that mentions it five times. The score is also adjusted for document length, so a match in a short title counts for more than the same match in a long description. Products also combine this score with popularity and recency.</p>
 
 <h2>Sharding and replicating the index</h2>
 
@@ -152,17 +156,17 @@
 </script>
 </x-arch>
 
-<p>Each shard holds a complete inverted index for its own subset of the documents, chosen by hashing the document id. A query is sent to every shard. Each shard returns its own top results, and the coordinator merges them into one ordered list. A document is written to exactly one shard, so an update is cheap, and the load is spread evenly. This is the usual design.</p>
+<p>Each shard holds a complete inverted index for its own subset of the documents, chosen by hashing the document id. A query is sent to every shard. Each shard returns its own top results, and the coordinator merges them into one ordered list. A document is written to exactly one shard, so an update is cheap, and the load is spread evenly.</p>
 
 <p>The weakness is that every query touches every shard, so the slowest shard decides the response time, and adding shards does not make a single query cheaper. Each shard also computes IDF from its own documents, so scores differ slightly between shards.</p>
 
 <h3>Sharding by term</h3>
 
-<p>With term sharding, each word's complete postings list lives on one shard, so a query goes only to the shards that own its words. It works poorly in practice. Indexing one document touches the shard of every word in it, a common word such as "red" has a very long list on one shard that becomes a hot spot, and a multi-word query must ship long lists across the network. Document sharding is therefore the default.</p>
+<p>With term sharding, each word's complete postings list lives on one shard, so a query goes only to the shards that own its words. It works poorly in practice. Indexing one document touches the shard of every word in it, a common word such as "red" has a very long list on one shard that becomes a hot spot, and a multi-word query must ship long lists across the network. For these reasons document sharding is the standard choice.</p>
 
 <h3>Replicas</h3>
 
-<p>Each shard is stored on several nodes. Replicas keep search available when a node fails and add query capacity, because any copy of a shard can answer a query. Add replicas when the query rate grows, and shards when the data grows. Replicas are updated by the indexing process, so they can be briefly behind each other. See <a href="/system-design/replication.html">replication</a> and <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>.</p>
+<p>Each shard is stored on several nodes. Replicas keep search available when a node fails and add query capacity, because any copy of a shard can answer a query. Add replicas for more query capacity and shards for more data. Replicas are updated by the indexing process, so they can be briefly behind each other. See <a href="/system-design/replication.html">replication</a> and <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>.</p>
 
 <h2>Keeping the index in step with the database</h2>
 
@@ -176,25 +180,25 @@
 
 <p>The application writes only the database. A change data capture process reads the database's commit log and publishes each committed change to a stream, and an indexer consumes the stream and updates the index. Because the stream is ordered and retained, the indexer can resume after a crash without losing a committed change. Each event carries the row's version, and the index ignores an event that is not newer than the version it holds, so replaying events cannot undo a later edit. See <a href="/system-design/message-queues-and-streams.html">message queues and streams</a>.</p>
 
-<p>The cost is lag: a change appears in results a second or a few seconds after the commit, and longer when the indexer falls behind.</p>
+<p>The cost of this design is lag. A change appears in search results a second or a few seconds after the commit, and later when the indexer falls behind.</p>
 
 <h3>Periodic rebuild</h3>
 
 <p>A batch job reads the whole table, builds a new index and swaps it in, for example every night. It is simple and always correct, because each rebuild removes any drift. Changes wait for the next rebuild, and rebuilding a large table is slow. Even when a change stream is used, a rebuild is kept as the recovery path and as the way to apply a new analyser.</p>
 
-<h2>Problems that interviewers ask about</h2>
+<h2>Pagination, staleness, analyser changes and typos</h2>
 
 <h3>Deep pagination</h3>
 
-<p>A request for page 1,000 with 10 results per page asks for results 9,991 to 10,000. No shard knows which of its documents fall in that range, so every shard must return its top 10,000 results and the coordinator merges all of them to keep ten. Engines usually refuse offsets beyond a limit such as 10,000. The fix is cursor-based pagination: the client sends the sort values and id of the last result it received, and each shard returns only the next ten after that position. It supports only "next" and not "jump to page 500", which is acceptable because real users almost never need a deep page.</p>
+<p>A request for page 1,000 with 10 results per page asks for results 9,991 to 10,000. No shard knows which of its documents fall in that range, so every shard must return its top 10,000 results and the coordinator merges all of them to keep ten. Engines usually refuse offsets beyond a limit such as 10,000. The fix is cursor-based pagination: the client sends the sort values and id of the last result it received, and each shard returns only the next ten after that position. It supports only "next" and not "jump to page 500", which real users rarely need.</p>
 
 <h3>Results that lag behind a write</h3>
 
-<p>A seller who edits a product and searches immediately may still see the old title, because the change is still moving through the stream. Accept the delay for search, show the seller's own edits from the database, and read values that must be exact from the database.</p>
+<p>A seller who edits a product and searches immediately may still see the old title, because the change is still moving through the stream. Search can accept that delay, while the seller's own edits and any value that must be exact are read from the database.</p>
 
 <h3>Changing the analyser</h3>
 
-<p>If the stemmer or tokeniser changes, the stored tokens no longer match what queries produce, and the index cannot be edited in place. Build a new index with the new analyser beside the old one, fill it from the table and then from the change stream, and switch queries to it in one step.</p>
+<p>If the stemmer or tokeniser changes, the stored tokens no longer match what queries produce, so the index must be rebuilt: fill a new index from the table and then from the change stream, and switch queries to it in one step.</p>
 
 <h3>Typos</h3>
 
@@ -206,14 +210,12 @@
 
 <h2>In the interview</h2>
 
-<p>Propose a search index when the requirement is free-text search, ranking, typo tolerance or filtering on many fields. Below a few million rows, the full-text feature of the database is often enough. State what is indexed, how the index is fed, how stale it may be, and which values are always read from the database.</p>
+<p>Propose a search index when the requirement is free-text search, ranking, typo tolerance or filtering on many fields. Below a few million rows, the database's own full-text feature is often enough. State what is indexed, how the index is fed, how stale it may be, and which values are always read from the database.</p>
 
-<p>Questions to expect:</p>
 
 <ul>
 <li><strong>"Why not use LIKE in the database?"</strong> A pattern that starts with a wildcard cannot use an ordinary index, so each query scans every row, and there is no ranking, stemming or typo tolerance. An inverted index reads one list per word and touches only matching documents.</li>
 <li><strong>"How does the index stay in sync with the database?"</strong> The application writes only the database, and change data capture feeds an indexer through a stream. The indexer can replay after a crash, and versions on events stop old events from overwriting newer data. A nightly rebuild repairs any drift.</li>
-<li><strong>"What if the index is stale or lost?"</strong> A stale index shows slightly old results, which search can tolerate. A lost index is rebuilt from the database, and replicas keep search available meanwhile.</li>
 <li><strong>"How do you shard the index?"</strong> By document, so each shard holds a complete index of a slice of the documents. Queries go to all shards and the top results are merged. Term sharding makes writes touch many shards and creates hot lists.</li>
 <li><strong>"How do you paginate deep results?"</strong> Offset pagination makes every shard return all results up to the offset, so it slows with each page. Use a cursor made of the last result's sort values and id, which keeps the cost constant but allows only moving forward.</li>
 </ul>

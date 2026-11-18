@@ -1,29 +1,25 @@
 <!--
 {
   "title": "Union-Find",
-  "description": "Track groups that keep merging and answer \"are these two connected?\" almost instantly, with union by size and path compression. Traced, in JS and Python.",
-  "minutes": 13,
+  "description": "How union-find tracks groups that merge over time, why union by size and path compression make it fast, and what interviewers ask about it.",
+  "minutes": 14,
   "tags": ["graphs", "union-find", "disjoint sets"]
 }
 -->
-<p>You look after an office network of six computers, numbered 0 to 5. All day, someone plugs in a cable between two of them, and people ask things like "can computer 5 talk to computer 1 yet?"</p>
+<p>Union-find, also called a disjoint-set union, is a data structure that keeps track of which items belong to the same group. It supports two operations: <code>union</code> merges two groups, and <code>find</code> tells you which group an item is in, so you can check whether two items are in the same group. You reach for it when groups only ever merge and you need to ask "are these two connected?" many times between merges.</p>
 
-<p>A <a href="/algorithms/breadth-first-search.html">BFS</a> or <a href="/algorithms/depth-first-search.html">DFS</a> per question walks the whole network every time: with 100,000 computers and 100,000 questions, billions of steps. You do not need paths, only which <em>group</em> each computer is in, and a way to merge two groups. A union-find structure does that in a few steps per operation.</p>
+<p>Without it, every question needs a <a href="/algorithms/breadth-first-search.html">BFS</a> or <a href="/algorithms/depth-first-search.html">DFS</a> over the graph built so far, which costs O(V + E) per question. With 100,000 items and 100,000 questions that is billions of steps. Union-find does not store paths, only the group of each item, and answers each question in close to constant time.</p>
 
-<h2>The idea: every group has a boss</h2>
+<h2>How union-find works</h2>
 
-<p>Each group has one member as its <strong>root</strong>, like a team captain. Every computer stores its <strong>parent</strong>, the computer it reports to. A root reports to itself, so at the start everyone is their own root.</p>
+<p>Every group is stored as a tree, and the item at the top of the tree is the group's <strong>root</strong>. Each item stores its <strong>parent</strong> in an array. A root is its own parent, so at the start every item is a root of a group of one.</p>
 
 <ul>
-<li><strong>find(x)</strong>: follow parent pointers from <code>x</code> to a computer that is its own parent: the root. Two computers are connected exactly when they share a root.</li>
-<li><strong>union(a, b)</strong>: find both roots. If they differ, make one report to the other. One pointer change merges two whole groups.</li>
+<li><code>find(x)</code> follows parent pointers from <code>x</code> until it reaches an item that is its own parent, and returns that root. Two items are in the same group exactly when <code>find</code> returns the same root for both.</li>
+<li><code>union(a, b)</code> calls <code>find</code> on both items. If the roots are different, it makes one root the parent of the other. That single pointer change merges the two groups, because every other member still leads to its old root, and that root now leads to the new one.</li>
 </ul>
 
-<p>Union never touches the other members. They still report to the old root, which now reports to the new one, so their <code>find</code> ends at the right place, one hop later.</p>
-
-<h2>Trace it on six computers</h2>
-
-<p>Cell <code>i</code> of <code>parent</code> holds computer <code>i</code>'s parent; arrows point from each computer to its parent. Each root also keeps a <code>size</code>: how many computers its group has.</p>
+<p>The trace below uses six computers numbered 0 to 5 and connects them with cables one at a time. Cell <code>i</code> of <code>parent</code> holds the parent of computer <code>i</code>, and arrows in the picture point from each computer to its parent. Each root also stores a <code>size</code>, the number of computers in its group, which the next section explains.</p>
 
 <x-tracer title="Plug in cables and merge groups">
 <script type="application/json">
@@ -40,30 +36,30 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "No cables yet: <code>parent[i] = i</code> and every group has size 1.", "graph": { "nodes": [{"id": "0", "x": 5, "y": 10}, {"id": "1", "x": 23, "y": 10}, {"id": "2", "x": 41, "y": 10}, {"id": "3", "x": 59, "y": 10}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [], "directed": true }, "array": { "label": "parent", "values": [0, 1, 2, 3, 4, 5] }, "vars": { "groups": 6 } },
-    { "caption": "Cable 0–1. Roots 0 and 1 both have size 1. On a tie we keep <code>ra</code>, so 1 reports to 0.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 41, "y": 10}, {"id": "3", "x": 59, "y": 10}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [["1", "0"]], "directed": true, "highlight": ["0", "1"], "highlightEdges": [["1", "0"]] }, "array": { "label": "parent", "values": [0, 0, 2, 3, 4, 5], "highlight": [1] }, "vars": { "groups": 5, "size[0]": 2 } },
-    { "caption": "Cable 2–3: 3 reports to 2.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [["1", "0"], ["3", "2"]], "directed": true, "highlight": ["2", "3"], "highlightEdges": [["3", "2"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 5], "highlight": [3] }, "vars": { "groups": 4, "size[0]": 2, "size[2]": 2 } },
-    { "caption": "Cable 4–5: 5 reports to 4. Three groups of two.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["4", "5"], "highlightEdges": [["5", "4"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 4], "highlight": [5] }, "vars": { "groups": 3, "size[0]": 2, "size[2]": 2, "size[4]": 2 } },
-    { "caption": "Cable 1–3. Find their roots: 0 and 2. They differ, so the groups merge.", "line": 5, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["0", "2"], "highlightEdges": [["1", "0"], ["3", "2"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 4], "highlight": [1, 3] }, "vars": { "ra": 0, "rb": 2 } },
-    { "caption": "Both roots have size 2, a tie, so root 2 reports to root 0. One pointer moved; four computers are one group. Computer 3 is two hops from its root.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 10, "y": 50}, {"id": "2", "x": 40, "y": 50}, {"id": "3", "x": 40, "y": 90}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["0", "2"], "highlightEdges": [["2", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 2, 4, 4], "highlight": [2] }, "vars": { "groups": 2, "size[0]": 4, "size[4]": 2 } },
-    { "caption": "<code>find(3)</code> walks 3 → 2 → 0, and on the way back points 3 straight at the root. This is <strong>path compression</strong>: the next find from 3 takes one hop.", "line": 2, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 25, "y": 50}, {"id": "3", "x": 42, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["5", "4"]], "directed": true, "highlight": ["3"], "highlightEdges": [["3", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 4, 4], "highlight": [3] }, "vars": { "groups": 2, "size[0]": 4, "size[4]": 2 } },
-    { "caption": "Cable 5–3. <code>find(5)</code> is 4 (size 2) and <code>find(3)</code> is 0 (size 4). 4's group is smaller, so the swap makes <code>ra</code> = 0 and <code>rb</code> = 4: 4 goes under 0.", "line": 7, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 25, "y": 50}, {"id": "3", "x": 42, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["5", "4"]], "directed": true, "highlight": ["0", "4"] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 4, 4], "highlight": [3, 5] }, "vars": { "ra": 0, "rb": 4 } },
-    { "caption": "Root 4 reports to 0. Only computer 5 got one hop further from its root. Putting 0 under 4 would have pushed four computers one hop further.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 40, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 26, "y": 50}, {"id": "3", "x": 44, "y": 50}, {"id": "4", "x": 70, "y": 50}, {"id": "5", "x": 70, "y": 90}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "4"]], "directed": true, "highlight": ["0", "4"], "highlightEdges": [["4", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 4], "highlight": [4] }, "vars": { "groups": 1, "size[0]": 6 } },
-    { "caption": "Cable 5–1. <code>find(5)</code> walks 5 → 4 → 0 and compresses 5 onto 0. <code>find(1)</code> is 0 too, so <code>union</code> returns false: nothing new is connected.", "line": 6, "graph": { "nodes": [{"id": "0", "x": 50, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 29, "y": 50}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 71, "y": 50}, {"id": "5", "x": 92, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "0"]], "directed": true, "highlight": ["1", "5"], "highlightEdges": [["5", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 0], "highlight": [5] }, "vars": { "groups": 1, "union(5, 1)": "false" } },
-    { "caption": "Six cables, one group. Every computer points straight at root 0, so any find is one hop.", "graph": { "nodes": [{"id": "0", "x": 50, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 29, "y": 50}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 71, "y": 50}, {"id": "5", "x": 92, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "0"]], "directed": true, "mark": ["0", "1", "2", "3", "4", "5"] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 0], "mark": [0, 1, 2, 3, 4, 5] }, "vars": { "groups": 1, "longest find": "1 hop" } }
+    { "caption": "Before any connection, <code>parent[i] = i</code> for every computer, so each one is its own group of size 1.", "graph": { "nodes": [{"id": "0", "x": 5, "y": 10}, {"id": "1", "x": 23, "y": 10}, {"id": "2", "x": 41, "y": 10}, {"id": "3", "x": 59, "y": 10}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [], "directed": true }, "array": { "label": "parent", "values": [0, 1, 2, 3, 4, 5] }, "vars": { "groups": 6 } },
+    { "caption": "Connect 0 and 1. Both roots have size 1, which is a tie, so <code>ra</code> stays 0 and 1 becomes a child of 0.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 41, "y": 10}, {"id": "3", "x": 59, "y": 10}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [["1", "0"]], "directed": true, "highlight": ["0", "1"], "highlightEdges": [["1", "0"]] }, "array": { "label": "parent", "values": [0, 0, 2, 3, 4, 5], "highlight": [1] }, "vars": { "groups": 5, "size[0]": 2 } },
+    { "caption": "Connect 2 and 3. Another tie, so 3 becomes a child of 2.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 77, "y": 10}, {"id": "5", "x": 95, "y": 10}], "edges": [["1", "0"], ["3", "2"]], "directed": true, "highlight": ["2", "3"], "highlightEdges": [["3", "2"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 5], "highlight": [3] }, "vars": { "groups": 4, "size[0]": 2, "size[2]": 2 } },
+    { "caption": "Connect 4 and 5. Another tie, so 5 becomes a child of 4. There are now three groups of two.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["4", "5"], "highlightEdges": [["5", "4"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 4], "highlight": [5] }, "vars": { "groups": 3, "size[0]": 2, "size[2]": 2, "size[4]": 2 } },
+    { "caption": "Connect 1 and 3. Their roots are 0 and 2, which differ, so the two groups will be merged.", "line": 5, "graph": { "nodes": [{"id": "0", "x": 15, "y": 10}, {"id": "1", "x": 15, "y": 50}, {"id": "2", "x": 50, "y": 10}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["0", "2"], "highlightEdges": [["1", "0"], ["3", "2"]] }, "array": { "label": "parent", "values": [0, 0, 2, 2, 4, 4], "highlight": [1, 3] }, "vars": { "ra": 0, "rb": 2 } },
+    { "caption": "Both roots have size 2, which is a tie, so root 2 becomes a child of root 0. Changing one pointer merged two groups, and four computers are now in one group. Computer 3 is two hops from its root.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 10, "y": 50}, {"id": "2", "x": 40, "y": 50}, {"id": "3", "x": 40, "y": 90}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "2"], ["5", "4"]], "directed": true, "highlight": ["0", "2"], "highlightEdges": [["2", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 2, 4, 4], "highlight": [2] }, "vars": { "groups": 2, "size[0]": 4, "size[4]": 2 } },
+    { "caption": "<code>find(3)</code> walks 3 → 2 → 0 and, on the way back, points 3 directly at the root. This is path compression, and the next <code>find(3)</code> takes one hop.", "line": 2, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 25, "y": 50}, {"id": "3", "x": 42, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["5", "4"]], "directed": true, "highlight": ["3"], "highlightEdges": [["3", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 4, 4], "highlight": [3] }, "vars": { "groups": 2, "size[0]": 4, "size[4]": 2 } },
+    { "caption": "Connect 5 and 3. <code>find(5)</code> is 4 with size 2 and <code>find(3)</code> is 0 with size 4. The group of 4 is smaller, so the swap makes <code>ra</code> = 0 and <code>rb</code> = 4, and root 4 will go under root 0.", "line": 7, "graph": { "nodes": [{"id": "0", "x": 25, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 25, "y": 50}, {"id": "3", "x": 42, "y": 50}, {"id": "4", "x": 85, "y": 10}, {"id": "5", "x": 85, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["5", "4"]], "directed": true, "highlight": ["0", "4"] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 4, 4], "highlight": [3, 5] }, "vars": { "ra": 0, "rb": 4 } },
+    { "caption": "Root 4 now points to 0. Only computers 4 and 5 ended up one hop further from their root, whereas putting 0 under 4 would have moved the four computers 0, 1, 2 and 3 one hop further.", "line": 8, "graph": { "nodes": [{"id": "0", "x": 40, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 26, "y": 50}, {"id": "3", "x": 44, "y": 50}, {"id": "4", "x": 70, "y": 50}, {"id": "5", "x": 70, "y": 90}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "4"]], "directed": true, "highlight": ["0", "4"], "highlightEdges": [["4", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 4], "highlight": [4] }, "vars": { "groups": 1, "size[0]": 6 } },
+    { "caption": "Connect 5 and 1. <code>find(5)</code> walks 5 → 4 → 0 and points 5 at 0. <code>find(1)</code> is also 0, so <code>union</code> returns false because the two computers were already connected.", "line": 6, "graph": { "nodes": [{"id": "0", "x": 50, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 29, "y": 50}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 71, "y": 50}, {"id": "5", "x": 92, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "0"]], "directed": true, "highlight": ["1", "5"], "highlightEdges": [["5", "0"]] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 0], "highlight": [5] }, "vars": { "groups": 1, "union(5, 1)": "false" } },
+    { "caption": "All six computers are in one group and each points directly at root 0, so any <code>find</code> now takes one hop.", "graph": { "nodes": [{"id": "0", "x": 50, "y": 10}, {"id": "1", "x": 8, "y": 50}, {"id": "2", "x": 29, "y": 50}, {"id": "3", "x": 50, "y": 50}, {"id": "4", "x": 71, "y": 50}, {"id": "5", "x": 92, "y": 50}], "edges": [["1", "0"], ["2", "0"], ["3", "0"], ["4", "0"], ["5", "0"]], "directed": true, "mark": ["0", "1", "2", "3", "4", "5"] }, "array": { "label": "parent", "values": [0, 0, 0, 0, 0, 0], "mark": [0, 1, 2, 3, 4, 5] }, "vars": { "groups": 1, "longest find": "1 hop" } }
   ]
 }
 </script>
 </x-tracer>
 
-<h2>Two tricks that keep trees flat</h2>
+<h2>Keeping the trees shallow</h2>
 
-<p>The whole cost of union-find is the walk inside <code>find</code>. Suppose you always put the first root under the second, and cables arrive as 0–1, 1–2, 2–3, 3–4. Each union hangs the existing group under one new computer, building a chain: <code>find(0)</code> takes <code>n</code> steps, no better than searching the graph.</p>
+<p>The cost of every operation is the length of the walk inside <code>find</code>, so the trees have to stay shallow. If <code>union</code> always puts the first root under the second, the connections 0–1, 1–2, 2–3 and 3–4 build a chain, and <code>find(0)</code> takes as many steps as there are items. That is no better than searching the graph. Two techniques prevent this, and real implementations use both.</p>
 
-<x-figure caption="The same five computers after the same four cables. Left: a careless union builds a chain, and find(0) takes 4 hops. Right: union by size keeps everyone 1 hop from the root.">
+<x-figure caption="The same five computers after the connections 0–1, 1–2, 2–3 and 3–4. On the left, always putting the first root under the second builds a chain, and find(0) takes 4 hops. On the right, union by size keeps every computer 1 hop from the root.">
 <svg viewBox="0 0 480 250" aria-label="Left: five circles stacked in a vertical chain, 0 to 1 to 2 to 3 to 4, with 4 at the top. Right: one root circle 0 with four circles below it, each with an arrow up to 0.">
   <defs><marker id="uf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-muted"/></marker></defs>
-  <text x="90" y="16" text-anchor="middle" class="t-sans t-bold">Careless: a chain</text>
+  <text x="90" y="16" text-anchor="middle" class="t-sans t-bold">Naive union</text>
   <line x1="90" y1="218" x2="90" y2="188" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
   <line x1="90" y1="170" x2="90" y2="142" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
   <line x1="90" y1="124" x2="90" y2="96" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
@@ -74,7 +70,7 @@
   <circle cx="90" cy="176" r="14" class="f-surface s-line"/><text x="90" y="181" text-anchor="middle">1</text>
   <circle cx="90" cy="222" r="14" class="f-bad-soft s-bad"/><text x="90" y="227" text-anchor="middle">0</text>
   <text x="125" y="227" class="t-sans t-small f-bad">4 hops</text>
-  <text x="340" y="16" text-anchor="middle" class="t-sans t-bold">By size: flat</text>
+  <text x="340" y="16" text-anchor="middle" class="t-sans t-bold">Union by size</text>
   <line x1="250" y1="116" x2="327" y2="64" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
   <line x1="310" y1="116" x2="334" y2="66" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
   <line x1="370" y1="116" x2="346" y2="66" class="s-muted" stroke-width="2" marker-end="url(#uf-arrow)"/>
@@ -88,15 +84,17 @@
 </svg>
 </x-figure>
 
-<p><strong>Union by size.</strong> Hang the smaller group's root under the bigger one's. A computer gets one hop deeper only when its group joins one at least as big, so its group at least doubles. That can happen only about log₂ n times, so no walk exceeds log₂ n hops: 20 for a million computers.</p>
+<h3>Union by size</h3>
 
-<p><strong>Path compression.</strong> Whenever <code>find</code> walks a path, point every computer on it straight at the root. The walk was happening anyway, and the next find from any of them takes one hop.</p>
+<p>When merging, make the root of the smaller group a child of the root of the larger group. An item only gets deeper when its group is attached under a group at least as big, so that item's group at least doubles in size every time its depth grows. A group can double only about log₂ n times, so no item is ever deeper than log₂ n, which is about 20 for a million items. A common alternative is union by rank, which compares tree heights instead of sizes and gives the same bound. Size is easier to keep correct, and it is also useful when a problem asks for the size of a group.</p>
 
-<x-callout type="key">
-<p>Union-find compares roots to answer "same group?". Union by size and path compression keep trees so flat that every operation is, in practice, constant time.</p>
-</x-callout>
+<h3>Path compression</h3>
 
-<h2>The code</h2>
+<p>While <code>find</code> walks up to the root, it makes every item on the path point directly at the root. The walk was happening anyway, so this costs almost nothing, and any later <code>find</code> from those items takes one hop. The trace shows this when <code>find(3)</code> shortens the path from 3.</p>
+
+<p>Used together, the two techniques give an amortized cost of O(α(n)) per operation, where α is the inverse Ackermann function. It is at most 4 for any n that fits in memory, so you can treat it as constant.</p>
+
+<h2>Code</h2>
 
 <x-code>
 <pre lang="js">
@@ -151,44 +149,58 @@ class UnionFind:
 </pre>
 </x-code>
 
-<p>To test "are <code>a</code> and <code>b</code> connected?", compare <code>find(a)</code> with <code>find(b)</code>. The <code>groups</code> counter tracks how many pieces the network is in, with no search; it drops only when a union really merges.</p>
+<p>To test whether <code>a</code> and <code>b</code> are connected, compare <code>find(a)</code> with <code>find(b)</code>. The <code>groups</code> counter is the number of separate groups, and it goes down only when a union really merges two groups. When <code>union</code> returns false, the two items were already connected.</p>
 
-<p>When <code>union</code> returns false, the two computers were already connected, so the new cable closes a loop. That detects a cycle in an undirected graph as you read its edges, and it is the heart of Kruskal's algorithm in <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a>.</p>
+<p>Two details are easy to get wrong. A connection test must compare <code>find(a)</code> with <code>find(b)</code>, not <code>parent[a]</code> with <code>parent[b]</code>: after the connection 1–3 in the trace, <code>parent[1]</code> is 0 and <code>parent[3]</code> is 2, yet the two computers are in the same group. For the same reason, call <code>find(x)</code> instead of reading <code>parent[x]</code> when you list the members of each group at the end, because after a union only the root of the smaller group has changed its parent.</p>
 
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
-    { "name": "Re-run BFS or DFS per question", "time": "O(V + E) per question", "space": "O(V)", "note": "Walks the whole network every time." },
+    { "name": "Re-run BFS or DFS per question", "time": "O(V + E) per question", "space": "O(V)", "note": "Walks the whole graph every time." },
     { "name": "Union-find, no tricks", "time": "O(n) per operation", "space": "O(n)", "note": "Trees can turn into chains." },
-    { "name": "Union by size only", "time": "O(log n) per operation", "space": "O(n)", "note": "A group doubles each time a node gets deeper, so depth stays under log₂ n." },
-    { "name": "Union by size + path compression", "time": "O(α(n)) amortized", "space": "O(n)", "note": "α is the inverse Ackermann function. It is at most 4 for any input you could ever store, so treat it as constant." }
+    { "name": "Union by size only", "time": "O(log n) per operation", "space": "O(n)", "note": "An item gets deeper only when its group at least doubles, so depth stays under log₂ n." },
+    { "name": "Union by size and path compression", "time": "O(α(n)) amortized", "space": "O(n)", "note": "α(n) is at most 4 for any realistic n, so this is effectively constant." }
   ]
 }
 </script>
 </x-complexity>
 
-<p>"Amortized" means averaged over many operations. One find can take a few hops, but it flattens its path, so later finds are cheaper.</p>
+<p>"Amortized" means averaged over a sequence of operations. A single <code>find</code> can walk several hops, but it flattens the path it walked, so the later finds on those items are cheap.</p>
 
-<h2>Common mistakes</h2>
+<h2>Variants and limits</h2>
 
-<x-callout type="mistake" title="Comparing parents instead of roots">
-<p><code>parent[a] === parent[b]</code> is not a connection test. Right after the 1–3 cable, <code>parent[1]</code> was 0 and <code>parent[3]</code> was 2, yet they were in one group. Compare <code>find(a)</code> and <code>find(b)</code>.</p>
-</x-callout>
+<h3>Items that are not small integers</h3>
 
-<x-callout type="mistake" title="Linking the items, not their roots">
-<p><code>parent[a] = b</code> moves only <code>a</code>: the rest of its old group stays behind. Find both roots and link root to root.</p>
-</x-callout>
+<p>The array version needs items numbered 0 to n - 1. When the items are strings, coordinates or other objects, keep <code>parent</code> and <code>size</code> in hash maps instead, and create an entry for an item the first time you see it. For a grid, a common trick is to turn cell <code>(r, c)</code> into the number <code>r * cols + c</code> and use the array version.</p>
 
-<x-callout type="mistake" title="Expecting it to split groups">
-<p>Union-find can only merge; it cannot undo a union when a cable is unplugged. For removals, use a graph search, or process changes in reverse so removals become additions.</p>
-</x-callout>
+<h3>Iterative find</h3>
 
-<x-callout type="real-world">
-<p>Image editors use union-find to label connected blobs of pixels, compilers to merge type variables that must be equal, and networking tools to track which machines can reach each other as links come up.</p>
-</x-callout>
+<p>The recursive <code>find</code> is short, but with union by size its depth is at most about log₂ n, so the recursion is safe. If you leave out union by size, a chain of 100,000 items overflows the recursion limit in Python. When you want to avoid recursion, loop while <code>parent[x] != x</code>, set <code>parent[x] = parent[parent[x]]</code>, and move <code>x</code> to its parent. This is called path halving. It keeps the same complexity as full path compression.</p>
 
-<h2>Check yourself</h2>
+<h3>Tracking extra information per group</h3>
+
+<p>Because every group has a root, the root can hold anything that can be combined when two groups merge: the size, the smallest member, the total of a value, or a count of edges. Update it in <code>union</code> on the new root, exactly as <code>size</code> is updated in the code above. Problems that ask for the largest group or for a group's total are solved this way.</p>
+
+<h3>When union-find does not apply</h3>
+
+<p>Union-find cannot split a group. If connections are removed as well as added, it cannot undo a union, so the data structure does not fit. When all the changes are known in advance, you can sometimes process them in reverse order, so that removals become additions. Otherwise use a graph search after each change, or a more advanced structure. It also does not return paths. If a problem needs the route between two items, or the shortest distance, use BFS, DFS or <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a>. Finally, for a graph that never changes, one DFS that labels each component is simpler and just as fast.</p>
+
+<h2>In the interview</h2>
+
+<p>Consider union-find when the problem is about items being merged into groups and you must repeatedly ask whether two items are connected, or how many groups remain. Interviewers usually expect you to write the class from memory, with both optimizations, and then to explain the complexity and why <code>find</code> must return the root. Typical statements are "given a list of edges, count the connected components", "are these two accounts the same person, given pairs that share an email", "find the edge that creates a cycle", and "process connections as they arrive and report the component count after each". A graph problem that asks only for one final answer can also use union-find. The same code works for building a minimum spanning tree with Kruskal's algorithm, where it decides whether a cheap edge would close a cycle (see <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a>).</p>
+
+<p>Questions to expect:</p>
+
+<ul>
+<li><strong>"Why not just run BFS each time?"</strong> A search costs O(V + E) per query. Union-find handles a stream of connections and queries in nearly constant time each, because it stores only the group of each item and never needs the paths.</li>
+<li><strong>"What is the complexity?"</strong> With union by size and path compression, each operation is O(α(n)) amortized, which is effectively constant. Without path compression, union by size alone gives O(log n). The space is O(n) for the two arrays.</li>
+<li><strong>"Why do you need union by size if you already compress paths?"</strong> Path compression alone still gives O(log n) amortized, but a single find can be slow right after a chain has formed. Union by size prevents the long chains from forming, and the two together give the near-constant bound. Interviewers usually accept either one, as long as you can explain what it does.</li>
+<li><strong>"How would you detect a cycle in an undirected graph?"</strong> Call <code>union(u, v)</code> for each edge. If it returns false, <code>u</code> and <code>v</code> were already connected, so that edge closes a cycle. This works for undirected graphs only. For a directed graph, use DFS with a visiting state or a topological sort.</li>
+<li><strong>"How do you handle deletions?"</strong> Union-find cannot undo a union. If the deletions are known up front, process the operations in reverse so each deletion becomes a union. Otherwise rebuild the structure or use a different technique.</li>
+<li><strong>"What are union by rank and path halving?"</strong> Union by rank compares the heights of the two trees instead of their sizes and gives the same depth bound. Path halving is an iterative form of path compression that points each visited item at its grandparent. Either is an acceptable substitute in an interview if you can say why it keeps the trees shallow.</li>
+<li><strong>"Union-find or DFS for counting components?"</strong> For a fixed graph, both take about O(V + E), and DFS is simpler. Union-find is the better choice when edges arrive one at a time and you need the answer after each one.</li>
+</ul>
 
 <x-quiz>
 <script type="application/json">
@@ -197,25 +209,25 @@ class UnionFind:
     {
       "question": "<code>parent = [0, 0, 1, 3, 3]</code>. Which computers are in the same group as 2?",
       "options": [
-        { "text": "Only 1", "why": "The walk does not stop at 1: 1 reports to 0, the root." },
-        { "text": "0 and 1", "correct": true, "why": "find(2) walks 2 → 1 → 0. find(1) and find(0) also end at 0. Computers 3 and 4 have root 3." },
-        { "text": "All of them", "why": "3 is its own root, so 3 and 4 form a separate group." }
+        { "text": "Only 1", "why": "The walk does not stop at 1, because 1 has parent 0 and 0 is the root." },
+        { "text": "0 and 1", "correct": true, "why": "find(2) walks 2 → 1 → 0, and find(1) and find(0) also end at 0. Computers 3 and 4 have root 3, so they are in a different group." },
+        { "text": "All of them", "why": "Computer 3 is its own root, so 3 and 4 form a separate group." }
       ]
     },
     {
       "question": "Root A has a group of 10 and root B has a group of 3. With union by size, what does <code>union</code> do?",
       "options": [
-        { "text": "Sets parent[A] = B", "why": "That pushes all 10 of A's members one hop deeper. The smaller group should take that hit." },
-        { "text": "Sets parent[B] = A", "correct": true, "why": "Only B's 3 members get one hop deeper, and their group grew to 13, more than double." },
-        { "text": "Points all 13 computers at a new root", "why": "That is O(n) work per union. Union-find moves one pointer per merge." }
+        { "text": "Sets parent[A] = B", "why": "That would put all 10 members of A one hop deeper. The smaller group should take that cost." },
+        { "text": "Sets parent[B] = A", "correct": true, "why": "Only the 3 members of B get one hop deeper, and their group grows to 13, more than double its old size." },
+        { "text": "Points all 13 computers at a new root", "why": "That would take O(n) work per union. Union-find changes one pointer per merge." }
       ]
     },
     {
-      "question": "You call <code>union(u, v)</code> on each edge of an undirected graph in turn. One call returns false. What does that tell you?",
+      "question": "You call <code>union(u, v)</code> on each edge of an undirected graph in turn, and one call returns false. What does that tell you?",
       "options": [
-        { "text": "The edge is a duplicate of an earlier edge", "why": "Not necessarily. It only means u and v were already connected by some path." },
-        { "text": "The graph has a cycle", "correct": true, "why": "u and v were already connected, so this edge plus that path forms a loop." },
-        { "text": "The graph is disconnected", "why": "It says u and v were already in the same piece." }
+        { "text": "The edge is a duplicate of an earlier edge", "why": "Not necessarily. It only means that u and v were already connected by some path." },
+        { "text": "The graph has a cycle", "correct": true, "why": "u and v were already connected, so this edge together with the existing path forms a loop." },
+        { "text": "The graph is disconnected", "why": "A false result means u and v were already in the same group, which says nothing about other parts of the graph." }
       ]
     }
   ]
@@ -225,4 +237,4 @@ class UnionFind:
 
 <h2>What to practise next</h2>
 
-<p>Union-find returns in <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a> to decide which cheap cables to lay. First, graphs get weights: <a href="/algorithms/dijkstra.html">Dijkstra's Algorithm</a> finds the fastest route when every road has a travel time.</p>
+<p>Try the problems <a href="/practice/one-cable-too-many.html">One Cable Too Many</a> and <a href="/practice/wiring-the-campsites.html">Wiring the Campsites</a>. Then read <a href="/algorithms/minimum-spanning-trees.html">Minimum Spanning Trees</a>, where union-find decides which edges to keep, or <a href="/algorithms/dijkstra.html">Dijkstra's Algorithm</a> for shortest paths in weighted graphs.</p>

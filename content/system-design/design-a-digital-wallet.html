@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design a Digital Wallet",
-  "description": "How a digital wallet keeps balances correct: a double-entry ledger, idempotent transfers, overdraft prevention, and transfers between database shards.",
+  "description": "How a digital wallet keeps balances correct using a ledger, idempotent transfers and cross-shard sagas, and what interviewers ask about it.",
   "minutes": 25,
   "kind": "design",
   "tags": ["case study", "ledger", "transactions", "sagas", "consistency"]
@@ -9,7 +9,7 @@
 -->
 <p>A digital wallet stores a money balance for each user. Users add money from a card, send money to other users, and look at their balance and history. The hard part is correctness: a balance must never go below zero, a retried request must not move money twice, and every cent must be traceable to ledger entries that add up.</p>
 
-<p>The design builds on the idempotency keys and ledger rules from <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>. Here both sides of a transfer are accounts you hold, and at scale they sit in different database shards, so the question is how to move money between your own databases without creating or losing any. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>This builds on the idempotency keys and ledger rules from <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>. Here both sides of a transfer are accounts you hold, and at scale they sit in different database shards, so the question is how to move money between your own databases without creating or losing any. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -19,7 +19,7 @@
 <x-interviewer>One currency only, and withdrawals can wait. Top-ups go through an existing payment system.</x-interviewer>
 <x-you>How many users and transfers should I plan for?</x-you>
 <x-interviewer>Assume 100 million wallets, about 50 million transfers and 5 million top-ups a day.</x-interviewer>
-<x-you>Then I will treat three rules as exact: a balance never goes below zero, a retried transfer moves money only once, and every cent traces to ledger entries that balance. I would rather reject a transfer than break one of those rules. A recipient seeing the money a second late is acceptable, but a sender must never see money disappear.</x-you>
+<x-you>Then I will treat three rules as exact: a balance never goes below zero, a retried transfer moves money only once, and every cent traces to ledger entries that balance. I would rather reject a transfer than break one of those rules. A recipient seeing the money a second late is acceptable.</x-you>
 <x-coach>Separating what must be exact from what may lag justifies the rest of the design.</x-coach>
 </x-interview>
 
@@ -31,7 +31,7 @@
 
 <h2>Estimate the scale</h2>
 
-<p>Top-ups are 5 million ÷ 86,400 ≈ 60 a second, small next to transfers. Balance reads come from about 300 million app opens a day, which is ≈ 3,500 single-row reads a second. A single relational primary can handle about 5,000 short write transactions a second, so the numbers below tell us whether one primary is enough.</p>
+<p>Top-ups are 5 million ÷ 86,400 ≈ 60 a second. Balance reads come from about 300 million app opens a day, which is ≈ 3,500 single-row reads a second. A single relational primary can handle about 5,000 short write transactions a second, so the peak transfer rate below tells us whether one primary is enough.</p>
 
 <x-estimate title="Peak transfer rate">
 <script type="application/json">
@@ -43,7 +43,7 @@
   "accept": ["1 thousand/s", "10 thousand/s"],
   "choices": ["300/s", "3 thousand/s", "30 thousand/s", "300 thousand/s"],
   "steps": ["50 × 10<sup>6</sup> ÷ 86,400 ≈ 580 a second", "580 × 5 ≈ 2,900, which rounds to 3,000 a second"],
-  "note": "One primary can handle 3,000 transfers a second, so the first design can use a single database."
+  "note": "A single primary handles about 5,000 short transactions a second, which covers 3,000 transfers a second, so the first design can use one database."
 }
 </script>
 </x-estimate>
@@ -82,7 +82,7 @@ GET /v1/wallet/history?before=99812&limit=50
 </pre>
 </x-code>
 
-<p>The decision worth arguing is when the API says a transfer is "sent". It says so once the money has left Alice's balance, not once it has reached Bob's. From then on the transfer cannot be lost, because it either completes or is reversed to Alice. Waiting for Bob's side would add a second database to the latency of every send without making anything safer. A retry with the same transfer id returns the stored result instead of debiting again, and a reused id with a different body gets a 422. Amounts are always integer cents, because floating point cannot represent most decimal amounts exactly.</p>
+<p>The decision worth arguing is when the API says a transfer is "sent": once the money has left Alice's balance, not once it has reached Bob's. From then on the transfer cannot be lost, because it either completes or is reversed to Alice. Waiting for Bob's side would add a second database to every send without making it safer. A retry with the same transfer id returns the stored result instead of debiting again, and a reused id with a different body gets a 422. Amounts are integer cents, because floating point cannot represent most decimals exactly.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -137,7 +137,7 @@ outbox                         -- on the sender's shard
 
 <h2>High-level design</h2>
 
-<p>The diagram shows the sharded design for 10x load. Today both legs fit in one transaction in one database. A top-up is simpler: once the payment system confirms the charge, the wallet service credits Alice from a card-funding account, keyed by the top-up id so that it credits only once.</p>
+<p>The diagram shows the sharded design for 10x load, while today both legs fit in one database transaction. A top-up is simpler: once the payment system confirms the charge, the wallet service credits Alice from a card-funding account, keyed by the top-up id so that it credits only once.</p>
 
 <x-arch caption="A send is two local transactions, the debit on the sender's shard and the credit on the receiver's shard, joined by an outbox and a worker.">
 <script type="application/json">
@@ -235,13 +235,13 @@ outbox                         -- on the sender's shard
 
 <h3>Moving money between two shards</h3>
 
-<p>If wallets are sharded by wallet id across 16 shards, Bob is on Alice's shard only 1 time in 16, so about 94% of transfers cross shards. That makes the cross-shard transfer the normal case, and there are four ways to handle it.</p>
+<p>If wallets are sharded by wallet id across 16 shards, Bob is on Alice's shard only 1 time in 16, so about 94% of transfers cross shards, and there are four ways to handle that.</p>
 
-<p><strong>One database transaction.</strong> If both wallets are in the same primary, the debit and the credit are two updates in one transaction, so they commit together or not at all and there is no in-between state. This is the simplest design and the correct one while the load fits. Its limit is that every wallet must live in one primary, which caps writes at about 5,000 transactions a second.</p>
+<p><strong>One database transaction.</strong> If both wallets are in the same primary, the debit and the credit are two updates in one transaction, so they commit together or not at all and there is no in-between state. This is the simplest correct design while the load fits. Its limit is that every wallet must live in one primary, which caps writes at about 5,000 transactions a second.</p>
 
-<p><strong>Two-phase commit.</strong> A coordinator asks both shards to prepare, meaning to do the work and promise they can commit, and then tells both to commit. This is atomic across shards, but each shard holds its row locks for several network round trips, and if the coordinator fails after the prepare phase both rows stay locked until it returns. You would rarely build it by hand, although some distributed SQL databases run it internally over replicated groups, which removes the blocking.</p>
+<p><strong>Two-phase commit.</strong> A coordinator asks both shards to prepare, meaning to do the work and promise they can commit, and then tells both to commit. This is atomic across shards, but each shard holds its row locks for several network round trips, and if the coordinator fails after the prepare phase both rows stay locked until it returns. You would rarely build it by hand, although some distributed SQL databases run it internally over replicated groups.</p>
 
-<p><strong>Saga with compensation.</strong> A saga splits the transfer into local transactions: first the debit on Alice's shard, then the credit on Bob's shard, linked by a durable message. No locks are held across shards, and a shard outage only delays the transfers that need it. The cost is that a transfer is briefly in an in-between state, and you must build and test the compensating step that reverses the debit when the credit cannot happen.</p>
+<p><strong>Saga with compensation.</strong> A saga splits the transfer into local transactions: first the debit on Alice's shard, then the credit on Bob's shard, linked by a durable message. No locks are held across shards, and a shard outage only delays the transfers that need it. The cost is a brief in-between state, and you must build and test the compensating step that reverses the debit.</p>
 
 <p><strong>Event-sourced ledger.</strong> Every change is appended to an ordered event log, and balances come from replaying it. The overdraft check then needs all events for one account to be processed in order, and you also need snapshots and consumers that apply each event only once.</p>
 
@@ -260,7 +260,7 @@ outbox                         -- on the sender's shard
       "name": "Two-phase commit",
       "good": "Both shards commit or neither does.",
       "bad": "Locks are held across network round trips, and a failed coordinator leaves rows locked.",
-      "pick": "Rarely by hand; use a distributed SQL database that provides it."
+      "pick": "Rarely build it by hand; use a distributed SQL database that provides it."
     },
     {
       "name": "Saga with compensation",
@@ -279,21 +279,21 @@ outbox                         -- on the sender's shard
 </script>
 </x-tradeoffs>
 
-<p>The choice is one database while it fits, then a saga. Two details make the saga safe. The first is to <strong>debit first and credit second</strong>. The debit is the only step that can fail for a business reason, which is not having enough money. After it commits, the credit almost always succeeds, and the rare refusal, such as a frozen wallet, has a simple reversal. If you credited first, you could credit Bob and then fail to debit Alice, which creates money from nothing.</p>
+<p>Use one database while it fits, then a saga. Two details make the saga safe. The first is to <strong>debit first and credit second</strong>. The debit is the only step that normally fails, because the sender may not have enough money, and the rare refused credit, such as to a frozen wallet, has a simple reversal. If you credited first, you could credit Bob and then fail to debit Alice, which creates money from nothing.</p>
 
-<p>The second detail is that <strong>each leg balances on its own</strong>, through one transit account per shard. Alice's debit is paired with a credit to transit:A, and the second leg moves the money from transit:B to Bob. While a transfer is in flight, transit:A is +2000 and transit:B is −2000. Every ledger still sums to zero, and the transit accounts together equal the money in flight.</p>
+<p>The second detail is that <strong>each leg balances on its own</strong>, through one transit account per shard. Alice's debit is paired with a credit to transit:A, and the second leg moves the money from transit:B to Bob. While a transfer is in flight, transit:A holds +2000. When the credit leg commits, transit:B gets −2000, and the two transit accounts together add up to zero again. Every ledger still sums to zero, and the balance of the transit accounts shows the money in flight.</p>
 
-<p>There are two traps. A cached balance on a transit account would be the hottest row on the shard, so transit accounts receive ledger entries only. And a refusal must be final: shard B stores it in <code>applied_credits</code>, so a redelivery after Dan is unfrozen cannot credit him after Alice has her money back.</p>
+<p>Two details need care. Transit accounts receive ledger entries only, because a cached balance on one would be the hottest row on the shard. And a refusal must be final: shard B stores it in <code>applied_credits</code>, so a redelivery after Dan is unfrozen cannot credit him after Alice has her money back.</p>
 
 <h3>Preventing overdraft under concurrency</h3>
 
-<p>Suppose Alice has $30 and two devices each send $20 within a millisecond of each other. The problem is that a service which reads the balance, checks it in code and then writes it lets both requests see 3000 and both succeed, leaving Alice at −$10. The check and the write must be a single atomic step, and there are three ways to get that.</p>
+<p>Suppose Alice has $30 and two devices each send $20 at the same moment. A service that reads the balance, checks it in code and then writes it lets both requests see 3000 and both succeed, leaving Alice at −$10. The check and the write must be a single atomic step, and there are three ways to get that: lock the row first, make the check part of the update, or check a version number.</p>
 
-<p><strong>Lock the row, then check.</strong> The transaction runs <code>SELECT ... FOR UPDATE</code> on Alice's wallet row, checks the balance in code and then updates it. The second request waits for the lock and then sees the new balance. This is correct but needs an extra statement.</p>
+<p><strong>Lock the row, then check.</strong> The transaction runs <code>SELECT ... FOR UPDATE</code> on Alice's wallet row, checks the balance in code and then updates it. The second request waits for the lock and then sees the new balance.</p>
 
 <p><strong>Conditional update.</strong> The check is part of the update, as in the code below: <code>UPDATE ... WHERE balance_cents &gt;= 2000</code>. The database locks the row, so the second debit waits. In PostgreSQL at read committed it then re-evaluates its <code>WHERE</code> clause against the new balance of 1000 and changes no rows. At repeatable read or serializable the second debit fails with a serialization error instead, and the retry sees 1000. Either way there is no overdraft, and the lock is held only for one statement. Name the isolation level you rely on (see <a href="/system-design/transactions-and-isolation.html">Transactions and isolation</a>).</p>
 
-<p>The conditional update is the best choice because it needs one statement and no retry loop. A version-number check on the row also works, but it detects conflicts instead of preventing them, so a busy wallet would retry often.</p>
+<p><strong>Version check.</strong> The service reads the balance and a version number, and writes only if the version is unchanged. This detects a conflict instead of preventing it, so a busy wallet would retry often. The conditional update is therefore the best choice, because it needs one statement and no retry loop.</p>
 
 <x-code single title="The debit leg on Alice's shard">
 <pre lang="sql">
@@ -308,24 +308,22 @@ COMMIT;
 </pre>
 </x-code>
 
-<x-callout type="mistake" title="Checking the balance in a cache">
-<p>Deciding a debit from a cached or replica balance brings the race back, because two requests can both see $30 and a replica can be seconds behind. Only the conditional write on the primary enforces the rule.</p>
-</x-callout>
+<p>The check must also run on the primary, because a cached or replica balance can be seconds behind.</p>
 
 <h3>Ledger, audit and reconciliation</h3>
 
-<p>The ledger rules from the payment system apply here: entries sum to zero, entries are never edited, and a mistake is fixed with a reversing entry. In the wallet, <code>balance_after</code> lets anyone verify any point in the history without summing years of rows. Run these checks continuously and page someone on any failure:</p>
+<p>The ledger rules from the payment system apply here: entries sum to zero, entries are never edited, and a mistake is fixed with a reversing entry. Here <code>balance_after</code> also lets anyone verify any point in the history without summing years of rows. These checks run continuously, and any failure pages someone:</p>
 
 <ul>
-<li><strong>Per wallet:</strong> the cached balance equals the latest <code>balance_after</code>, which equals the sum of all entries. Sample all day and check every wallet nightly.</li>
+<li><strong>Per wallet:</strong> the cached balance equals the latest <code>balance_after</code>, which equals the sum of all entries. Sample wallets all day, and check every wallet nightly.</li>
 <li><strong>Per transfer:</strong> a transfer that is still <code>sent</code> after a minute is stuck, and a sweeper re-drives it from the outbox.</li>
 <li><strong>Across shards:</strong> all accounts together sum to zero, and the transit accounts sum to the money in flight.</li>
-<li><strong>Against the outside world:</strong> all balances add up to the company's pooled bank account.</li>
+<li><strong>Against the outside world:</strong> all balances add up to the pooled bank account.</li>
 </ul>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x the peak is 30,000 transfers a second. Each cross-shard transfer is two local transactions, so the shards must handle 60,000 transactions a second. At about 5,000 per primary that needs 12 primaries, and 16 shards leaves some headroom. Balance reads rise to 35,000 a second, but they are single-row lookups that replicas can serve.</p>
+<p>At 10x the peak is 30,000 transfers a second. Each cross-shard transfer is two local transactions, so the shards must handle 60,000 transactions a second. At about 5,000 per primary that needs 12 primaries, and 16 shards leaves some headroom. Balance reads rise to 35,000 a second, which replicas can serve.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -358,16 +356,19 @@ COMMIT;
 <h2>Follow-up questions</h2>
 
 <h3>What breaks when a merchant wallet receives 1,000 credits a second?</h3>
-<p>The lock on its balance row becomes the bottleneck, because every credit has to update that row in turn. Credits need no balance check, so the service can append entries and fold them into the cached balance once a second, or split the account into 10 sub-accounts that are summed on read.</p>
+<p>The lock on its balance row becomes the bottleneck, because every credit has to update that row in turn. Credits need no balance check, so the service can append entries and fold them into the balance once a second, or split the account into sub-accounts that are summed on read.</p>
 
 <h3>How would you add withdrawals to a bank account?</h3>
-<p>Debit the user into a "payouts pending" account, and then call the bank with an idempotency key. If the bank's answer is unknown after a timeout, the withdrawal stays pending until the bank's records settle it.</p>
+<p>The wallet debits the user into a "payouts pending" account and then calls the bank with an idempotency key. If the bank does not answer before the timeout, the withdrawal stays pending until the bank's records settle it.</p>
 
 <h3>How do you prove that the ledger was never edited?</h3>
-<p>Grant insert-only permission on the ledger table, and store in each entry a hash of the previous entry, so that any edit breaks the chain after it. Publish daily totals somewhere the database cannot change them.</p>
+<p>The application account gets insert-only permission on the ledger table, and each entry stores a hash of the previous entry, so any edit breaks the chain after it.</p>
 
 <h3>Why not compute the balance from the entries on every read?</h3>
-<p>An active wallet has thousands of entries, and 3,500 reads a second would each have to sum them all. The cached balance column is exact because it changes in the same transaction as the entries, and a nightly check verifies it.</p>
+<p>An active wallet has thousands of entries, and summing them for 3,500 reads a second is wasteful. The cached balance column is exact because it changes in the same transaction as the entries, and a nightly check verifies it.</p>
+
+<h3>How would you support more than one currency?</h3>
+<p>Each wallet holds one balance per currency, and every ledger entry carries its currency, so entries must sum to zero within each currency. A conversion is a pair of transfers through the company's exchange account, with the rate stored on the transfer.</p>
 
 <x-checklist title="Self-review: digital wallet">
 <script type="application/json">

@@ -9,7 +9,7 @@
 -->
 <p>A retrieval-augmented generation (RAG) system answers questions from a large set of documents. For each question it searches the documents, selects the few passages that are most relevant, and gives them to a language model with an instruction to answer only from those passages and to cite them. See <a href="/ai/rag-basics.html">RAG basics</a> and <a href="/ai/chunking-and-retrieval.html">chunking and retrieval</a> for the building blocks.</p>
 
-<p>The model call is the easy part. The hard parts are keeping millions of changing documents searchable, finding the right passages quickly, never showing someone a document they are not allowed to read, and measuring answer quality. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>Interviewers ask this question because calling the model is the simple part. The hard parts are keeping millions of changing documents searchable, finding the right passages quickly, never showing someone a document they are not allowed to read, and measuring answer quality. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -20,7 +20,6 @@
 <x-you>Then permission checks are a hard requirement. How many employees will use it, and how soon after an edit should the answers reflect it?</x-you>
 <x-interviewer>There are 20,000 employees, and a changed page should show up within minutes.</x-interviewer>
 <x-you>My priorities are these. The system must never show content that the asker cannot open. Every answer must cite its sources. It should say it does not know instead of guessing. The first words should appear within about 2 seconds, and the cost per question must be controlled.</x-you>
-<x-coach>Asking about permissions in the first minute shows that you have thought about running such a system.</x-coach>
 </x-interview>
 
 <ul>
@@ -34,8 +33,7 @@
 <ul>
 <li><strong>Chunks:</strong> 10 million documents with about 5 passages (chunks) each give 50 million chunks.</li>
 <li><strong>Questions:</strong> 20,000 employees asking 10 questions a day give 200,000 questions a day. Over an 8-hour working day (28,800 seconds) that is about 7 a second, or about 20 a second at a 3x peak.</li>
-<li><strong>Tokens:</strong> each question sends 8 chunks of about 500 tokens plus about 500 tokens for instructions, the question and the answer, which is 4,500 tokens. Over 200,000 questions that is 900 million tokens a day, and this figure drives the cost.</li>
-<li><strong>Changes:</strong> if 1% of the documents change each day, that is 100,000 documents and about 500,000 chunks to embed again, which is about 6 a second over a full day.</li>
+<li><strong>Tokens:</strong> each question sends 8 chunks of about 500 tokens plus about 500 tokens for instructions, the question and the answer, which is 4,500 tokens. Over 200,000 questions that is 900 million tokens a day, which drives the cost.</li>
 </ul>
 
 <x-estimate title="Size of the vector index">
@@ -83,7 +81,7 @@ POST /ingest/events             internal, from connectors
 </pre>
 </x-code>
 
-<p>The decision worth arguing is streaming. A full answer takes several seconds, but the first words can arrive after about one second, so server-sent events are what meets the 2-second target. The citations come last because the model decides which sources it uses while it writes. If the model is down, the 503 response still contains the top documents.</p>
+<p>The decision worth arguing is streaming. A full answer takes several seconds, but the first words can arrive after about one second, so server-sent events are what meets the 2-second target. The citations come last because the model decides which sources it uses while it writes.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -117,7 +115,7 @@ chunks                            -- lives in the search index
 </pre>
 </x-code>
 
-<p>The query that runs on every question is "find the nearest vectors and the best keyword matches among the chunks this person may read". That needs a search index that supports vector search, keyword search and filters in one query. A search engine with vector support or a vector database with keyword support both work. Vector search is approximate, so its recall has to be measured.</p>
+<p>The query that runs on every question is "find the nearest vectors and the best keyword matches among the chunks this person may read". That needs a search index that supports vector search, keyword search and filters in one query. A search engine with vector support or a vector database with keyword support both work.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -156,8 +154,6 @@ chunks                            -- lives in the search index
 }
 </script>
 </x-arch>
-
-<p>Both paths use the same embedding model, because vectors produced by different models cannot be compared with each other.</p>
 
 <x-tracer title="A question, an edit, a permission change and an outage">
 <script type="application/json">
@@ -201,12 +197,12 @@ chunks                            -- lives in the search index
       "vars": { "elapsed ms": 150, "candidates": 50 }
     },
     {
-      "caption": "The reranker scores each candidate against the question and keeps the best 8. This is budgeted at about 200 ms.",
+      "caption": "The reranker keeps the best 8 of the candidates, within a budget of about 200 ms.",
       "arch": { "active": ["rerank", ["answer", "rerank"]], "dim": ["src", "ingest", "embed", "llm"], "notes": { "rerank": "50 to 8" } },
       "vars": { "elapsed ms": 350, "candidates": 8 }
     },
     {
-      "caption": "The prompt contains the instructions, the 8 numbered chunks and the question, about 4,500 tokens in total. We assume the model produces its first token after about 1 second.",
+      "caption": "The prompt holds the instructions, the 8 numbered chunks and the question, about 4,500 tokens, and we assume the first token comes after about 1 second.",
       "arch": { "active": ["llm", ["answer", "llm"]], "dim": ["src", "ingest", "embed", "index", "rerank"] },
       "vars": { "elapsed ms": 1350, "candidates": 8 }
     },
@@ -247,13 +243,19 @@ chunks                            -- lives in the search index
 <p>The index has to follow the documents, which are edited, moved and deleted all the time. Each source system sends change events to a connector, and the connector also crawls the source on a schedule to catch any events that were lost. Every change becomes a message on a queue, and workers process the messages in four steps.</p>
 
 <ol>
-<li>The worker fetches the document and extracts its text, including from PDFs and slides. Extraction failures often go unnoticed, so count them for each source.</li>
+<li>The worker fetches the document and extracts its text, including from PDFs and slides.</li>
 <li>The worker splits the text into chunks of about 500 tokens along the headings, with a little overlap between neighbours. It puts the document title and section heading at the top of each chunk so that it makes sense alone.</li>
 <li>The worker embeds, in batches, only the chunks whose hash is new. Most edits change only a few chunks.</li>
 <li>The worker writes the new and changed chunks to the index by <code>doc_id</code> and deletes the chunks that no longer exist.</li>
 </ol>
 
-<p>Changing the embedding model or the chunking rules is a larger event, because the old and new vectors cannot be compared. The approach is to build a second index tagged with a new <code>index_version</code> and write every live change to both. When it is complete and checked against the evaluation set below, the answer service switches to it. At 1,000 chunks a second, backfilling 50 million chunks takes about 14 hours.</p>
+<p>Changing the embedding model or the chunking rules is a larger event, because the old and new vectors cannot be compared. The approach is to build a second index tagged with a new <code>index_version</code> and write every live change to both. When it is complete and checked against the evaluation set below, the answer service switches to it.</p>
+
+<h3>Chunking</h3>
+
+<p>Chunk size decides what retrieval can find. A chunk that is too small, such as one sentence, loses the context that makes it meaningful, and a chunk that is too large mixes several topics, so its vector matches none of them well and it spends prompt tokens on text that is not relevant. About 500 tokens is a common starting point, and the golden set below is used to compare sizes.</p>
+
+<p><strong>Fixed-size chunking</strong> cuts the text every N tokens with some overlap. It is simple and works for any format, but it cuts through sentences and tables, so a step of a procedure can be separated from the heading that explains it. <strong>Structure-aware chunking</strong> splits along headings, paragraphs, list items and table boundaries, and keeps each table or code block whole. It needs a parser for each format, but it produces chunks that can be read alone, so it is the better default for company documents.</p>
 
 <h3>Choosing the retrieval method</h3>
 
@@ -261,11 +263,11 @@ chunks                            -- lives in the search index
 
 <p><strong>Vector search</strong> compares the embedding of the question with the embedding of each chunk and returns the nearest ones. It finds passages with the same meaning in different words, so "reset my login" matches a page about password recovery. Its weakness is exact terms: an embedding model gives an error code or ticket number little meaning, so such a query can return vaguely related chunks.</p>
 
-<p><strong>Keyword search</strong> scores chunks by the words they contain,. It is excellent for exact identifiers, and it misses a passage that uses different words from the question. Company questions contain both exact terms and paraphrases, so neither method is enough alone.</p>
+<p><strong>Keyword search</strong> scores chunks by the words they contain. It is excellent for exact identifiers, and it misses a passage that uses different words from the question. Company questions contain both exact terms and paraphrases, so neither method is enough alone.</p>
 
-<p><strong>Hybrid search</strong> runs both searches and merges the two ranked lists. A common way is reciprocal rank fusion, where each list gives a chunk 1 ÷ (60 + rank) points and the chunks are sorted by their total, so a chunk that both lists rank well beats one that only a single list ranks first.</p>
+<p><strong>Hybrid search</strong> runs both searches and merges the two ranked lists. A common way is reciprocal rank fusion, where each list gives a chunk 1 ÷ (60 + rank) points and the chunks are sorted by their total, so a chunk that both lists rank well comes first.</p>
 
-<p>Hybrid search returns 50 candidates cheaply, but its scorers judge the question and chunk separately, so the order is approximate. A <strong>reranker</strong> is a model that reads the question and one candidate chunk together and gives a more accurate relevance score. It is too slow for millions of chunks, but takes about 200 ms for 50 candidates. Its 8 chunks are better than the first 8 of the fused list, which lets the prompt hold 8 chunks instead of 20.</p>
+<p>Hybrid search returns 50 candidates cheaply, but its order is approximate. A <strong>reranker</strong> is a model that reads the question and one candidate chunk together and gives a more accurate relevance score. It is too slow to run over millions of chunks, but it takes about 200 ms for 50 candidates. The 8 chunks it keeps are more relevant than the first 8 of the fused list, so the prompt can be shorter without losing the passage that answers the question.</p>
 
 <x-tradeoffs caption="Retrieval pipelines">
 <script type="application/json">
@@ -301,21 +303,17 @@ chunks                            -- lives in the search index
 
 <p>Text that the asker may not read must never reach the prompt, because anything in the prompt can appear in the answer. Every chunk therefore carries the groups allowed to read its document, copied from the source system, and the question is answered only from chunks that match the asker's groups. There are three places to apply that check.</p>
 
-<p><strong>Filtering after the search</strong> means searching everything and then dropping the chunks the user cannot read. It is simple to build but fails in practice. For someone in a small team, most of the top 50 results may be restricted, so few or none remain and the answer is poor although readable documents exist.</p>
+<p><strong>Filtering after the search</strong> means searching everything and then dropping the chunks the user cannot read. It fails in practice: for someone in a small team, most of the top 50 results may be restricted, so few or none remain although readable documents exist.</p>
 
-<p><strong>Filtering inside the search</strong> applies the group condition as part of the query, so the engine returns the 50 best chunks among the readable ones. This is the choice for this design. It requires an index with efficient filtered vector search.</p>
+<p><strong>Filtering inside the search</strong> applies the group condition as part of the query, so the engine returns the 50 best chunks among the readable ones. This is the choice for this design.</p>
 
 <p><strong>A separate index for each group</strong> gives strong isolation, but chunks readable by many groups are stored many times and a permission change means rewriting copies, so it suits only a few large, strictly separate tenants.</p>
 
 <p>The filter is only as good as the permission data behind it, so three more rules apply. A permission change only has to update the <code>allowed_groups</code> field and does not need any embedding, which makes it cheap, so it runs on its own path and more often than content sync to meet the 5-minute target. The asker's groups come from the directory with a cache of about a minute, not from a login token that lives for hours. For highly sensitive sources such as HR and legal, the service also asks the source system at answer time whether the user can still open each cited document, which closes the gap before the next sync.</p>
 
-<p>Retrieved text is untrusted as well, because a page can contain text written to steer the model; the prompt must treat it as data (see <a href="/ai/prompt-injection.html">prompt injection</a>).</p>
-
 <h3>Caching and controlling cost</h3>
 
-<p>The cost is driven by the 900 million tokens a day. The first lever is to send fewer and better chunks: with 6 chunks instead of 8, the prompt drops from 4,500 to 3,500 tokens. The second is to cache answers to repeated questions. The cache key must contain the normalized question and the asker's group set, because without the groups an answer built from restricted documents could be served to someone without access. An entry is evicted whenever a document it cites is changed or has its permissions changed.</p>
-
-<p>A cache that answers merely similar questions is risky: "parental leave in France" and "parental leave in Germany" are close in meaning but have different answers.</p>
+<p>The cost is driven by the 900 million tokens a day. One way to reduce it is to send fewer and better chunks, since 6 chunks instead of 8 cut the prompt from 4,500 to 3,500 tokens. Another is to cache answers to repeated questions. The cache key must contain the normalized question and the asker's group set, because without the groups an answer built from restricted documents could be served to someone without access. An entry is evicted whenever a document it cites is changed or has its permissions changed.</p>
 
 <h3>Evaluating quality</h3>
 
@@ -323,7 +321,7 @@ chunks                            -- lives in the search index
 
 <ul>
 <li><strong>Retrieval recall at 8</strong> is how often a correct chunk is among the 8 sent to the model. When it is low, no prompt can rescue the answer, so this is checked first.</li>
-<li><strong>Faithfulness</strong> is whether every claim in the answer is supported by a cited chunk. A model can grade this at scale, with a sample checked by people.</li>
+<li><strong>Faithfulness</strong> is whether every claim in the answer is supported by a cited chunk. A model can grade this at scale.</li>
 <li><strong>Correct refusals</strong> are measured with questions the documents cannot answer, scoring whether the system says it does not know.</li>
 </ul>
 
@@ -339,6 +337,7 @@ chunks                            -- lives in the search index
 <tr><td>The reranker</td><td>The candidates arrive in the fused order.</td><td>Send the top 8 fused chunks to the model, so quality drops a little but nothing breaks.</td></tr>
 <tr><td>An index shard</td><td>The chunks on that shard are missing from the results.</td><td>Keep replicas of every shard, and if one is lost, answer from the remaining shards and say so.</td></tr>
 <tr><td>The ingestion pipeline</td><td>The index stops updating and answers grow stale.</td><td>Keep changes on a durable queue and catch up later. Permission sync runs on its own path, so removed access still applies.</td></tr>
+<tr><td>The directory that supplies group membership</td><td>The service cannot tell which chunks the asker may read.</td><td>Refuse to answer instead of searching without a filter, because a permission leak is worse than an outage.</td></tr>
 <tr><td>A connector misses events</td><td>Some edits never arrive.</td><td>The scheduled crawl finds them.</td></tr>
 </tbody>
 </table>
@@ -358,7 +357,7 @@ chunks                            -- lives in the search index
 <x-interviewer>Some documents are visible only to HR. How do you handle that?</x-interviewer>
 <x-you>Every chunk carries the allowed groups of its document. Retrieval filters on the asker's groups inside the search, so restricted text never reaches the prompt. Permission changes sync on a fast path of its own, within 5 minutes.</x-you>
 <x-interviewer>And what happens during those 5 minutes?</x-interviewer>
-<x-you>For HR and legal documents, I would also ask the source system at answer time whether the person can still open each cited document. One extra call per document is worth it for that content.</x-you>
+<x-you>For HR and legal documents, I would also ask the source system at answer time whether the person can still open each cited document.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
@@ -369,8 +368,8 @@ chunks                            -- lives in the search index
 <h3>The answer is wrong but the right document exists. How do you debug it?</h3>
 <p>Start with retrieval. Check whether the right chunk was among the 50 candidates and among the final 8. If it was not, the problem is in chunking, search or ranking, and the fix is there. If it was, the problem is in the prompt or the model.</p>
 
-<h3>Why not put all the documents in the context window?</h3>
-<p>Ten million documents do not fit in any context window. Even a set that fits would cost tokens on every question, and models use long contexts unevenly. Retrieval sends only a few thousand relevant tokens.</p>
+<h3>How do you reduce wrong answers that sound confident?</h3>
+<p>The prompt tells the model to answer only from the numbered chunks, to cite them, and to say it does not know when they do not contain the answer. The service can also refuse before calling the model when the best reranker score is below a threshold. The golden set includes questions that the documents cannot answer, so these refusals are measured instead of assumed.</p>
 
 <x-checklist title="Self-review: RAG system">
 <script type="application/json">

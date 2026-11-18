@@ -19,7 +19,7 @@
 <x-interviewer>A log.</x-interviewer>
 <x-you>Do consumers need ordering across all events, or only per key, for example per order ID? And what are the message rate and the retention?</x-you>
 <x-interviewer>Order per key is enough. Assume 100,000 messages a second on average and three times that at peak, about 1 KB each, kept for seven days. Each message is read by about three consumer groups.</x-interviewer>
-<x-you>Then my priorities are these: an acknowledged message is never lost when a broker dies, order holds per key, and consumers can rewind to an older position.</x-you>
+<x-you>Then my priorities are that an acknowledged message is never lost when a broker dies, that order holds per key, and that consumers can rewind to an older position.</x-you>
 <x-coach>Queue or log changes the whole storage design, and the order needed decides the partitioning.</x-coach>
 </x-interview>
 
@@ -27,7 +27,7 @@
 
 <p><strong>Non-functional requirements.</strong> No acknowledged message is lost when one broker fails. Messages with the same key are read in the order they were written. Producing has a p99 latency under about 10 ms.</p>
 
-<p><strong>Out of scope.</strong> Delayed messages and cross-region replication.</p>
+<p><strong>Out of scope.</strong> This design does not cover delayed messages or replication across regions.</p>
 
 <h2>Estimate the scale</h2>
 
@@ -42,12 +42,10 @@
   "answer": "180 TB",
   "accept": ["60 TB", "600 TB"],
   "steps": ["100 MB/s × 86,400 s ≈ 8.64 TB a day", "8.64 TB × 7 ≈ 60 TB", "60 TB × 3 copies ≈ 180 TB"],
-  "note": "At 12 TB of usable disk per broker, 180 ÷ 12 = 15 brokers if completely full, so about 20 with headroom. Disk sets the cluster size."
+  "note": "At 12 TB of usable disk per broker, 180 ÷ 12 = 15 brokers if completely full, so about 20 with headroom. The cluster size is therefore decided by disk capacity, not by throughput."
 }
 </script>
 </x-estimate>
-
-<p>With 20 brokers, each one writes about 300 MB/s × 3 ÷ 20 = 45 MB/s at peak and serves about 900 MB/s ÷ 20 = 45 MB/s of reads, which is comfortable for sequential disk access.</p>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
@@ -85,7 +83,7 @@ CommitOffset(group, generation, partition, offset)
 </pre>
 </x-code>
 
-<p>The API decision worth arguing is pull versus push. In this design consumers pull from their own offset at their own pace. A slow consumer then slows nobody else, the broker can return large batches efficiently, and rewinding is just a fetch with an older offset. With push, the broker would have to track how fast each consumer can accept data. To avoid wasted requests on an empty partition, a fetch waits on the broker for up to <code>max_wait_ms</code> before it returns an empty response.</p>
+<p>The API decision worth arguing is pull versus push. In this design consumers pull from their own offset at their own pace. A slow consumer then slows nobody else, and rewinding is just a fetch with an older offset. A fetch on an empty partition waits up to <code>max_wait_ms</code> before returning.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -261,9 +259,9 @@ consumer offsets                      an internal topic, compacted
 <script type="application/json">
 {
   "options": [
-    { "name": "acks=0", "good": "It has the lowest latency because the producer does not wait.", "bad": "Any network error or broker crash loses messages silently.", "pick": "Metrics or logs where a small loss is fine." },
-    { "name": "acks=1", "good": "It needs one round trip to the leader, about 1 to 2 ms.", "bad": "If the leader dies before the followers copy the batch, an acknowledged message is lost.", "pick": "High-volume events where losing a few messages during a failover is acceptable." },
-    { "name": "acks=all, min ISR 2", "good": "An acknowledged record is on at least 2 brokers, so one broker can die without any loss.", "bad": "It waits for the slowest in-sync follower, and writes are refused when only one replica is in sync.", "pick": "Orders, payments and anything that must not vanish.", "default": true }
+    { "name": "acks=0", "good": "It has the lowest latency because the producer does not wait.", "bad": "Any network error or broker crash loses messages silently.", "pick": "Use it for metrics or logs, where a small loss is fine." },
+    { "name": "acks=1", "good": "It needs one round trip to the leader, about 1 to 2 ms.", "bad": "If the leader dies before the followers copy the batch, an acknowledged message is lost.", "pick": "Use it for high-volume events, where losing a few messages during a failover is acceptable." },
+    { "name": "acks=all, min ISR 2", "good": "An acknowledged record is on at least 2 brokers, so one broker can die without any loss.", "bad": "It waits for the slowest in-sync follower, and writes are refused when only one replica is in sync.", "pick": "Use it for orders, payments and anything that must not be lost.", "default": true }
   ]
 }
 </script>
@@ -273,9 +271,9 @@ consumer offsets                      an internal topic, compacted
 
 <p>An acknowledged record is in the log of at least two brokers, but possibly only in their page cache and not yet on disk. The safety comes from the copies failing independently, so the replicas belong in different racks or zones.</p>
 
-<p>The controller is a quorum of three nodes that stores the cluster metadata in a consensus log. It detects dead brokers, chooses new leaders from the ISR and records every change of the ISR. Each new leader gets a higher leader epoch, and brokers reject requests that carry an older epoch. This fences a zombie leader, a broker that was replaced but does not know it yet. The followers have moved on, so the zombie cannot collect <code>acks=all</code> acknowledgements, although with <code>acks=1</code> it can still acknowledge writes that are later discarded.</p>
+<p>The controller is a quorum of three nodes that stores the cluster metadata in a consensus log. It detects dead brokers, chooses new leaders from the ISR and records every change of the ISR. Each new leader gets a higher leader epoch, and brokers reject requests that carry an older epoch. This fences a zombie leader, a broker that was replaced but does not know it yet.</p>
 
-<p>If every member of the ISR dies, there are two options. The cluster can wait for one of them to come back, which keeps the topic unavailable but loses nothing. Or it can let an out-of-sync replica become leader, which restores availability but loses acknowledged records that replica never received. Waiting is safer.</p>
+<p>If every member of the ISR dies, there are two options. The cluster can wait for one of them to come back, which loses nothing but keeps the topic unavailable. Or it can let an out-of-sync replica become leader, which restores availability but loses acknowledged records that replica never received. Waiting is safer.</p>
 
 <h3>Ordering and producing without duplicates</h3>
 
@@ -285,15 +283,15 @@ consumer offsets                      an internal topic, compacted
 
 <h3>Consumer groups, offsets and delivery guarantees</h3>
 
-<p>Within a group, each partition is read by exactly one member, so a topic has at most as many busy consumers as partitions. When a member joins, leaves or stops sending heartbeats, the group coordinator rebalances the assignment. Every assignment has a generation number, and the broker rejects commits that carry an old generation. A consumer that paused for a minute and was replaced therefore cannot overwrite its successor's position. A cooperative rebalance pauses only the partitions that change owner.</p>
+<p>Within a group, each partition is read by exactly one member, so a topic has at most as many busy consumers as partitions. When a member joins, leaves or stops sending heartbeats, the group coordinator rebalances the assignment. Every assignment has a generation number, and the broker rejects commits that carry an old generation. A consumer that paused for a minute and was replaced therefore cannot overwrite its successor's position.</p>
 
-<p>The time at which a consumer commits its offset decides the delivery guarantee. Committing after processing gives at-least-once delivery. If the consumer dies, it restarts from the last commit, and with commits every 5 seconds and a consumer handling 2,500 messages a second, up to 5 × 2,500 = 12,500 messages are processed again. So processing must be idempotent.</p>
+<p>The time at which a consumer commits its offset decides the delivery guarantee. Committing after processing gives at-least-once delivery. If the consumer dies, it restarts from the last commit, and every message since that commit is processed again, so processing must be idempotent.</p>
 
 <p>Exactly-once is possible inside the log. A consumer that reads from one topic and writes to another can commit its output messages and its input offsets in a single transaction, and readers configured to see only committed data never observe a half-finished result. The promise ends at the edge of the log: sending an email or writing to an external database is not covered, and those side effects still need idempotent handling.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load, which is 1 GB/s of input and 1.8 PB of disk for a week, disk runs out first. 1.8 PB ÷ 12 TB is 150 brokers, or about 200 with headroom. Segments older than a day can move to cheaper <a href="/system-design/blob-storage.html">object storage</a>. A hot key still maps to a single partition, which can then become much busier than the rest. A consumer that replays last week's data pushes recent data out of the page cache, so replay bandwidth per client should be capped.</p>
+<p>At 10 times the load, which is 1 GB/s of input and 1.8 PB of disk for a week, disk runs out first. 1.8 PB ÷ 12 TB is 150 brokers, or about 200 with headroom. Old segments can move to cheaper <a href="/system-design/blob-storage.html">object storage</a>.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -335,6 +333,12 @@ consumer offsets                      an internal topic, compacted
 
 <h3>What happens to a consumer group that is far behind?</h3>
 <p>Producers are not affected, because each group reads at its own offset. The group reads older segments from disk instead of the page cache, which is slower. If its lag exceeds the retention period, the data it needs is deleted and it gets <code>OFFSET_OUT_OF_RANGE</code>, so it must restart from the earliest or latest available offset.</p>
+
+<h3>How do you choose the number of partitions?</h3>
+<p>The partition count caps the number of consumers in a group that can work in parallel, and it spreads load across brokers, so it should be at least the highest consumer parallelism you expect. Too many partitions add cost, because each has its own files and replication traffic. Since adding partitions later breaks per-key order, pick a count with room to grow.</p>
+
+<h3>What do you do about a hot key?</h3>
+<p>All messages with one key go to one partition, so a very busy key makes that partition and its leader much busier than the rest. If order for that key is not strictly required, add a random suffix to the key so its messages spread over several partitions, and merge the results on the consumer side. If order is required, the key has to stay on one partition.</p>
 
 <x-checklist title="Self-review: distributed message queue">
 <script type="application/json">

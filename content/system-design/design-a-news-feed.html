@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design a News Feed",
-  "description": "How to design a social news feed: fan-out on write versus on read, a hybrid for accounts with millions of followers, feed storage, pagination and ranking.",
+  "description": "How to design a social news feed, including fan-out on write versus on read, the hybrid approach for huge accounts, and what interviewers ask.",
   "minutes": 32,
   "kind": "design",
   "tags": ["case study", "fan-out", "caching", "pagination", "read-heavy"]
@@ -39,7 +39,6 @@
 <li><strong>Feed reads:</strong> 100 million users × 10 opens is 10<sup>9</sup> reads a day. Dividing by 86,400 seconds gives about 12,000 reads a second on average, and about 36,000 at a peak of three times the average.</li>
 <li><strong>Posts:</strong> 10 million posts a day is about 116 posts a second, and about 350 at peak. Reads outnumber writes about 100 to 1.</li>
 <li><strong>Feed memory:</strong> keeping the newest 500 entries of 16 bytes (a post id and an author id) for each of 100 million users takes 500 × 16 B = 8 KB per user, or about 800 GB in total. Storing ids instead of whole posts keeps it this small.</li>
-<li><strong>Post storage:</strong> at about 1 KB per post, with media kept in a <a href="/system-design/blob-storage.html">blob store</a>, 10 million posts a day is 10 GB a day, or about 3.7 TB a year.</li>
 </ul>
 
 <x-estimate title="Fan-out writes">
@@ -247,7 +246,7 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 
 <p><strong>Fan-out on read</strong>, also called pull, stores nothing per reader. When a user opens the app, the feed service fetches the newest posts of every account they follow and merges them. Publishing is one write, and nothing is spent on inactive users or on large accounts. The cost moves to the read path: each feed open reads about 200 author lists, so the peak of 36,000 opens a second becomes 36,000 × 200 = 7.2 million list reads a second.</p>
 
-<p><strong>The hybrid</strong> uses push for ordinary accounts and pull for accounts above a follower threshold. The cost of each post is then bounded, because a push never exceeds the threshold and a pull covers only the few large accounts a user follows. A feed read takes one pushed list and merges in the cached recent posts of the large accounts the user follows.</p>
+<p><strong>The hybrid</strong> uses push for ordinary accounts and pull for accounts above a follower threshold. A feed read takes one pushed list and merges in the cached recent posts of the large accounts the user follows.</p>
 
 <x-tradeoffs caption="Summary of how posts get into feeds">
 <script type="application/json">
@@ -277,9 +276,9 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 </script>
 </x-tradeoffs>
 
-<p>Choose the threshold from the cost of a push. With a threshold of 100,000 followers, one post costs at most 100,000 inserts, which is half a second of the fleet's capacity.</p>
+<p>Choose the threshold from the cost of a push. With a threshold of 100,000 followers, one post costs at most 100,000 inserts, which is half a second of the fleet's capacity, and a pull covers only the few large accounts a user follows.</p>
 
-<p>Two refinements matter in practice. A user who has been inactive for 30 days gets no inserts, and their feed is built once by pull when they return. Each read also caps the number of pulled lists it merges, and the posts of accounts beyond the cap are pushed even if they are above the threshold.</p>
+<p>Two refinements matter in practice. A user who has been inactive for 30 days gets no inserts, and their feed is built once by pull when they return.</p>
 
 <h3>Feed storage and pagination</h3>
 
@@ -324,7 +323,7 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 
 <h3>What to cache</h3>
 
-<p>Feed lists take about 800 GB and are replicated. The last two days of post objects, about 2 × 10 GB = 20 GB, serve most reads through <a href="/system-design/caching.html">cache-aside</a>, with the entry deleted on edit or delete. The recent posts of huge accounts are also copied into each feed server's memory for a few seconds, so that no single cache node takes every read. Like counts live in a separate counter updated in batches, so that a like does not invalidate a hot post.</p>
+<p>Feed lists take about 800 GB and are replicated. The last two days of post objects, about 2 × 10 GB = 20 GB, serve most reads through <a href="/system-design/caching.html">cache-aside</a>, with the entry deleted on edit or delete. The recent posts of huge accounts are also copied into each feed server's memory for a few seconds, so that one cache node does not take every read.</p>
 
 <h2>Bottlenecks and failures</h2>
 
@@ -359,7 +358,7 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 <x-interviewer>An account with 50 million followers publishes a post. Walk me through what happens.</x-interviewer>
 <x-you>Pure push would mean 50 million inserts. At 200,000 inserts a second that takes about four minutes, and every other post would wait behind it. So accounts above 100,000 followers are not pushed. The post is stored and added to that account's cached recent-posts list, and followers' feeds merge that list in when they are read.</x-you>
 <x-interviewer>What does that cost on the read side?</x-interviewer>
-<x-you>Each feed open makes a few extra cached list reads, one for each large account the user follows. If a user followed hundreds of such accounts, I would cap the number of pulled lists per read and push the posts of the rest.</x-you>
+<x-you>Each feed open makes a few extra cached list reads, one for each large account the user follows. If a user followed hundreds of such accounts, I would cap the pulled lists per read and push the rest.</x-you>
 <x-coach>The answer gives the numbers, the design, its cost, and the point where it stops working.</x-coach>
 </x-interview>
 
@@ -371,6 +370,11 @@ feed            user_id -> set of (post_id, author_id), sorted by post_id, max 5
 <h3>How would you run this in two regions?</h3>
 <p>Each region serves feeds from its own caches and runs its own fan-out, and posts and follows are replicated asynchronously. A post reaches the other region a second or two later, which fits eventual consistency.</p>
 
+<h3>What does a user see when they follow nobody, or have just signed up?</h3>
+<p>The feed list is empty, so the feed service falls back to pulling. For a new user it shows recent posts from a default set of popular accounts, or from accounts suggested during sign-up. When the user follows an account, its recent post ids are added to the feed list at once.</p>
+
+<h3>How do you show like counts without slowing the feed down?</h3>
+<p>The counts are kept in a separate counter store and are not part of the post object, so a like never invalidates a cached post. The count may lag by a few seconds, which fits eventual consistency.</p>
 
 <h3>An account crosses the follower threshold. What changes?</h3>
 <p>New posts from that account switch from push to pull. Older posts are already in the followers' feed lists and stay there, so no data has to be moved. During the transition the read path merges both sources and drops duplicate ids.</p>

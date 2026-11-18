@@ -7,7 +7,7 @@
   "aka": "Bloom Filter",
   "order": 9,
   "story": [
-    "<p>A small search startup's crawler must not fetch the same page twice. Storing every URL seen costs about 100 bytes each, so 100 GB for a billion. A Bloom filter answers \"have I seen this URL?\" with about 10 bits per URL: 1.25 GB for the same billion. The catch: it can say \"maybe seen\" for a URL it never saw (so the crawler skips a page it should have fetched), but never \"not seen\" for one that was added.</p>",
+    "<p>A small search startup's crawler must not fetch the same page twice. Storing every URL it has seen costs about 100 bytes each, which is 100 GB for a billion URLs. A Bloom filter answers the question \"have I seen this URL?\" with about 10 bits per URL, which is 1.25 GB for the same billion. The cost is that it can say \"maybe seen\" for a URL it never saw, so the crawler skips a page it should have fetched, but it never says \"not seen\" for a URL that was added.</p>",
     "<p>The same structure sits in front of disk lookups in key-value stores and in front of caches, to skip work for keys that cannot exist. See <a href=\"/system-design/design-a-web-crawler.html\">Design a Web Crawler</a> and <a href=\"/system-design/design-a-key-value-store.html\">Design a Key-Value Store</a>.</p>"
   ],
   "task": [
@@ -35,7 +35,7 @@
       "ops": ["SeenFilter", "add", "add", "add", "bitsSet", "mightContain", "mightContain", "mightContain"],
       "args": [[16, 3], ["cats.io"], ["dogs.io"], ["owls.io"], [], ["dogs.io"], ["yaks.io"], ["bats.io"]],
       "expected": [null, null, null, null, 9, true, false, true],
-      "explanation": "For \"cats.io\", h1 = 750,493,409 and h2 = 956,570,721, so the positions are 750,493,409 mod 16 = 1, then 2, then 3. \"dogs.io\" sets 9, 8, 7 and \"owls.io\" sets 11, 5, 15: 9 bits in all. \"dogs.io\" was added, so it is found. \"yaks.io\" needs bits 2, 15 and 12; bit 12 is 0, so it was never added. \"bats.io\" needs bits 7, 1 and 11, all set by other URLs: a false positive."
+      "explanation": "For \"cats.io\", h1 = 750,493,409 and h2 = 956,570,721, so the positions are 750,493,409 mod 16 = 1, then 2, then 3. \"dogs.io\" sets 9, 8, 7 and \"owls.io\" sets 11, 5, 15: 9 bits in all. \"dogs.io\" was added, so it is found. \"yaks.io\" needs bits 2, 15 and 12; bit 12 is 0, so it was never added. \"bats.io\" needs bits 7, 1 and 11, which were all set by other URLs, so the filter wrongly reports it as seen. This is a false positive."
     }
   ],
   "hints": [
@@ -210,11 +210,11 @@
       "<p>Adding sets <code>k</code> bits picked by hashing; checking reads the same <code>k</code> bits. Deriving <code>k</code> positions from two hashes, <code>h1 + i × h2</code>, is a standard trick that avoids <code>k</code> separate hash functions.</p>",
       "<p>Trace the example, m = 16, k = 3:</p>",
       "<ol>",
-      "<li>add \"cats.io\": positions 1, 2, 3. Bits on: {1, 2, 3}.</li>",
-      "<li>add \"dogs.io\": 9, 8, 7. Bits on: {1, 2, 3, 7, 8, 9}.</li>",
-      "<li>add \"owls.io\": 11, 5, 15. Bits on: {1, 2, 3, 5, 7, 8, 9, 11, 15}, so <code>bitsSet()</code> is 9.</li>",
-      "<li>\"yaks.io\" needs 2, 15, 12. Bit 12 is off: definitely not seen.</li>",
-      "<li>\"bats.io\" needs 7, 1, 11, all on: \"maybe seen\", though it never was.</li>",
+      "<li>Adding \"cats.io\" sets positions 1, 2 and 3, so the bits that are on are {1, 2, 3}.</li>",
+      "<li>Adding \"dogs.io\" sets positions 9, 8 and 7, so the bits that are on are {1, 2, 3, 7, 8, 9}.</li>",
+      "<li>Adding \"owls.io\" sets positions 11, 5 and 15, so the bits that are on are {1, 2, 3, 5, 7, 8, 9, 11, 15} and <code>bitsSet()</code> is 9.</li>",
+      "<li>\"yaks.io\" needs bits 2, 15 and 12. Bit 12 is off, so it was definitely not seen.</li>",
+      "<li>\"bats.io\" needs bits 7, 1 and 11, which are all on, so the filter answers \"maybe seen\" even though it was never added.</li>",
       "</ol>",
       "<p>No false negatives: adding only turns bits on, so an added URL's bits stay on. That is also why a plain Bloom filter cannot delete: turning a bit off could erase another URL. Size it up front: with n URLs and m bits, the best k is about (m / n) × 0.69, and the filter gets worse as it fills, as the crowded test shows.</p>"
     ],

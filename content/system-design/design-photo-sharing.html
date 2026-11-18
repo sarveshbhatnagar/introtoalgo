@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design Photo Sharing",
-  "description": "How to design a photo sharing app: direct uploads, image resizing, CDN delivery, metadata partitioning, hot posts, and what interviewers ask about each.",
+  "description": "How to design a photo sharing app, from direct uploads and CDN delivery to partitioning and viral posts, and what interviewers ask about it.",
   "minutes": 30,
   "kind": "design",
   "tags": ["case study", "media", "blob storage", "cdn", "feed", "hot keys"]
@@ -9,7 +9,7 @@
 -->
 <p>A photo sharing app lets users upload photos with a caption, follow other users, and scroll a feed of the newest photos from the people they follow. It also shows a profile grid for each user and lets people like posts. Instagram is the usual example.</p>
 
-<p>The design is hard because the system stores two very different kinds of data. Photos are large, never change and are read constantly, so they belong in object storage behind a CDN. Metadata such as posts, follows and likes is tiny and changes constantly, and accounts with millions of followers create hot spots. Interviewers ask this to see whether you keep the two apart and can handle a viral post. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and the feed itself is covered in <a href="/system-design/design-a-news-feed.html">Design a News Feed</a>.</p>
+<p>The design is hard because the system stores two very different kinds of data. Photos are large, never change and are read constantly, so they belong in object storage behind a CDN. Metadata such as posts, follows and likes is tiny and changes constantly, and accounts with millions of followers create hot spots. Interviewers ask this to see whether you keep the two apart. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and the feed itself is covered in <a href="/system-design/design-a-news-feed.html">Design a News Feed</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -31,7 +31,7 @@
 
 <h2>Estimate the scale</h2>
 
-<p>A day has 86,400 seconds, and peak traffic is assumed to be three times the average.</p>
+<p>The estimates use 86,400 seconds a day and a peak of three times the average.</p>
 
 <ul>
 <li><strong>Uploads:</strong> 50 million photos a day is about 580 photos a second on average and about 1,700 at peak.</li>
@@ -140,7 +140,7 @@ like_counts         PRIMARY KEY (post_id)
 
 <p>Every read asks for the rows under one key, newest first, and no query joins tables. That access pattern fits a <strong>wide-column store</strong> such as Cassandra, which partitions data by key, keeps the rows of a partition sorted, and handles a high write rate.</p>
 
-<p>Post ids come from a <a href="/system-design/unique-ids.html">time-ordered ID generator</a>, so sorting by id is the same as sorting by time and a cursor simply means "posts older than this id". The store keeps 3 replicas and uses a quorum of 2 for both reads and writes. Because 2 + 2 is greater than 3, every read overlaps with the latest acknowledged write.</p>
+<p>Post ids come from a <a href="/system-design/unique-ids.html">time-ordered ID generator</a>, so sorting by id is the same as sorting by time and a cursor simply means "posts older than this id". The store keeps 3 replicas and uses a quorum of 2 for reads and writes, so every read overlaps with the latest acknowledged write.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -262,13 +262,13 @@ like_counts         PRIMARY KEY (post_id)
 
 <p>Sending photos through the API servers ties up a connection for as long as a slow mobile network takes and makes the API fleet carry every image byte. A signed URL avoids that: the API checks the request and returns a URL that allows one upload to one key, with a maximum size and content type, for a short time, and the phone sends the bytes directly to the photo store. See <a href="/system-design/blob-storage.html">Blob Storage</a>.</p>
 
-<p>Those bytes skipped your code, so the client could upload something that is not an image. The post therefore stays in the status <code>processing</code> until a worker has decoded the file. A file that does not decode is deleted and the post is marked <code>failed</code>. A cleanup job deletes posts that stay in <code>processing</code> for 24 hours, and a storage rule deletes originals that no post refers to.</p>
+<p>Those bytes skipped your code, so the client could upload something that is not an image. The post therefore stays in the status <code>processing</code> until a worker has decoded the file. A file that does not decode is deleted and the post is marked <code>failed</code>. A cleanup job deletes posts that stay in <code>processing</code> for 24 hours.</p>
 
 <p>The worker can also finish before the post request arrives and find no post to mark as ready. To handle this, both sides write to the photo's row in the <code>photos</code> table with a compare-and-set. The post request sets <code>post_id</code> only if it is empty, which also produces the <code>409</code> for a reused photo, and the worker sets <code>processed</code>. Whichever write lands second marks the post <code>ready</code> and starts fan-out, so fan-out runs exactly once.</p>
 
 <h3>Creating the resized copies</h3>
 
-<p>Phones need small images, so each photo is stored in several sizes, and the question is when to create them. Creating every size eagerly after upload means each size exists before anyone views the photo, but the post is delayed by a few seconds and adding a size later means reprocessing every photo. Creating sizes on demand at the edge allows any size and wastes nothing on unviewed photos, but the first viewer waits and a viral post sends a burst of resize work to the origin. Shrinking on the phone saves server CPU, but the result cannot be trusted, so it only supplements server-side processing.</p>
+<p>Phones need small images, so each photo is stored in several sizes, and the question is when to create them. Creating every size eagerly after upload means each size exists before anyone views the photo, but the post is delayed by a few seconds and adding a size later means reprocessing every photo. Creating sizes on demand at the edge allows any size and wastes nothing on unviewed photos, but the first viewer waits and a viral post sends a burst of resize work to the origin. Shrinking on the phone saves server CPU, but the server cannot trust the result, so it only supplements server-side processing.</p>
 
 <x-tradeoffs caption="When to make the resized copies">
 <script type="application/json">
@@ -298,8 +298,6 @@ like_counts         PRIMARY KEY (post_id)
 </script>
 </x-tradeoffs>
 
-<p>Eager resizing at 0.2 CPU-seconds per photo needs about 120 cores on average (580 × 0.2) and about 340 at peak (1,700 × 0.2). Scale the workers on queue depth, which is what delays posts.</p>
-
 <h3>Serving images from the CDN</h3>
 
 <p>Each image URL contains the photo id, the size and a version, for example <code>/p7001/t.v1.jpg</code>. The content behind a URL never changes, so the CDN can cache it for a year. If a photo is processed again, the worker writes <code>v2</code> and the post points to the new URL, so nothing has to be purged. A regional <strong>origin shield</strong>, a CDN layer in front of the store, turns hundreds of edge locations missing on a new photo into one request to the store. See <a href="/system-design/cdns.html">CDNs</a>.</p>
@@ -308,36 +306,40 @@ like_counts         PRIMARY KEY (post_id)
 
 <p>The key has to serve a profile grid (one author's posts, newest first) and a feed page (10 posts from different authors).</p>
 
-<p><strong>By post id.</strong> Posts spread evenly, and a feed page is 10 direct lookups, but one author's posts are scattered, so a profile grid needs a second table kept in step. <strong>By author, sorted by post id.</strong> A profile grid is one partition read, and a feed entry that stores the author id as well as the post id still needs only 10 lookups. The cost is heavy reads on a famous author's partition, which is a caching problem because posts never change. <strong>By day.</strong> Archiving is easy, but all writes and all reads of fresh posts hit today's partition.</p>
+<p><strong>Partition by post id.</strong> Posts spread evenly across the cluster, and a feed page takes 10 direct lookups. However, one author's posts end up on many partitions, so a profile grid needs a second table that is kept in step with the first.</p>
+
+<p><strong>Partition by author, sorted by post id.</strong> A profile grid is one read of one partition, and a feed entry that stores the author id as well as the post id still needs only 10 lookups. The cost is heavy read traffic on the partition of a famous author, which is a caching problem because posts never change.</p>
+
+<p><strong>Partition by day.</strong> Archiving old posts is easy, but every write and every read of a fresh post goes to today's partition, which becomes a hot spot.</p>
 
 <p>Follows are written twice, in <code>followers</code> and <code>following</code>, because the two questions need different partitions. Fan-out asks who follows Mia, and pulling posts from big accounts asks whom Leo follows. A follower list of 50 million entries at 16 bytes each is 800 MB, which is too large for one partition. The <code>followers</code> table therefore adds a bucket number for every 1 million followers.</p>
 
 <h3>Hot posts and like counts</h3>
 
-<p>When an account with 50 million followers posts, four different things become hot. The image is handled by the CDN, so three remain.</p>
+<p>When an account with 50 million followers posts, the image, the fan-out, the post record and the likes all become hot. The CDN handles the image, so three problems remain.</p>
 
-<p><strong>Fan-out.</strong> Writing 50 million feed entries at 200,000 inserts a second takes 250 seconds, which is far over the 10-second goal. Use the hybrid from the news feed design: for accounts above about 100,000 followers, do not push the post into feeds, and let each follower's feed fetch it at read time.</p>
+<p><strong>Fan-out.</strong> Writing 50 million feed entries at 200,000 inserts a second takes 250 seconds, which is far over the 10-second goal. Use the hybrid from <a href="/system-design/design-a-news-feed.html">Design a News Feed</a>: for accounts above about 100,000 followers, do not push the post into feeds, and let each follower's feed fetch it at read time.</p>
 
 <p><strong>The post record.</strong> If 20% of the followers open the post within an hour, that is 10 million reads over 3,600 seconds, or about 2,800 reads a second for one key. The post never changes, so cache it.</p>
 
 <p><strong>Likes.</strong> If 5% of the followers like the post within 10 minutes, that is 2.5 million likes over 600 seconds, or about 4,200 likes a second on one post.</p>
 
-<p>The simplest design keeps a counter in the post row and runs <code>count = count + 1</code> on every like. All 4,200 writes a second then compete for the lock on one row, and the row becomes the bottleneck. Splitting the counter into several rows spreads the writes, but every read must sum them.</p>
+<p>The simplest design runs <code>count = count + 1</code> on the post row for every like, so all 4,200 writes a second compete for one row. Splitting the counter into several rows spreads the writes, but every read must then sum them.</p>
 
 <p>The third option is to batch the updates. The <code>likes</code> table is partitioned by the user who liked, so those writes spread evenly. Each like is also sent to a stream partitioned by post id. The aggregator that owns a partition counts the likes it receives for one post over one second and then writes <code>count = count + n</code> once, so 4,200 updates a second become one update a second. This is the design to propose, because the like records stay exact and only the displayed count lags by about a second.</p>
 
-<p>The stream delivers each event at least once, so after a crash the aggregator may see the same events again. To avoid counting them twice, the aggregator stores the stream offset of the last event it applied in the same row and in the same write as the count, and it ignores any event at or below that offset. A nightly recount from the <code>likes</code> table repairs other drift.</p>
+<p>The stream delivers each event at least once, so after a crash the aggregator may see the same events again. To avoid counting them twice, the aggregator stores the stream offset of the last event it applied in the same row and in the same write as the count, and it ignores any event at or below that offset.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load (500 million photos a day) the problems are bytes and cost. Storage grows by about 440 PB a year, so originals move to cold storage after 30 days. Image traffic averages 280 GB/s, which makes the CDN the largest cost. The resize fleet grows to about 1,200 cores on average and 3,400 at peak.</p>
+<p>At 10 times the load (500 million photos a day) the problems are bytes and cost. Storage grows by about 440 PB a year, so originals move to cold storage after 30 days. Image traffic averages 280 GB/s, which makes the CDN the largest cost.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
 <tr><td>An API server</td><td>The requests it was handling fail.</td><td>The app retries the request, which is safe because post creation is idempotent.</td></tr>
 <tr><td>The upload event queue</td><td>New posts stay in the status <code>processing</code>.</td><td>A job re-enqueues posts that are still processing after 10 minutes, so no photo is lost.</td></tr>
-<tr><td>The resize workers</td><td>Posts become ready later than usual.</td><td>Autoscale on queue depth, and rely on retries being safe.</td></tr>
+<tr><td>The resize workers</td><td>Posts become ready later than usual.</td><td>Autoscale the workers on queue depth, which is what delays posts.</td></tr>
 <tr><td>A metadata replica</td><td>One of the three copies of the data is gone.</td><td>Quorum reads and writes (2 of 3) continue, and you rebuild the replica.</td></tr>
 <tr><td>The feed service</td><td>The prepared feeds are lost.</td><td>Fetch the recent posts of the followed authors at read time, which is slower but works.</td></tr>
 <tr><td>The CDN</td><td>Images stop loading, and the store cannot serve 28 GB/s.</td><td>Switch the image host name to a second CDN.</td></tr>
@@ -346,12 +348,12 @@ like_counts         PRIMARY KEY (post_id)
 
 <h2>What a strong answer sounds like</h2>
 
-<p>Interviewers watch whether image bytes stay out of the API servers, whether the partition key follows from the access patterns, and whether you can say what happens to a viral post.</p>
+<p>Interviewers watch whether image bytes stay out of the API servers, whether the partition key follows from the access patterns, and what you say about a viral post.</p>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Stores images in object storage and metadata in a database, adds a CDN, and describes a basic feed with some hints.</td></tr>
+<tr><td>Junior</td><td>Stores images in object storage and metadata in a database, adds a CDN, and describes a basic feed only after the interviewer asks for it.</td></tr>
 <tr><td>Mid-level</td><td>Estimates storage and bandwidth, uses signed URLs and a resize queue, and justifies push or pull for the feed.</td></tr>
 <tr><td>Senior</td><td>Separates media from metadata using the numbers, holds posts until they are processed, derives the partition keys from the access patterns, and handles a celebrity post on every axis.</td></tr>
 </tbody>
@@ -369,10 +371,13 @@ like_counts         PRIMARY KEY (post_id)
 <p>First mark the post <code>deleted</code>, so that every read skips it immediately. Then delete the stored objects and purge the CDN in the background.</p>
 
 <h3>The phone retries a post after a timeout. Do you get two posts?</h3>
-<p>No. The client sends an idempotency key with the request, so the second request returns the post that the first one created. The <code>409</code> response also prevents the same photo from being attached to two different posts.</p>
+<p>No. The client sends an idempotency key with the request, so the second request returns the post that the first one created.</p>
 
-<h3>How would you add content moderation?</h3>
-<p>Add a second consumer of the upload events that scores each image. Flagged posts stay out of feeds until a reviewer approves them. Posts already wait until they are <code>ready</code>, so moderation is one more condition.</p>
+<h3>How do private accounts change the design?</h3>
+<p>The feed and the profile grid must check that the viewer is an approved follower before they return a post. Private images should be served through short-lived signed CDN URLs, which lowers the CDN hit rate for them.</p>
+
+<h3>Do the like counts have to be exact?</h3>
+<p>The records in the <code>likes</code> table must be exact, because they decide whether a user sees a post as liked. The displayed count can lag by a second or so and does not have to be exact at any moment. A nightly recount from the <code>likes</code> table removes any drift.</p>
 
 <x-checklist title="Self-review: photo sharing">
 <script type="application/json">

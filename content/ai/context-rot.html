@@ -1,33 +1,42 @@
 <!--
 {
   "title": "Context Rot",
-  "description": "Why long AI sessions slowly get worse, how to spot it, and how to recover with handoff summaries, fresh sessions and a notes file.",
+  "description": "Why answers get worse as a conversation with an AI assistant grows, how to recognise it, and how to recover with handoff summaries and notes files.",
   "minutes": 12,
   "tags": ["context", "workflow"]
 }
 -->
-<p>By five o'clock, a day-long planning workshop's whiteboard holds three timelines, a budget rejected at lunch, and crossed-out ideas nobody erased. A newcomer cannot tell which plan is current, and even the people who were there start quoting the rejected budget.</p>
+<p>Context rot is the gradual drop in answer quality that happens when a conversation with a language model gets long and fills up with material that is no longer true or no longer relevant. It matters to anyone who works with an assistant for hours at a time, because the symptoms look like the model getting worse, when the actual cause is the text you keep sending it.</p>
 
-<p>Long AI sessions go the same way. A hundred messages in, the assistant forgets an early rule, brings back a fix you rejected, and mixes old code with new. The context has rotted.</p>
+<p>In a long session the assistant starts to forget a rule you gave it early on, bring back a fix you already rejected, or edit an old version of a file instead of the latest one. Once you can recognise this, the remedy is usually to start a new session with a short summary, not to keep correcting the old one.</p>
 
 <h2>Why long sessions degrade</h2>
 
-<p>Every message, attempt and tool result stays in the <a href="/ai/what-is-context.html">context</a> and is reread on each call. As it grows:</p>
+<p>On every call, the assistant reads the whole <a href="/ai/what-is-context.html">context</a> again: every message, every reply and every tool result so far. Nothing is removed unless you or the application removes it, so a long session carries all of its history into every reply, and quality can drop well before the context limit is reached. That has four consequences.</p>
 
-<ul>
-<li><strong>Dead ends stay.</strong> An abandoned approach is still there in full, looking as authoritative as the right one, unless you clearly said it failed.</li>
-<li><strong>Old versions pile up.</strong> With three drafts of a function in the context, a request to change "the function" may hit the wrong one or blend them.</li>
-<li><strong>Early instructions fade.</strong> A rule from message 3 is buried under everything since. Models use long contexts less reliably than short ones (see <a href="/ai/the-context-window.html">The Context Window</a>), and near the limit the app may trim the rule away.</li>
-<li><strong>Mistakes become examples.</strong> Earlier wrong replies are part of the text the model continues, so it tends to repeat them.</li>
-</ul>
+<h3>Dead ends stay in the context</h3>
+
+<p>An approach you abandoned is still there in full detail. It looks as authoritative as the approach you kept, and the model has no reliable way to know which one you meant unless you said clearly that the first one failed. A long failed attempt can also be far more detailed than the one-line message that rejected it.</p>
+
+<h3>Old versions pile up</h3>
+
+<p>If three drafts of the same function are in the context, a request such as "change the function so it also handles empty input" may be applied to the wrong draft, or to a blend of two of them.</p>
+
+<h3>Early instructions get less weight</h3>
+
+<p>A rule from message 3 sits under everything that came after it. Models tend to use information in a very long context less reliably than information in a short one, as described in <a href="/ai/the-context-window.html">The Context Window</a>. When the conversation reaches the limit, the application may also drop the oldest messages, and that is exactly where your rules usually are.</p>
+
+<h3>Earlier mistakes become examples</h3>
+
+<p>The model continues the text it is given, and that text includes its own earlier wrong replies. A mistake that appeared three times in the history is more likely to appear a fourth time, because the history now shows it as normal.</p>
 
 <x-callout type="key">
-<p>A long session's context is mostly history, much of it no longer true. Quality drops as the share of current material shrinks.</p>
+<p>As a session grows, the share of the context that is still true shrinks, and answer quality follows that share.</p>
 </x-callout>
 
-<h2>Watch it happen</h2>
+<h2>An example of a session rotting</h2>
 
-<p>A developer fixes a bug (token counts made up). Watch the share of current context.</p>
+<p>The tracer below follows a debugging session. The token counts are made up for illustration. "Current" means the text that still applies, and "share" is current divided by total.</p>
 
 <x-tracer title="A debugging session rots, then restarts">
 <script type="application/json">
@@ -39,40 +48,42 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Goal and rules: fix the date bug, tests must pass. Everything is current.", "line": 1, "array": { "label": "context", "values": ["goal + rules"], "mark": [0] }, "vars": { "total": 200, "current": 200, "share": "100%" } },
-    { "caption": "Attempt A rewrites the date parser (800 tokens). For now, it is the plan.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A"], "mark": [0, 1] }, "vars": { "total": 1000, "current": 1000, "share": "100%" } },
-    { "caption": "A fails with a 600-token error log. A is a dead end, but its full text stays.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log"], "mark": [0, 2], "dim": [1] }, "vars": { "total": 1600, "current": 800, "share": "50%" } },
-    { "caption": "New constraint: \"Keep the public API the same.\" Attempt A had changed it.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API"], "mark": [0, 2, 3], "dim": [1] }, "vars": { "total": 1700, "current": 900, "share": "53%" } },
-    { "caption": "Attempt B works; the error log is now history. Current: goal, constraint and B, 200 + 100 + 800 = 1,100 tokens.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B"], "mark": [0, 3, 4], "dim": [1, 2] }, "vars": { "total": 2500, "current": 1100, "share": "44%" } },
-    { "caption": "A 600-token tangent about logging. Current share drops to about a third.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "mark": [0, 3, 4], "dim": [1, 2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
-    { "caption": "One more change request. The reply borrows from attempt A, which changed the API, because A is still there with plenty of detail to copy.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "highlight": [1], "dim": [2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
-    { "caption": "Fresh session: a 250-token handoff (goal, API rule, \"attempt A failed: changed the API\") plus attempt B's code. All current, a third of the size. A's 800 tokens are gone, but the one line saying it failed stops a retry.", "line": 3, "array": { "label": "context", "values": ["handoff", "attempt B"], "mark": [0, 1] }, "vars": { "total": 1050, "current": 1050, "share": "100%" } }
+    { "caption": "The session starts with the goal (fix the date bug) and the rule that tests must pass. Everything in the context is current.", "line": 1, "array": { "label": "context", "values": ["goal + rules"], "mark": [0] }, "vars": { "total": 200, "current": 200, "share": "100%" } },
+    { "caption": "Attempt A rewrites the date parser and adds 800 tokens. At this point it is the plan, so it counts as current.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A"], "mark": [0, 1] }, "vars": { "total": 1000, "current": 1000, "share": "100%" } },
+    { "caption": "Attempt A fails and the 600-token error log is added. Both are now history, but both stay in full, so only the 200 tokens of goal and rules still apply.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log"], "mark": [0], "dim": [1, 2] }, "vars": { "total": 1600, "current": 200, "share": "13%" } },
+    { "caption": "You add a new rule, \"keep the public API the same\", because attempt A had changed it. This is a 100-token message, and it is easy to overlook next to the 800 tokens of attempt A.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API"], "mark": [0, 3], "dim": [1, 2] }, "vars": { "total": 1700, "current": 300, "share": "18%" } },
+    { "caption": "Attempt B works and adds 800 tokens. The current material is the goal, the API rule and attempt B, which is 200 + 100 + 800 = 1,100 tokens.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B"], "mark": [0, 3, 4], "dim": [1, 2] }, "vars": { "total": 2500, "current": 1100, "share": "44%" } },
+    { "caption": "A 600-token side discussion about logging is added. Nothing in it is needed, so the current share falls to about a third.", "line": 1, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "mark": [0, 3, 4], "dim": [1, 2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
+    { "caption": "You ask for one more change. The reply borrows from attempt A, which changes the public API, because A is still in the context and contains a lot of detail to copy.", "line": 2, "array": { "label": "context", "values": ["goal + rules", "attempt A", "error log", "keep API", "attempt B", "tangent"], "highlight": [1], "dim": [2, 5] }, "vars": { "total": 3100, "current": 1100, "share": "35%" } },
+    { "caption": "In a fresh session you paste a 250-token handoff (goal, API rule, and \"attempt A failed because it changed the API\") plus attempt B's code. Everything in it is current, and the context is about a third of the size. Attempt A's 800 tokens are gone, but one line still tells the model not to retry it.", "line": 3, "array": { "label": "context", "values": ["handoff", "attempt B"], "mark": [0, 1] }, "vars": { "total": 1050, "current": 1050, "share": "100%" } }
   ]
 }
 </script>
 </x-tracer>
 
-<h2>Signs your session has rotted</h2>
+<h2>Signs that a session has rotted</h2>
+
+<p>One of these on its own can have other causes, such as an unclear request. Two or more together are a strong sign of rot.</p>
 
 <ul>
-<li>It forgets or breaks a rule you set early on.</li>
-<li>It brings back an approach or bug you rejected.</li>
-<li>It edits an old version instead of the latest.</li>
-<li>You write more corrections than requests.</li>
-<li>Replies get longer, vaguer and more hedged.</li>
+<li>The assistant forgets or breaks a rule that you set early in the session.</li>
+<li>It brings back an approach or a bug that you already rejected.</li>
+<li>It edits an old version of the work instead of the latest one.</li>
+<li>You are writing more corrections than new requests.</li>
+<li>Replies become longer, vaguer and more hedged.</li>
 </ul>
 
-<p>Two or more together: change the context, do not argue.</p>
+<p>When you see several of them, change the context instead of arguing with the assistant. Further corrections only add more text to the context that is causing the problem.</p>
 
-<h2>What to do about it</h2>
+<h2>How to recover and prevent it</h2>
 
-<ol>
-<li><strong>Start fresh with a handoff.</strong> Ask for a short summary, correct it, and paste it into a new chat. Include the goal, current state, decisions and rules, what failed and why, and the next step.</li>
-<li><strong>Keep a notes file.</strong> For multi-day work, keep the handoff in a file such as <code>NOTES.md</code>. Load it each session and update it at milestones; some coding tools load it automatically. It is <a href="/ai/memory.html">memory</a> you control.</li>
-<li><strong>Edit instead of piling on.</strong> If your message caused a bad reply, edit it and regenerate, so the bad reply leaves the context.</li>
-<li><strong>Split the work.</strong> One task per session. The logging tangent deserves its own chat.</li>
-<li><strong>Restate what matters.</strong> When a late request depends on an early rule, repeat the rule. It costs one sentence.</li>
-</ol>
+<h3>Start a fresh session with a handoff</h3>
+
+<p>Ask the assistant to summarise the session, read the summary and correct it, then paste it into a new conversation. A useful handoff contains the goal, the current state of the work, the decisions and rules that apply, the approaches that failed and the reason each one failed, and the next step. This is the most reliable fix, because the new session contains only current material.</p>
+
+<h3>Keep a notes file</h3>
+
+<p>For work that lasts several days, keep the handoff in a file such as <code>NOTES.md</code>. Load it at the start of each session and update it whenever you reach a milestone. Some coding tools load a file like this automatically. It works as <a href="/ai/memory.html">memory</a> that you control, because you decide what is in it and you can read it.</p>
 
 <x-code single title="A notes file that survives sessions">
 <pre lang="text">
@@ -89,23 +100,43 @@ Next: add tests for 29 Feb and for two-digit years.
 </pre>
 </x-code>
 
-<p>Some apps do part of this for you, called <strong>compaction</strong>: near the limit, older turns are replaced by a summary and old tool results may be cleared. It helps, but the summary decides what matters.</p>
+<h3>Edit your message instead of adding a correction</h3>
 
-<h2>Common mistakes</h2>
+<p>If a bad reply was caused by an unclear message, most chat tools let you edit that message and regenerate the reply. The bad reply then leaves the context, which is better than adding a correction after it, because the correction leaves the bad reply in place for the model to read.</p>
 
-<x-callout type="mistake" title="Arguing with a rotted session">
-<p>Each correction adds noise, and each wrong reply is another example to copy. After two or three failed corrections, start fresh with a handoff.</p>
+<h3>Use one session for each task</h3>
+
+<p>Open a new conversation when the topic changes. The side question about logging in the example above would have been better asked in its own chat, where it could not add 600 tokens of unrelated text to the debugging session.</p>
+
+<h3>Repeat rules that a late request depends on</h3>
+
+<p>If a request near the end of a long session depends on a rule from the beginning, state the rule again in that request. It costs one sentence and does not rely on the model weighing a distant message correctly.</p>
+
+<h3>Keep bulky material out of the main session</h3>
+
+<p>Large pasted files, long logs and big search results are the fastest way to fill a context with text that is only needed once. Do the work that needs them in a separate conversation, or in a sub-task that has its own context, and bring back only the conclusion. Some agent tools do this with sub-agents.</p>
+
+<h3>Automatic compaction</h3>
+
+<p>Some applications do part of this for you. Near the context limit they replace older turns with a summary and may clear old tool results. This helps, but the summary is written by the model, and it decides what to keep. A rule that mattered to you may be left out, so for important work a handoff that you wrote or checked is more dependable.</p>
+
+<h2>Pitfalls</h2>
+
+<x-callout type="mistake" title="Correcting a session that has already drifted">
+<p>Each correction adds more text to the context, and each wrong reply that remains in the history is another example the model may copy. After two or three failed corrections, stop and start a fresh session with a handoff.</p>
 </x-callout>
 
-<x-callout type="mistake" title="A handoff that drops the failures">
-<p>If the summary lists only what works, the fresh session will retry rejected approaches. Keep one line per dead end, with the reason.</p>
+<x-callout type="mistake" title="A handoff that leaves out the failures">
+<p>If the summary lists only what works, the fresh session has no way to know that some approaches were already tried, and it will suggest them again. Keep one line for each dead end with the reason it failed.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Trusting a summary you did not read">
-<p>Model-written summaries can be confidently wrong about what was decided. Read and fix the handoff before using it.</p>
+<x-callout type="mistake" title="Using a summary you did not read">
+<p>A model-written summary can state confidently that something was decided when it was only discussed, or leave out a rule you gave. Read it and fix it before you paste it into a new session.</p>
 </x-callout>
 
-<h2>Try it yourself</h2>
+<x-callout type="mistake" title="A handoff that is almost the whole transcript">
+<p>Pasting a very long summary recreates the problem in the new session. A handoff is useful because it is short and every line in it is still true, so cut anything that does not affect the next step.</p>
+</x-callout>
 
 <x-tryit title="Write the handoff">
 <x-task>
@@ -137,7 +168,7 @@ Next steps:
 Start with step 1.
 </x-user>
 </x-prompt>
-<p>Why it works: decisions and constraints come first, each dead end keeps one line with its reason, and the T-shirt tangent is gone. It ends with one clear next task.</p>
+<p>This handoff puts the decisions and constraints first. Each rejected option keeps one line with its reason, so the new session will not suggest Porto or the first two hotels again. The T-shirt discussion is left out because it does not affect any later step, and the handoff ends with one clear task to start on.</p>
 </x-answer>
 </x-tryit>
 
@@ -148,27 +179,27 @@ Start with step 1.
 {
   "questions": [
     {
-      "question": "Late in a long session, the assistant keeps reusing an approach you rejected an hour ago. Most likely cause?",
+      "question": "Late in a long session, the assistant keeps reusing an approach you rejected an hour ago. What is the most likely cause?",
       "options": [
-        { "text": "The model is ignoring you on purpose", "why": "It has no intent. It continues the text it reads, and the rejected approach is a large part of it." },
-        { "text": "The rejected approach is still in the context in full detail, while the rejection is one short line", "correct": true, "why": "Right. Dead ends stay in the context and look as authoritative as current material." },
-        { "text": "The context window is too small", "why": "A bigger window would keep even more stale history." }
+        { "text": "The model is ignoring you on purpose", "why": "The model has no intent. It continues the text it reads, and the rejected approach makes up a large part of that text." },
+        { "text": "The rejected approach is still in the context in full detail, while the rejection is only one short message", "correct": true, "why": "Dead ends stay in the context and look as authoritative as current material." },
+        { "text": "The context window is too small", "why": "A larger window would keep even more stale history, so the problem would not go away." }
       ]
     },
     {
-      "question": "Which handoff summary is most useful for a fresh session?",
+      "question": "Which handoff summary is the most useful for a fresh session?",
       "options": [
-        { "text": "The full transcript of the old session", "why": "That just moves the rot into the new session." },
-        { "text": "Goal, rules, current state, failed attempts with reasons, and the next step", "correct": true, "why": "Right. Short, current, and it records dead ends so they are not retried." },
-        { "text": "Only the latest version of the work", "why": "Without rules and failed attempts, the new session may break a constraint or repeat a mistake." }
+        { "text": "The full transcript of the old session", "why": "That moves the rot into the new session." },
+        { "text": "The goal, the rules, the current state, the failed attempts with reasons, and the next step", "correct": true, "why": "It is short, everything in it is current, and it records dead ends so they are not tried again." },
+        { "text": "Only the latest version of the work", "why": "Without the rules and the failed attempts, the new session may break a constraint or repeat a mistake." }
       ]
     },
     {
-      "question": "A project spans two weeks of sessions. What keeps each new session on track with least effort?",
+      "question": "A project spans two weeks of sessions. What keeps each new session on track with the least effort?",
       "options": [
-        { "text": "A notes file with decisions and current state, loaded at the start and updated at milestones", "correct": true, "why": "Right. It is memory you control: short, current, and readable by you and the model." },
-        { "text": "One single chat for the whole two weeks", "why": "That is the recipe for context rot." },
-        { "text": "Retyping the background from memory each time", "why": "Slow, and you will forget things. Write it down once and keep it updated." }
+        { "text": "A notes file with decisions and current state, loaded at the start and updated at milestones", "correct": true, "why": "It is memory you control, and it stays short, current and readable by both you and the model." },
+        { "text": "One single chat for the whole two weeks", "why": "That is the situation that produces context rot." },
+        { "text": "Retyping the background from memory each time", "why": "This is slow, and you will forget details. Writing it once and keeping it updated is more reliable." }
       ]
     }
   ]
@@ -178,4 +209,4 @@ Start with step 1.
 
 <h2>What to practise next</h2>
 
-<p>Next time a session drifts, write the handoff, start fresh, and compare the reply. Then read <a href="/ai/what-is-an-agent.html">What Is an Agent</a>, where a model runs long tool loops on its own and managing context becomes the core of the design.</p>
+<p>The next time a session drifts, write the handoff, start a fresh session and compare the first reply with the last one from the old session. Then read <a href="/ai/what-is-an-agent.html">What Is an Agent</a>, where a model runs long tool loops on its own and managing the context becomes a central part of the design.</p>

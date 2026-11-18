@@ -1,15 +1,15 @@
 <!--
 {
   "title": "Design an Online Judge",
-  "description": "How to design a coding practice and contest site: sandboxing untrusted code, a submission queue, a live leaderboard and the load spike at contest start.",
+  "description": "How to design an online judge: running untrusted code safely, queueing submissions, keeping a live leaderboard and handling the contest start.",
   "minutes": 28,
   "kind": "design",
   "tags": ["case study", "sandboxing", "queues", "leaderboard", "traffic spikes"]
 }
 -->
-<p>An online judge is a site where users submit source code for a problem and receive a verdict such as Accepted, Wrong Answer or Time Limit Exceeded, which the site produces by running the code against hidden tests. Most judges also run timed contests.</p>
+<p>An online judge is a site where users submit source code for a problem and receive a verdict such as Accepted, Wrong Answer or Time Limit Exceeded, which the site produces by running the code against hidden tests.</p>
 
-<p>The design is hard for three reasons. The site runs programs written by strangers, so every submission has to be treated as an attack. Judging takes seconds, so it cannot happen inside the web request. And a contest starts at a known second, when tens of thousands of users arrive together. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The design is hard for three reasons. The site runs programs written by strangers, so every submission has to be treated as an attack. Judging takes seconds, so it cannot happen inside the web request. And a contest starts at a known second, when tens of thousands of users arrive together. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -26,18 +26,18 @@
 <ul>
 <li><strong>Functional:</strong> users can view problems, submit code in several languages, run sample tests and receive a verdict (accepted, wrong answer, time limit, memory limit, runtime error or compile error). Contests have a live leaderboard.</li>
 <li><strong>Non-functional:</strong> untrusted code is fully isolated, verdicts are deterministic, the verdict arrives within 10 seconds at p95 (30 seconds in a contest), no accepted submission is lost, the leaderboard is at most a few seconds stale, and problem pages load instantly when a contest starts.</li>
-<li><strong>Out of scope:</strong> discussions, plagiarism detection, tools for writing problems, and payments.</li>
+<li><strong>Out of scope:</strong> discussions, plagiarism detection and tools for writing problems.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>The estimates need one assumption: judging a submission takes about 2 seconds of CPU, which covers compiling it and running about 50 hidden tests. A day has 86,400 seconds.</p>
+<p>The estimates assume that judging a submission takes about 2 seconds of CPU, which covers compiling it and running about 50 hidden tests. A day has 86,400 seconds.</p>
 
 <ul>
 <li><strong>Normal day:</strong> 1 million submissions ÷ 86,400 is about 12 submissions a second. At 2 CPU-seconds each, that keeps about 24 cores busy.</li>
 <li><strong>Contest:</strong> 50,000 users send about 8 submissions or runs each, which is 400,000 in 90 minutes (5,400 seconds), or about 74 a second. Submissions come in bursts, so we plan for 3 times the average, which is 220 a second.</li>
-<li><strong>Problem pages:</strong> 50,000 users opening the problems within 10 seconds is 5,000 page loads a second, all of the same page.</li>
-<li><strong>Storage:</strong> 1 million submissions a day at 2 KB of code each is 2 GB a day, or about 730 GB a year. The test data is 3,000 problems at 10 MB each, which is 30 GB, small enough to keep on every judge machine.</li>
+<li><strong>Problem pages:</strong> 50,000 users opening the problems within 10 seconds is 5,000 page loads a second.</li>
+<li><strong>Storage:</strong> 1 million submissions a day at 2 KB of code each is 2 GB a day, or about 730 GB a year. The test data for 3,000 problems at 10 MB each is 30 GB, small enough to keep on every judge machine.</li>
 </ul>
 
 <x-estimate title="Judge capacity at the contest peak">
@@ -49,7 +49,7 @@
   "answer": "440",
   "accept": ["150", "1500"],
   "steps": ["Each second brings 220 × 2 = 440 core-seconds of work", "That needs 440 busy cores; plan about 600 for headroom"],
-  "note": "A normal day needs only 24 cores, so the contest needs about 18 times as many at a time that is known in advance."
+  "note": "A normal day needs only 24 cores, so the contest needs about 18 times as many."
 }
 </script>
 </x-estimate>
@@ -81,11 +81,11 @@ GET  /v1/submissions/{id}                   poll; the server suggests Retry-Afte
   200 { "status": "done", "verdict": "accepted", "time_ms": 48, "memory_kb": 9216 }
 
 GET  /v1/contests/{id}/standings?page=1     top 50 per page, cached for 5 s
-GET  /v1/contests/{id}/standings/me         { "rank": 812, "solved": 2, "penalty": 3120 }
+GET  /v1/contests/{id}/standings/me         { "rank": 812, "solved": 1, "penalty": 760 }
 </pre>
 </x-code>
 
-<p>The API decision worth arguing is whether the client polls for the verdict or the server pushes it. Polling is an ordinary read that works through any proxy and is trivial to retry, and at the peak it costs only about 2,200 reads a second: 220 submissions a second, each waiting about 10 seconds, are 2,200 waiting submissions (Little's law), and each polls once a second. Pushing the verdict, for example over WebSockets (see <a href="/system-design/realtime-communication.html">Realtime Communication</a>), saves those reads, but it needs about 50,000 open connections and a way to route each verdict to the server that holds the right connection. The simpler choice is to poll, and the <code>Retry-After</code> header lets the server tell clients to poll less often when it is overloaded.</p>
+<p>The API decision worth arguing is whether the client polls for the verdict or the server pushes it. Polling is an ordinary read that works through any proxy and is trivial to retry, and at the peak it costs only about 2,200 reads a second: 220 submissions a second, each waiting about 10 seconds, are 2,200 waiting submissions (Little's law), and each polls once a second. Pushing the verdict, for example over WebSockets (see <a href="/system-design/realtime-communication.html">Realtime Communication</a>), saves those reads, but it needs about 50,000 open connections and a way to route each verdict to the right server. Polling is the simpler choice, and <code>Retry-After</code> lets an overloaded server slow the clients down.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -231,15 +231,15 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 
 <h3>Running untrusted code</h3>
 
-<p>The site must assume that every submission is an attack, and each kind of attack needs its own defence. A program that loops forever is stopped by a CPU-time limit per test, plus a wall-clock limit of about twice that for programs that sleep or block. A program that allocates memory, forks or prints gigabytes of output is stopped by caps of 256 MB, 64 processes and a few MB of output, enforced by the kernel through resource controls such as Linux cgroups. A program that tries to read the expected answers finds only a read-only system image and receives only its input, because the judge compares outputs outside the sandbox. One that tries to send data out finds an empty network namespace. Attacks on the kernel are limited by a system-call filter and a non-root user.</p>
+<p>The site must assume that every submission is an attack, and each kind of attack needs its own defence. A program that loops forever is stopped by a CPU-time limit per test, plus a wall-clock limit of about twice that for programs that sleep or block. A program that allocates memory, forks or prints gigabytes of output is stopped by caps of 256 MB, 64 processes and a few MB of output, enforced by the kernel through resource controls such as Linux cgroups. A program that tries to read the expected answers finds only a read-only system image and receives only its input, because the judge compares outputs outside the sandbox. One that tries to send data out finds an empty network namespace. Attacks on the kernel are limited by a system-call filter and a non-root user. Compilation also runs inside the sandbox, because a hostile source file can make a compiler use unlimited memory or time.</p>
 
-<p>The remaining question is where the sandbox boundary goes. There are four common choices.</p>
+<p>The remaining question is where the sandbox boundary goes, and there are four common choices.</p>
 
-<p>A <strong>plain process with limits</strong> is the simplest choice and starts in milliseconds. It shares the file system and the kernel with the judge worker, so a single forgotten rule gives the submission access to the whole machine. It is only acceptable for code you wrote yourself.</p>
+<p>A <strong>plain process with limits</strong> is the simplest choice and starts in milliseconds. It shares the file system and the kernel with the judge worker, so a single forgotten rule gives the submission access to the whole machine.</p>
 
-<p>A <strong>container per submission</strong> gives the program its own file system, process list and network view, together with the resource limits above, and it starts quickly. Its weakness is that all containers on a host share one kernel. A kernel vulnerability lets a submission break out of its container and reach the host and other submissions. It suits trusted users and is the inner layer of stronger designs.</p>
+<p>A <strong>container per submission</strong> gives the program its own file system, process list and network view, together with the resource limits above, and it starts quickly. Its weakness is that all containers on a host share one kernel. A kernel vulnerability lets a submission break out of its container and reach the host and other submissions. It suits trusted users, and stronger designs use it as the inner layer.</p>
 
-<p>A <strong>container inside a micro-VM</strong> gives each sandbox its own small kernel behind a hardware virtualisation boundary. A kernel exploit then only compromises a virtual machine that is deleted after the run. The costs are more memory and a slower start, which a pool of pre-started micro-VMs hides.</p>
+<p>A <strong>container inside a micro-VM</strong> gives each sandbox its own small kernel behind a hardware virtualisation boundary. A kernel exploit then only compromises a virtual machine that is deleted after the run. It costs more memory and starts more slowly, which a pool of pre-started micro-VMs hides.</p>
 
 <p>A <strong>full virtual machine</strong> separates best but takes seconds to boot, which is too heavy for a two-second job.</p>
 
@@ -277,19 +277,19 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 </script>
 </x-tradeoffs>
 
-<p>The choice is a container inside a micro-VM from a warm pool, destroyed after one submission. Each sandbox is also pinned to its own CPU core, so that the same program gets the same timing on every run.</p>
+<p>The choice is a container inside a micro-VM from a warm pool, destroyed after one submission. Each sandbox is pinned to its own CPU core so that timings are repeatable.</p>
 
-<h3>The queue and getting results back</h3>
+<h3>The submission queue, retries and returning results</h3>
 
 <p>Judging stays out of the HTTP request because it is slow and may need a retry. The API writes the submission row first and then enqueues its id. If the enqueue fails, a sweeper job re-enqueues every row that is still <code>queued</code> after one minute, so an accepted submission is never lost.</p>
 
 <p>The queue (see <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>) delivers each job at least once. A worker takes a job with a 15-second lease and renews it every 5 seconds while it runs. It acknowledges the job only after it has written the verdict and the score. If the worker dies, the lease expires and another worker judges the job again within 15 seconds. The lease is short because a 60-second lease would break the 30-second contest target.</p>
 
-<p>Judging a submission twice is harmless because the writes are idempotent: the verdict write only succeeds if the row is not yet <code>done</code>, and the leaderboard counts only the first accept for each user and problem. <a href="/system-design/design-a-job-scheduler.html">Design a Job Scheduler</a> handles retries the same way.</p>
+<p>Judging a submission twice is harmless because the writes are idempotent: the verdict write only succeeds if the row is not yet <code>done</code>, and the leaderboard counts only the first accept for each user and problem.</p>
 
-<p>Contest, practice and "run on samples" requests go to separate queues, and workers take from the contest queue first, so practice traffic never delays a contest verdict. Each user is also limited to one submission every 5 seconds, which caps the worst case at 10,000 submissions a second.</p>
+<p>Contest, practice and "run on samples" requests go to separate queues, and workers take from the contest queue first, so practice traffic never delays a contest verdict. The limit of one submission per user every 5 seconds caps the worst case at 10,000 submissions a second.</p>
 
-<h3>The live leaderboard</h3>
+<h3>The contest leaderboard</h3>
 
 <p>Contestants are ranked by the number of problems solved, where more is better, and then by penalty, where less is better. The penalty is the sum, over the solved problems, of the seconds between the contest start and the accept, plus 300 seconds for each wrong submission before the accept. Zoe solved problem A at 460 seconds after one wrong attempt, so her penalty is 760 seconds.</p>
 
@@ -297,13 +297,13 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 
 <p>Submissions can finish judging out of order. A wrong answer submitted at 400 seconds can be judged after an accept submitted at 460 seconds. For this reason the verdict transaction recomputes the user's <code>contest_results</code> row by ordering their submissions by submit time, not by judge time. The worker then sets the score to the recomputed value instead of adding to it, so a redelivered job writes the same score again.</p>
 
-<p>The load is mostly reads. If contestants solve 3 of the 4 problems on average, that is 150,000 accepts in 5,400 seconds, or about 28 writes a second, while 50,000 contestants refreshing every 30 seconds make about 1,700 reads a second. Each standings page is rendered once every 5 seconds and served from a cache or the CDN, so only "my rank" reaches the sorted set. A lost sorted set is rebuilt in seconds from the <code>contest_results</code> rows. The <a href="/system-design/design-a-leaderboard.html">leaderboard case study</a> covers much larger scales.</p>
+<p>The load is mostly reads: about 28 accepts a second against about 1,700 standings reads a second, if 50,000 contestants refresh every 30 seconds and solve 3 of the 4 problems on average. Each standings page is rendered once every 5 seconds and served from a cache or the CDN, so only "my rank" reaches the sorted set. The <a href="/system-design/design-a-leaderboard.html">leaderboard case study</a> covers much larger scales.</p>
 
-<h3>The spike at contest start</h3>
+<h3>Handling the load spike at contest start</h3>
 
 <p>The start of a contest is known in advance, so the system prepares for it instead of reacting to it. The problem pages are rendered ahead of time and published to the CDN at the start time, so the 5,000 loads a second never reach the API. The judge fleet is scaled from 24 busy cores to about 600 fifteen minutes early, with warm sandboxes and test data on every worker.</p>
 
-<p>The queue absorbs whatever burst remains. If 3,000 jobs are waiting and the fleet finishes 300 a second (600 cores at 2 CPU-seconds each), the newest job waits about 10 seconds, which is within the target. Alert on the age of the oldest queued job, not only the queue length.</p>
+<p>The queue absorbs whatever burst remains. If 3,000 jobs are waiting and the fleet finishes 300 a second (600 cores at 2 CPU-seconds each), the newest job waits about 10 seconds, which is within the target. Alert on the age of the oldest queued job.</p>
 
 <h2>Bottlenecks and failures</h2>
 
@@ -348,7 +348,10 @@ contest_results (contest_id, user_id, problem_id,      PK (contest_id, user_id, 
 <p>A fixed limit favours fast languages. You can time reference solutions in each language on the judge hardware and set a limit per language, or multiply a base limit by a per-language factor.</p>
 
 <h3>How would you freeze the leaderboard for the last 15 minutes?</h3>
-<p>The system keeps updating the sorted set, but the standings pages serve a snapshot taken at the moment of the freeze, so contestants cannot see rankings change. Users still see their own verdicts. When the contest ends, the snapshot is replaced by the live set.</p>
+<p>The system keeps updating the sorted set, but the standings pages serve a snapshot taken at the moment of the freeze, so contestants cannot see rankings change. Users still see their own verdicts. After the contest ends the live standings are shown.</p>
+
+<h3>What if a problem accepts more than one correct output?</h3>
+<p>Comparing output text exactly only works when there is a single correct answer. For problems with many valid answers, or with floating-point results, the problem author supplies a checker program. The checker runs outside the submission's sandbox, reads the input, the submission's output and the reference output, and returns the verdict.</p>
 
 <x-checklist title="Self-review: online judge">
 <script type="application/json">

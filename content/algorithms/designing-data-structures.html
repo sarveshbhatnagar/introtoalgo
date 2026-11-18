@@ -1,53 +1,48 @@
 <!--
 {
   "title": "Designing Data Structures",
-  "description": "Combine simple structures so every operation is fast: a method for design questions, worked through on a min-stack and an LRU cache in JS and Python.",
-  "minutes": 16,
+  "description": "How to build a structure with fast operations by combining a hash map, list, stack or heap, worked through a min-stack and an LRU cache.",
+  "minutes": 19,
   "tags": ["design", "hashing", "linked lists", "stacks"]
 }
 -->
-<p>Your phone keeps your three most recent apps in memory, so they open instantly. Open a fourth, and it drops the one untouched for longest.</p>
+<p>A design problem asks you to build a structure that supports a given set of operations, each within a stated time, usually O(1) or O(log n). No single built-in structure is fast at every operation, so the solution is to combine two or more of them and keep them consistent. You reach for this technique when a problem says "design a class" and lists methods with required complexities.</p>
 
-<p>That needs three O(1) operations: find an app by name, mark it "just used", and find the least recently used. An array finds the oldest but not a name; a <a href="/algorithms/hash-tables.html">hash map</a> finds a name but knows no order. Use both, wired together.</p>
+<p>An LRU cache shows why. It must find an entry by key, mark it as just used, and find the least recently used entry, all in O(1). A hash map finds a key quickly but keeps no usage order, and a list keeps an order but cannot find a key without scanning. Combining the two gives all three operations.</p>
 
-<h2>A method for design questions</h2>
+<h2>How to approach a design problem</h2>
 
-<p>"Design a structure that supports these operations" problems yield to four steps.</p>
+<p>The same four steps work for most design questions.</p>
 
 <ol>
-<li><strong>List the operations and the cost you need for each</strong>, such as <code>get</code> and <code>put</code> in O(1). The target usually decides the design.</li>
-<li><strong>Name the structure that makes each operation cheap.</strong> Lookup by key: hash map. Last in, first out: stack. Smallest: heap. Order with cheap removal from the middle: doubly linked list.</li>
-<li><strong>Combine them, and decide what links them.</strong> Usually one part stores pointers or indexes into another, so you never search.</li>
-<li><strong>Keep every part in sync.</strong> Write down the rule that must hold after every call, and check each method against it.</li>
+<li><strong>List the operations and the time each one needs.</strong> The required complexities usually decide the design.</li>
+<li><strong>Pick a structure that makes each operation cheap.</strong> A hash map gives lookup by key, a stack gives last-in first-out access, a heap gives the smallest or largest item, and a doubly linked list gives order with removal from the middle.</li>
+<li><strong>Decide how the parts refer to each other.</strong> Usually one structure stores pointers or indexes into another, so that no operation has to search.</li>
+<li><strong>State the invariant and check every method against it.</strong> The invariant is the rule that must be true after every call, such as "the map holds exactly the keys that are in the list".</li>
 </ol>
 
-<x-callout type="key">
-<p>When a structure is slow at some operations, pair it with one that covers them, and make every operation update both.</p>
-</x-callout>
+<h2>A stack that returns its minimum in O(1)</h2>
 
-<h2>Worked design 1: a stack that knows its minimum</h2>
+<p>The task is a <a href="/algorithms/stacks.html">stack</a> with <code>push</code>, <code>pop</code>, <code>top</code> and <code>getMin</code>, where every operation is O(1). A plain stack answers <code>getMin</code> by scanning all of its items, which is O(n).</p>
 
-<p>You want a <a href="/algorithms/stacks.html">stack</a> with <code>push</code>, <code>pop</code>, <code>top</code> and <code>getMin</code>, all O(1). On a plain stack, <code>getMin</code> is an O(n) scan.</p>
+<p>Keeping a single variable with the smallest value makes <code>push</code> easy, but after you pop that value the variable is wrong, and finding the next smallest needs a scan. The variable has lost the history of earlier minimums.</p>
 
-<p>One variable holding the smallest value handles <code>push</code>, but pop that value and you must scan for the new minimum: the variable forgot the history.</p>
-
-<p>So store the history. For every value, record the minimum <em>at the moment it was pushed</em>, in a second stack that grows and shrinks with the first. Its top is always the current minimum, and popping both restores the old minimum for free.</p>
+<p>The fix is to keep that history in a second stack. When a value is pushed, the second stack receives the smallest value in the whole stack at that moment. The two stacks always have the same height, and the top of the second one is the current minimum. Popping both stacks restores the previous minimum automatically.</p>
 
 <x-tracer title="Min-stack: push 5, 3, 7, 2, then pop twice">
 <script type="application/json">
 {
   "steps": [
-    { "caption": "Push 5. The minimum so far is 5.", "arrays": [ { "label": "values", "values": [5], "highlight": [0] }, { "label": "mins", "values": [5], "highlight": [0] } ], "vars": { "getMin": 5 } },
-    { "caption": "Push 3. It is smaller than 5, so push 3 onto <code>mins</code>.", "arrays": [ { "label": "values", "values": [5,3], "highlight": [1] }, { "label": "mins", "values": [5,3], "highlight": [1] } ], "vars": { "getMin": 3 } },
-    { "caption": "Push 7. The minimum is still 3, so <code>mins</code> repeats 3. Both stacks keep the same height.", "arrays": [ { "label": "values", "values": [5,3,7], "highlight": [2] }, { "label": "mins", "values": [5,3,3], "highlight": [2] } ], "vars": { "getMin": 3 } },
-    { "caption": "Push 2. New minimum: 2.", "arrays": [ { "label": "values", "values": [5,3,7,2], "highlight": [3] }, { "label": "mins", "values": [5,3,3,2], "highlight": [3] } ], "vars": { "getMin": 2 } },
-    { "caption": "Pop. 2 leaves both stacks. The top of <code>mins</code> is 3, the minimum of 5, 3, 7. No scan.", "arrays": [ { "label": "values", "values": [5,3,7] }, { "label": "mins", "values": [5,3,3], "mark": [2] } ], "vars": { "popped": 2, "getMin": 3 } },
-    { "caption": "Pop 7; the minimum is still 3. Every operation touched only the tops: O(1).", "arrays": [ { "label": "values", "values": [5,3] }, { "label": "mins", "values": [5,3], "mark": [1] } ], "vars": { "popped": 7, "getMin": 3 } }
+    { "caption": "Push 5. It is the only value, so the minimum is 5.", "arrays": [ { "label": "values", "values": [5], "highlight": [0] }, { "label": "mins", "values": [5], "highlight": [0] } ], "vars": { "getMin": 5 } },
+    { "caption": "Push 3. It is smaller than 5, so <code>mins</code> gets a 3.", "arrays": [ { "label": "values", "values": [5,3], "highlight": [1] }, { "label": "mins", "values": [5,3], "highlight": [1] } ], "vars": { "getMin": 3 } },
+    { "caption": "Push 7. The minimum is still 3, so <code>mins</code> gets another 3 and both stacks stay the same height.", "arrays": [ { "label": "values", "values": [5,3,7], "highlight": [2] }, { "label": "mins", "values": [5,3,3], "highlight": [2] } ], "vars": { "getMin": 3 } },
+    { "caption": "Push 2. This is a new minimum, so <code>mins</code> gets a 2.", "arrays": [ { "label": "values", "values": [5,3,7,2], "highlight": [3] }, { "label": "mins", "values": [5,3,3,2], "highlight": [3] } ], "vars": { "getMin": 2 } },
+    { "caption": "Pop. The 2 leaves both stacks, and the top of <code>mins</code> is now 3, which is the minimum of 5, 3 and 7. No scan was needed.", "arrays": [ { "label": "values", "values": [5,3,7] }, { "label": "mins", "values": [5,3,3], "mark": [2] } ], "vars": { "popped": 2, "getMin": 3 } },
+    { "caption": "Pop the 7. The minimum is still 3. Every operation touched only the tops of the stacks, so each one took O(1).", "arrays": [ { "label": "values", "values": [5,3] }, { "label": "mins", "values": [5,3], "mark": [1] } ], "vars": { "popped": 7, "getMin": 3 } }
   ]
 }
 </script>
 </x-tracer>
-
 <x-code title="Min-stack">
 <pre lang="js">
 class MinStack {
@@ -91,19 +86,21 @@ class MinStack:
 </pre>
 </x-code>
 
-<p>The rule: <code>mins[i]</code> is the smallest of <code>values[0..i]</code>, and both stacks have the same height. <code>push</code> and <code>pop</code> change both by one, so it always holds.</p>
+<p>The invariant is that <code>mins[i]</code> is the smallest of <code>values[0..i]</code> and both stacks have the same height. <code>push</code> and <code>pop</code> each change both stacks by exactly one item, so the invariant holds after every call.</p>
 
-<h2>Worked design 2: an LRU cache</h2>
+<h2>An LRU cache</h2>
 
-<p>Back to the phone. An <strong>LRU cache</strong> ("least recently used") holds at most <code>capacity</code> key-value pairs. <code>get(key)</code> returns the value and counts as a use. <code>put(key, value)</code> adds or replaces a pair, first evicting the pair used longest ago if the cache is full. Both must be O(1).</p>
+<p>An LRU cache (least recently used) stores at most <code>capacity</code> key-value pairs. <code>get(key)</code> returns the value and counts as a use of that key. <code>put(key, value)</code> adds a pair or replaces the value of an existing one, and if the cache is full it first removes the pair that was used longest ago. Both operations must be O(1).</p>
+
+<p>Each requirement points to a structure.</p>
 
 <ul>
-<li><strong>Find by key</strong>: a hash map.</li>
-<li><strong>Keep order of use, move any item to the front, remove from the back</strong>: a doubly <a href="/algorithms/linked-lists.html">linked list</a>. With <code>prev</code> and <code>next</code> pointers, unlinking a node you hold is O(1).</li>
-<li><strong>The link</strong>: the map stores <code>key → node</code>, not <code>key → value</code>, so <code>get</code> reaches a node without walking the list. Each node also stores its key, so evicting the last node can delete its map entry.</li>
+<li>Finding an entry by key needs a hash map.</li>
+<li>Keeping entries in order of use, moving any entry to the front and removing the oldest from the back needs a doubly <a href="/algorithms/linked-lists.html">linked list</a>. If you hold a node, its <code>prev</code> and <code>next</code> pointers let you unlink it in O(1).</li>
+<li>The two are connected by making the map store <code>key → node</code> instead of <code>key → value</code>. Then <code>get</code> reaches the node in one lookup. Each node also stores its own key, so that when the oldest node is removed you know which map entry to delete.</li>
 </ul>
 
-<x-figure caption="The map points straight at list nodes, kept in order of use, newest first.">
+<x-figure caption="The hash map points straight at the nodes of a doubly linked list, which is ordered from the most recently used to the least recently used.">
 <svg viewBox="0 0 500 210" aria-label="Left: a hash map with keys chat, mail and maps, each with an arrow pointing to a node in a doubly linked list on the right. The list runs from a head sentinel through mail, chat and maps to a tail sentinel, labelled newest and oldest.">
   <defs><marker id="dds-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <text x="50" y="22" text-anchor="middle" class="t-sans t-small f-muted">hash map</text>
@@ -124,18 +121,19 @@ class MinStack:
 </svg>
 </x-figure>
 
-<p>Two dummy nodes, the sentinels <code>head</code> and <code>tail</code>, are never removed, so every real node has neighbours on both sides and the code needs no empty-list case.</p>
+
+<p>The list has two dummy nodes, <code>head</code> and <code>tail</code>, that are never removed. Every real node therefore has a neighbour on each side, and the code never has to handle an empty list or a node at the end as a special case.</p>
 
 <x-tracer title="LRU cache with capacity 3">
 <script type="application/json">
 {
   "steps": [
-    { "caption": "<code>put(\"mail\")</code>. New node at the front; store <code>mail → node</code>.", "array": { "label": "newest to oldest", "values": ["mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail", "size": 1 } },
-    { "caption": "<code>put(\"maps\")</code>. New node at the front.", "array": { "label": "newest to oldest", "values": ["maps","mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps", "size": 2 } },
-    { "caption": "<code>put(\"chat\")</code>. The cache is now full.", "array": { "label": "newest to oldest", "values": ["chat","maps","mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps, chat", "size": 3 } },
-    { "caption": "<code>get(\"mail\")</code>. The map jumps to mail's node. A use, so move it from the back to the front: a few pointer changes.", "array": { "label": "newest to oldest", "values": ["mail","chat","maps"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps, chat", "size": 3, "returned": "mail's value" } },
-    { "caption": "<code>put(\"news\")</code> on a full cache. The item just before <code>tail</code>, maps, is least recently used. Unlink it and delete its stored key from the map.", "array": { "label": "newest to oldest", "values": ["mail","chat"], "style": "list" }, "vars": { "map keys": "mail, chat", "size": 2, "evicted": "maps" } },
-    { "caption": "Add news at the front. Without the <code>get</code>, mail would have been evicted. Every step was O(1).", "array": { "label": "newest to oldest", "values": ["news","mail","chat"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, chat, news", "size": 3 } }
+    { "caption": "<code>put(\"mail\")</code>. A new node goes at the front of the list, and the map stores <code>mail → node</code>.", "array": { "label": "newest to oldest", "values": ["mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail", "size": 1 } },
+    { "caption": "<code>put(\"maps\")</code>. The new node goes at the front.", "array": { "label": "newest to oldest", "values": ["maps","mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps", "size": 2 } },
+    { "caption": "<code>put(\"chat\")</code>. The cache is now full, with mail as the oldest entry.", "array": { "label": "newest to oldest", "values": ["chat","maps","mail"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps, chat", "size": 3 } },
+    { "caption": "<code>get(\"mail\")</code>. The map finds mail's node directly. A get counts as a use, so the node moves from the back to the front with a few pointer changes.", "array": { "label": "newest to oldest", "values": ["mail","chat","maps"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, maps, chat", "size": 3, "returned": "mail's value" } },
+    { "caption": "<code>put(\"news\")</code> on a full cache. The node just before <code>tail</code> is maps, the least recently used. It is unlinked, and its stored key is used to delete its map entry.", "array": { "label": "newest to oldest", "values": ["mail","chat"], "style": "list" }, "vars": { "map keys": "mail, chat", "size": 2, "evicted": "maps" } },
+    { "caption": "The news node is added at the front. Without the earlier <code>get</code>, mail would have been evicted instead of maps. Every step took O(1).", "array": { "label": "newest to oldest", "values": ["news","mail","chat"], "style": "list", "highlight": [0] }, "vars": { "map keys": "mail, chat, news", "size": 3 } }
   ]
 }
 </script>
@@ -225,71 +223,102 @@ class LRUCache:
 </pre>
 </x-code>
 
-<x-callout type="tip" title="Ordered maps do this for you">
-<p>A JavaScript <code>Map</code> keeps insertion order: delete and re-set a key to mark it used; the oldest is <code>map.keys().next().value</code>. Python's <code>collections.OrderedDict</code> has <code>move_to_end</code> and <code>popitem(last=False)</code>. Use them in real code; in an interview, expect to build the list yourself.</p>
-</x-callout>
+<p>JavaScript's <code>Map</code> remembers insertion order, so deleting a key and setting it again marks it as used, and the oldest key is <code>map.keys().next().value</code>. Python's <code>collections.OrderedDict</code> offers <code>move_to_end</code> and <code>popitem(last=False)</code>. These shortcuts are fine in real code, but an interviewer asking for an LRU cache usually expects you to build the list yourself.</p>
 
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
-    { "name": "Min-stack", "time": "O(1) every operation", "space": "O(n)", "note": "Only the tops of two stacks change. The second stack doubles the memory." },
-    { "name": "LRU cache", "time": "O(1) get and put", "space": "O(capacity)", "note": "One map lookup plus a fixed number of pointer changes." }
+    { "name": "Min-stack", "time": "O(1) for every operation", "space": "O(n)", "note": "Each operation touches only the tops of two stacks. The second stack doubles the memory used." },
+    { "name": "LRU cache", "time": "O(1) for get and put", "space": "O(capacity)", "note": "One map lookup plus a fixed number of pointer changes." }
   ]
 }
 </script>
 </x-complexity>
 
-<h2>More pairings worth knowing</h2>
+<h2>Other combinations of structures</h2>
 
-<ul>
-<li><strong>Hash map + array</strong>: insert, delete and pick a random item in O(1). The map stores each value's index; to delete, move the last item into the gap, update its index, and pop the end.</li>
-<li><strong>Two heaps</strong>: a running median. A max-heap holds the smaller half, a min-heap the larger, and the median sits on top. See <a href="/algorithms/heaps-and-priority-queues.html">Heaps and Priority Queues</a>.</li>
-<li><strong>Hash map + heap</strong>: a top-k leaderboard with changing scores. The map holds current scores; stale heap entries are skipped when they reach the top.</li>
-</ul>
+<p>The same method produces several other designs that are asked often. Each one comes from picking the structure for each operation and then deciding how the parts point at each other.</p>
 
-<h2>Common mistakes</h2>
+<h3>Insert, delete and random element in O(1)</h3>
 
-<x-callout type="mistake" title="Updating one part and forgetting the other">
-<p>Evict the last node but leave its key in the map, and a later <code>get</code> returns a node no longer in the list. After each method, ask: is the map still exactly the keys in the list?</p>
+<p>A hash map alone cannot return a random element, and an array alone cannot find or delete a value quickly. Store the values in an array and keep a map from each value to its index in the array. Insert appends to the array and records the index. To delete a value, copy the last array item into the deleted slot, update that item's index in the map, remove the last array item, and delete the value from the map. Picking a random element is a random index into the array. If the value being deleted is itself the last item, the copy and the removal touch the same slot, so make sure the map entry is deleted after the index update and not before it.</p>
+
+<h3>Running median with two heaps</h3>
+
+<p>A max-heap holds the smaller half of the numbers seen so far and a min-heap holds the larger half. After each insertion the two heaps are rebalanced so that their sizes differ by at most one. The median is the top of the larger heap, or the average of both tops when the sizes are equal. Insertion costs O(log n) and reading the median costs O(1). A sorted array also works, but inserting into it costs O(n). See <a href="/algorithms/heaps-and-priority-queues.html">Heaps and Priority Queues</a>.</p>
+
+<h3>Top-k leaderboard with changing scores</h3>
+
+<p>A heap alone cannot update the score of an arbitrary entry efficiently. Keep a hash map with the current score of each player, and push a new heap entry whenever a score changes. When you read the top of the heap, discard any entry whose score no longer matches the map, because it is out of date. This is called lazy deletion. It keeps updates at O(log n) and leaves old entries in the heap until they reach the top.</p>
+
+<h3>When combining structures is not the answer</h3>
+
+<p>If the required operations include anything in sorted order, such as "the smallest key greater than x", a hash map cannot help, because it has no order. The answer is then a balanced tree or a sorted structure, and the time is O(log n) rather than O(1). If the input is small, or the interviewer does not state a time requirement, a plain array scan is also an acceptable first answer; say so, and then improve it.</p>
+
+<h2>Pitfalls</h2>
+
+<x-callout type="mistake" title="Updating one structure and forgetting the other">
+<p>If you remove the oldest node from the list but leave its key in the map, a later <code>get</code> returns a node that is no longer in the list. After writing each method, check that the map contains exactly the keys that are in the list. The same applies to a min-stack: every <code>pop</code> must pop both stacks.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Not treating get as a use">
-<p>If <code>get</code> does not move the node, the cache evicts by insertion time, not last use. In the trace, it would throw out mail right after you used it.</p>
+<p>If <code>get</code> reads the value without moving the node to the front, the cache evicts by insertion time instead of by last use. In the trace above, mail would be evicted right after it was read.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Mapping keys to values instead of nodes">
-<p>With <code>key → value</code>, the map cannot tell you where the node sits, so moving it means walking the list: O(n). Store the node.</p>
+<p>If the map holds <code>key → value</code>, it cannot tell you where the entry sits in the list, so moving it to the front means walking the list, which is O(n). Store the node in the map, and store the key in the node.</p>
 </x-callout>
 
-<h2>Check yourself</h2>
+<x-callout type="mistake" title="Evicting when put replaces an existing key">
+<p>A <code>put</code> for a key that is already in the cache does not add an entry, so it must not evict anything, even when the cache is full. The code above checks for an existing key first and only evicts when the key is new. Skipping that check removes a valid entry for no reason.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Getting duplicates wrong in a min-stack">
+<p>A common space-saving version pushes onto the second stack only when the new value is less than or equal to the current minimum, and pops it only when the popped value equals the minimum. The comparison must be less than or equal. With a strict less-than, pushing 3 twice records one 3 in the second stack, and the first pop of 3 removes the minimum while a 3 is still in the stack.</p>
+</x-callout>
+
+<h2>In the interview</h2>
+
+<p>You can recognise these problems by the statement. It asks you to design a class, lists several methods, and gives a required time for each, usually O(1) on average. Phrases such as "least recently used", "get the minimum", "get a random element" or "the median of a stream" each point to a known combination. Start by writing the operations and their required times, say which structure covers each one, and then explain how the structures refer to each other. Interviewers usually care more about whether you can state the invariant and keep both structures in sync than about the exact code.</p>
+
+<p>Questions to expect:</p>
+
+<ul>
+<li><strong>"What would you ask before starting?"</strong> Ask what <code>get</code> should return for a missing key, whether <code>put</code> on an existing key counts as a use, whether the capacity can be zero, and whether the keys and values can be of any type. Interviewers expect these questions, and the answers change the code in small ways.</li>
+<li><strong>"Why a doubly linked list and not a singly linked one?"</strong> Removing a node from the middle needs the node before it. With a <code>prev</code> pointer you get it directly, and with a singly linked list you would walk from the head, which makes <code>get</code> O(n).</li>
+<li><strong>"Why does the node store its key?"</strong> When the cache is full you take the oldest node from the end of the list, and you must delete that node's entry from the map. The node is the only place that can tell you which key that is.</li>
+<li><strong>"Can you reduce the extra space of the min-stack?"</strong> Yes. Push onto the second stack only when the new value is less than or equal to the current minimum, and pop from it only when the popped value equals the minimum. The worst case, a strictly decreasing sequence, is still O(n).</li>
+<li><strong>"What changes for a least frequently used (LFU) cache?"</strong> Recency is no longer enough, because you also track how many times each key was used. A common design keeps a map from key to node, a map from each count to a doubly linked list of the keys with that count, and the current minimum count. A use moves a node from its count's list to the next count's list, and eviction removes the oldest node in the list for the minimum count. All operations stay O(1).</li>
+<li><strong>"How would you make the cache thread-safe?"</strong> Even <code>get</code> changes the list, so a read is also a write. The simplest answer is one lock around every method. If contention is a problem, split the cache into several independent shards chosen by hashing the key, each with its own lock and its own list.</li>
+</ul>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "A min-stack holds values <code>[4, 6, 1, 8]</code> (bottom to top). What is in <code>mins</code>?",
+      "question": "A min-stack holds values <code>[4, 6, 1, 8]</code> from bottom to top. What does <code>mins</code> contain?",
       "options": [
-        { "text": "<code>[4, 4, 1, 1]</code>", "correct": true, "why": "Each entry is the smallest at or below it: 4, min(4, 6) = 4, 1, still 1." },
-        { "text": "<code>[1, 1, 1, 1]</code>", "why": "After popping 8 and 1, the minimum must go back to 4, and this array cannot tell you that." },
-        { "text": "<code>[4, 6, 1, 8]</code>", "why": "That copies the values. The top entry, 8, is not the minimum." }
+        { "text": "<code>[4, 4, 1, 1]</code>", "correct": true, "why": "Each entry is the smallest value at or below that position: 4, then min(4, 6) = 4, then 1, then still 1." },
+        { "text": "<code>[1, 1, 1, 1]</code>", "why": "After popping 8 and 1 the minimum must return to 4, and this array has lost that information." },
+        { "text": "<code>[4, 6, 1, 8]</code>", "why": "That is a copy of the values. The top entry, 8, is not the minimum." }
       ]
     },
     {
-      "question": "Why does an LRU cache use a <em>doubly</em> linked list?",
+      "question": "Why does an LRU cache use a doubly linked list?",
       "options": [
-        { "text": "So you can walk the list backwards to find a key", "why": "The map finds keys; nobody walks the list." },
-        { "text": "To unlink a node from the middle in O(1) when you only hold that node", "correct": true, "why": "Unlinking needs the node before it. A <code>prev</code> pointer gives it at once; a singly linked list would walk from the head." },
-        { "text": "To use less memory than an array", "why": "It uses more memory: two pointers per node. It is chosen for speed." }
+        { "text": "So that the list can be walked backwards to find a key", "why": "The map finds keys. Nothing walks the list." },
+        { "text": "So that a node can be unlinked from the middle in O(1) when only that node is known", "correct": true, "why": "Unlinking needs the node before it, and a <code>prev</code> pointer provides it. A singly linked list would have to walk from the head." },
+        { "text": "Because it uses less memory than an array", "why": "It uses more, because each node holds two pointers. It is chosen for speed." }
       ]
     },
     {
-      "question": "LRU cache, capacity 2. Calls: <code>put(a)</code>, <code>put(b)</code>, <code>get(a)</code>, <code>put(c)</code>. Which key gets evicted?",
+      "question": "An LRU cache has capacity 2. The calls are <code>put(a)</code>, <code>put(b)</code>, <code>get(a)</code>, <code>put(c)</code>. Which key is evicted?",
       "options": [
-        { "text": "a", "why": "a was inserted first, but <code>get(a)</code> used it after b." },
-        { "text": "b", "correct": true, "why": "After <code>get(a)</code>, the order from newest is a, b, so <code>put(c)</code> evicts b." },
-        { "text": "c", "why": "Room is made for the new item; it is never evicted." }
+        { "text": "a", "why": "a was inserted first, but <code>get(a)</code> used it after b was inserted." },
+        { "text": "b", "correct": true, "why": "After <code>get(a)</code> the order from newest to oldest is a, b, so <code>put(c)</code> evicts b." },
+        { "text": "c", "why": "c is the new entry. Space is made for it, and it is not evicted." }
       ]
     }
   ]
@@ -299,4 +328,4 @@ class LRUCache:
 
 <h2>What to practise next</h2>
 
-<p>Build the min-stack in <a href="/practice/lowest-point-on-the-trail.html">Lowest Point on the Trail</a>. Then try <a href="/practice/two-spike-order-rail.html">Two-Spike Order Rail</a> (a queue from two stacks) and <a href="/practice/live-median-house-price.html">Live Median House Price</a> (two heaps). For a harder design, apply the four steps to a queue with <code>enqueue</code>, <code>dequeue</code> and <code>getMax</code> in amortized O(1); <a href="/algorithms/monotonic-stack.html">Monotonic Stack</a> and <a href="/algorithms/queues-and-deques.html">Queues and Deques</a> have the parts you need.</p>
+<p>Build the min-stack in <a href="/practice/lowest-point-on-the-trail.html">Lowest Point on the Trail</a>, then try <a href="/practice/two-spike-order-rail.html">Two-Spike Order Rail</a>, which builds a queue from two stacks, and <a href="/practice/live-median-house-price.html">Live Median House Price</a>, which uses two heaps. <a href="/algorithms/monotonic-stack.html">Monotonic Stack</a> and <a href="/algorithms/queues-and-deques.html">Queues and Deques</a> cover the parts needed for a queue with a maximum.</p>

@@ -1,35 +1,27 @@
 <!--
 {
   "title": "What Is an Agent",
-  "description": "An agent is a model that calls tools in a loop until a goal is met. See one work, learn how it differs from a fixed workflow, and when not to build one.",
+  "description": "What an agent is, how it differs from a single model call and from a fixed workflow, and how to decide whether a task needs one.",
   "minutes": 12,
   "tags": ["agents", "fundamentals"]
 }
 -->
-<p>Last night's backup failed, and you ask an AI assistant why. A plain chat model can only guess: "Backups often fail because of full disks, expired credentials or network problems." True, and no help.</p>
+<p>An agent is a language model that is given a goal and a set of tools, and that works toward the goal in a loop. It chooses a tool, the application runs it, and the model reads the result and chooses the next step, until it decides the goal is met. Agents are used for tasks where the right next step depends on what the previous step found, which a fixed script cannot handle.</p>
 
-<p>A colleague with server access would read the log, see the disk is full, then check what fills it. Each step depends on what the last one showed, so nobody could script them in advance.</p>
+<p>Without this, a model that is asked why last night's backup failed can only list common causes such as a full disk or expired credentials. An agent can read the backup log, see that the disk is full, check how full it is, and look for what is using the space, because each step is decided from the result of the one before.</p>
 
-<p>An <strong>agent</strong> is a model set up to work like that colleague: look, decide, act, look again, until the job is done.</p>
+<h2>How an agent works</h2>
 
-<h2>The idea: a model with tools, in a loop</h2>
-
-<p>In <a href="/ai/tools-and-mcp.html">Tools and MCP</a>, a model asks the app to run a tool and reads the result. An agent puts the model in charge of the next step. Four parts:</p>
+<p>In <a href="/ai/tools-and-mcp.html">Tools and MCP</a>, a model asks the application to run a tool and then reads the result. An agent extends this by letting the model decide what to request next, repeatedly. It has four parts:</p>
 
 <ul>
-<li><strong>A goal.</strong> What you want, ideally with a finish line: "Find out why the backup failed. Do not delete anything."</li>
-<li><strong>Tools.</strong> Actions it can request: read a log, check disk usage, list a folder.</li>
-<li><strong>A loop.</strong> The app calls the model, runs the tool it asks for, adds the result to the context, and repeats.</li>
-<li><strong>A stop.</strong> The model gives a final answer, or the app's limits end it (too many steps, too much time).</li>
+<li><strong>A goal.</strong> The goal says what you want and, ideally, when to stop, for example "Find out why the backup failed. Do not delete anything."</li>
+<li><strong>Tools.</strong> These are the actions the model can request, such as reading a log, checking disk usage or listing a folder.</li>
+<li><strong>A loop.</strong> The application calls the model, runs the tool the model asks for, adds the result to the history, and calls the model again.</li>
+<li><strong>A stop condition.</strong> The loop ends when the model gives a final answer, or when a limit set by the application is reached, such as a maximum number of steps or a time budget.</li>
 </ul>
 
-<x-callout type="key">
-<p>An agent is a model calling tools in a loop, choosing each next step from the last result. In ordinary software you write the steps; here the model picks them at run time.</p>
-</x-callout>
-
-<h2>Watch one work</h2>
-
-<p>The backup investigation as an agent with three read-only tools: <code>readLog</code>, <code>diskUsage</code> and <code>listDir</code>. Tool results are illustrative.</p>
+<p>The trace below shows the backup investigation with three read-only tools: <code>readLog</code>, <code>diskUsage</code> and <code>listDir</code>. The tool results are made up for the example.</p>
 
 <x-tracer title="An agent finds out why the backup failed">
 <script type="application/json">
@@ -37,27 +29,27 @@
   "code": ["history = [goal]", "loop:", "  step = model(history)", "  if step is an answer: return step", "  result = run(step.tool, step.input)", "  history += [step, result]"],
   "codeLang": "text",
   "steps": [
-    {"caption": "The history starts with the goal. The model also sees short descriptions of the three tools.", "line": 1, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."]], "highlight": [[0, 1]]}, "vars": {"model calls": 0, "tool runs": 0}},
-    {"caption": "With no facts yet, the model asks for <code>readLog</code> instead of answering.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"]], "highlight": [[1, 1]]}, "vars": {"model calls": 1, "tool runs": 0}},
-    {"caption": "The app runs the tool and appends the result: the backup disk is full.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"]], "highlight": [[2, 1]]}, "vars": {"model calls": 1, "tool runs": 1}},
-    {"caption": "This request only makes sense because of the last result: how full is the disk? It asks for <code>diskUsage</code>.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"]], "highlight": [[3, 1]]}, "vars": {"model calls": 2, "tool runs": 1}},
-    {"caption": "The app runs it and appends the answer: 98% full.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"]], "highlight": [[4, 1]]}, "vars": {"model calls": 2, "tool runs": 2}},
-    {"caption": "What is taking the space? It asks for <code>listDir</code>, sorted by size.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"]], "highlight": [[5, 1]]}, "vars": {"model calls": 3, "tool runs": 2}},
-    {"caption": "One folder holds 310 of the 490 GB, untouched for 14 months. 310 + 170 + 10 = 490, so nothing else is hiding.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"]], "highlight": [[6, 1]]}, "vars": {"model calls": 3, "tool runs": 3}},
-    {"caption": "Enough to explain the failure, so the model answers and the loop ends. It suggests a fix but, as told, deletes nothing.", "line": 4, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"], ["model", "Disk full. snapshots-old (310 GB) looks unused. Archive it?"]], "mark": [[7, 1]]}, "vars": {"model calls": 4, "tool runs": 3}},
-    {"caption": "Four model calls, three tool runs. No tool call was planned at the start: each was chosen from the result before it.", "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"], ["model", "Disk full. snapshots-old (310 GB) looks unused. Archive it?"]], "mark": [[2, 1], [4, 1], [6, 1], [7, 1]]}, "vars": {"model calls": 4, "tool runs": 3}}
+    {"caption": "The history starts with the goal, and the model is also given a short description of each of the three tools.", "line": 1, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."]], "highlight": [[0, 1]]}, "vars": {"model calls": 0, "tool runs": 0}},
+    {"caption": "The model has no facts yet, so it asks for <code>readLog</code> instead of answering.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"]], "highlight": [[1, 1]]}, "vars": {"model calls": 1, "tool runs": 0}},
+    {"caption": "The app runs the tool and appends the result to the history, which shows that the backup disk is full.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"]], "highlight": [[2, 1]]}, "vars": {"model calls": 1, "tool runs": 1}},
+    {"caption": "The model now wants to know how full the disk is, which it only thought to ask because of the last result, so it requests <code>diskUsage</code>.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"]], "highlight": [[3, 1]]}, "vars": {"model calls": 2, "tool runs": 1}},
+    {"caption": "The app runs the tool and appends the answer, which is that the disk is 98% full.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"]], "highlight": [[4, 1]]}, "vars": {"model calls": 2, "tool runs": 2}},
+    {"caption": "The next question is what is using the space, so the model requests <code>listDir</code> sorted by size.", "line": 3, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"]], "highlight": [[5, 1]]}, "vars": {"model calls": 3, "tool runs": 2}},
+    {"caption": "One folder holds 310 of the 490 GB and has not been touched for 14 months. The three folders add up to 490 GB, so nothing else is using space.", "line": 6, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"]], "highlight": [[6, 1]]}, "vars": {"model calls": 3, "tool runs": 3}},
+    {"caption": "The model now has enough to explain the failure, so it gives a final answer and the loop ends. It suggests a fix but deletes nothing, as the goal required.", "line": 4, "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"], ["model", "Disk full. snapshots-old (310 GB) looks unused. Archive it?"]], "mark": [[7, 1]]}, "vars": {"model calls": 4, "tool runs": 3}},
+    {"caption": "The run took four model calls and three tool runs. None of the tool calls was planned at the start, because each one was chosen from the result before it.", "grid": {"label": "history", "colLabels": ["who", "text"], "rows": [["goal", "Why did the backup fail? Delete nothing."], ["model", "readLog(\"backup\", last 20 lines)"], ["tool", "ERROR: no space left on /mnt/backup"], ["model", "diskUsage(\"/mnt/backup\")"], ["tool", "490 of 500 GB used (98%)"], ["model", "listDir(\"/mnt/backup\", by size)"], ["tool", "snapshots-old 310 GB, 14 months old; daily 170 GB; logs 10 GB"], ["model", "Disk full. snapshots-old (310 GB) looks unused. Archive it?"]], "mark": [[2, 1], [4, 1], [6, 1], [7, 1]]}, "vars": {"model calls": 4, "tool runs": 3}}
   ]
 }
 </script>
 </x-tracer>
 
-<p>The app did nothing clever: it ran the loop and the tools and kept the history. The judgement ("disk full, so check the disk") came from the model. <a href="/ai/the-agent-loop.html">The Agent Loop</a> turns this pseudocode into real code.</p>
+<p>The application only ran the loop, executed the tools and kept the history. The decision to check the disk after seeing the error came from the model. <a href="/ai/the-agent-loop.html">The Agent Loop</a> turns this pseudocode into working code.</p>
 
-<h2>Who decides the next step</h2>
+<h2>Single call, workflow and agent</h2>
 
-<p>"Agent" gets used for almost anything with AI. A more useful sort is by who decides the next step.</p>
+<p>The word "agent" is applied to almost anything that uses AI, so it helps to separate three designs by who decides the next step.</p>
 
-<x-figure caption="Moving right gives the model more freedom and costs predictability.">
+<x-figure caption="Moving from left to right gives the model more control over the steps and makes the behaviour less predictable.">
 <svg viewBox="0 0 520 250" aria-label="Three columns. Single call: one box from input to output. Workflow: three boxes in a fixed chain, with the order written by you in code. Agent: a model box with a loop arrow through a tools box, the model choosing each step.">
   <defs><marker id="wia-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <text x="80" y="24" text-anchor="middle" class="t-sans t-bold">Single call</text>
@@ -92,37 +84,53 @@
 </svg>
 </x-figure>
 
-<ul>
-<li><strong>Single call.</strong> One prompt, one answer. "Rewrite this paragraph more simply."</li>
-<li><strong>Workflow.</strong> Several model calls in an order your code fixes. "Summarize each support ticket, classify it, draft a reply." The model never chooses what comes next.</li>
-<li><strong>Agent.</strong> The model chooses the next step and when to stop, within your goal, tools and limits.</li>
-</ul>
+<h3>Single call</h3>
 
-<p>Workflows are underrated: every path is known in advance, so they are cheaper, faster and easier to test.</p>
+<p>A single call sends one prompt and uses one answer, such as "Rewrite this paragraph in simpler language". It is the cheapest and most predictable design, and it is enough whenever the whole input fits in the prompt and no outside information is needed. If a task can be done well this way, nothing more is needed.</p>
 
-<h2>When not to use an agent</h2>
+<h3>Workflow</h3>
 
-<p>Freedom has a price. Each step is another model call, so agents are slower and cost more, and they can take a different path each run, so they are harder to test.</p>
+<p>A workflow makes several model calls in an order that your code fixes. For example, code can fetch new support tickets, ask the model to classify each one, ask it to draft a reply, and then send the replies. The model never chooses what happens next, so every path is known in advance. This makes workflows faster, cheaper and easier to test than agents, and a task whose steps you can write down should be built as a workflow. It fails when the steps cannot be known in advance, because the code has no way to react to an unexpected finding.</p>
 
-<p>Errors also compound. If each step is right 95% of the time and one wrong step spoils the run, a ten-step run is fully right only about 60% of the time: 0.95<sup>10</sup> ≈ 0.60. Agents sometimes fix a bad result, so reality can be better, but more steps still means more chances to go wrong.</p>
+<h3>Agent</h3>
 
-<p>Use the simplest thing that works:</p>
+<p>In an agent, the model chooses the next step and decides when to stop, within the goal, tools and limits you set. This is the only one of the three that can handle a task whose path depends on what it finds, such as debugging a failure or researching a question across several sources. The costs are that each step is another model call, so the run is slower and more expensive, and that the model can take a different path on each run, which makes it harder to test.</p>
 
-<ol>
-<li>If one good prompt does it, use a single call.</li>
-<li>If you can write the steps down in advance, write a workflow.</li>
-<li>Use an agent only when the steps depend on what you find, and a wrong turn can be noticed and undone. Debugging and research fit; a weekly report does not.</li>
-</ol>
+<h2>When an agent is the wrong choice</h2>
 
-<x-callout type="real-world">
-<p>Coding assistants that edit and run tests until they pass are agents, as are research tools that search, read and search again. A person checks the final work.</p>
-</x-callout>
+<p>Errors add up over a long run. If each step is right 95% of the time and a single wrong step spoils the result, a run of ten steps is correct throughout only about 60% of the time, because 0.95<sup>10</sup> is about 0.60. An agent can sometimes notice and repair a bad step, so real results can be better, but a longer path still gives more chances to go wrong.</p>
 
-<h2>Try it yourself</h2>
+<p>Choose the simplest design that does the job. Use a single call if one good prompt is enough. Use a workflow if you can write the steps down in advance. Use an agent only when the steps depend on what is found along the way, and when a wrong step can be noticed and undone. Debugging and research fit this description, and a weekly report does not. Coding assistants that edit code and run tests until they pass are agents, and in that kind of tool a person reviews the final result.</p>
+
+<h2>Pitfalls</h2>
+
+<h3>Building an agent for a fixed pipeline</h3>
+
+<p>If you can draw the steps as a flowchart before the work starts, write them as code. An agent has to rediscover the same steps on every run, which costs more, takes longer, and sometimes skips a step. The model should be used inside a workflow for the parts that need language understanding, such as classifying or summarising.</p>
+
+<h3>A goal with no finish line</h3>
+
+<p>A goal such as "improve our test coverage" has no end, so the agent either stops early or runs until a limit stops it. A goal such as "add tests for <code>parseDate</code> until every branch is covered, then stop" tells the agent what done means. State the finish line in the goal, and also set a maximum number of steps in the application, so that a confused agent cannot loop forever.</p>
+
+<h3>Tools that can do damage</h3>
+
+<p>An agent will use any tool it is given, including one that deletes files or sends email, and it will sometimes use it wrongly. Give the agent the narrowest set of tools the task needs, make them read-only where possible, and require a person to approve any action that cannot be undone. The backup example is safe to run unattended because all three tools only read.</p>
+
+<h3>Trusting the final report</h3>
+
+<p>The last message of an agent describes what the model believes it did, and it can claim that a test passes when it never ran the test. Check the real outcome yourself, by looking at the changed file, the test result or the database record. <a href="/ai/evals.html">Evals</a> make this kind of checking systematic.</p>
+
+<h3>A history that keeps growing</h3>
+
+<p>Every tool result is added to the history that the model reads on the next step, so a long run with large outputs, such as a whole log file, fills the context and makes later steps slower and less accurate. Have tools return only what is needed, for example the last 20 lines of a log, and see <a href="/ai/context-rot.html">Context Rot</a> for what happens as the context fills.</p>
+
+<h2>What this changes in practice</h2>
+
+<p>Before building an agent, write down the steps you would take by hand. If they are always the same, build a workflow. If each step depends on the last result, an agent is reasonable, and the next things to decide are the goal with its finish line, the smallest useful set of tools, a limit on steps, and which actions need a person's approval. Test the agent by checking the outcomes of its runs, not by reading its final message.</p>
 
 <x-tryit title="Single call, workflow or agent">
 <x-task>
-<p>Pick the simplest approach for each task: single call, workflow or agent. Give one line of reasoning each.</p>
+<p>Pick the simplest design for each task: single call, workflow or agent. Give one sentence of reasoning for each.</p>
 <ol>
 <li>Translate a product description into Spanish.</li>
 <li>Every morning, tag new customer reviews by topic and post a count per topic to the team chat.</li>
@@ -132,30 +140,14 @@
 </x-task>
 <x-answer>
 <ol>
-<li><strong>Single call.</strong> One input, one output, no lookups.</li>
-<li><strong>Workflow.</strong> Same steps every day: fetch, tag, count, post. Code runs them; the model only tags.</li>
-<li><strong>Agent.</strong> The answer could be in logs, a code change or metrics. Each finding decides where to look next.</li>
-<li><strong>Single call.</strong> It looks big, but the transcript fits in one prompt and needs no tools.</li>
+<li><strong>Single call.</strong> There is one input and one output, and no lookup is needed.</li>
+<li><strong>Workflow.</strong> The steps are the same every day (fetch, tag, count, post), so code runs them and the model only does the tagging.</li>
+<li><strong>Agent.</strong> The cause could be in the logs, in a code change or in the metrics, and each finding decides where to look next.</li>
+<li><strong>Single call.</strong> The task looks large, but the transcript fits in one prompt and no tools are needed.</li>
 </ol>
-<p>An agent earns its cost only when the path is unknown until you start walking it.</p>
+<p>An agent is worth its extra cost only when the path cannot be known until the work has started.</p>
 </x-answer>
 </x-tryit>
-
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Building an agent for a fixed pipeline">
-<p>If you can draw the steps as a flowchart in advance, write them as code. A model rediscovering them every run is slower, costlier, and sometimes skips one.</p>
-</x-callout>
-
-<x-callout type="mistake" title="A goal with no finish line">
-<p>"Improve our test coverage" never ends. "Add tests for <code>parseDate</code> until every branch is covered, then stop" does. Without a done condition, the agent stops too early or runs until a limit cuts it off.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Believing the final report">
-<p>An agent's last message says what it thinks it did, and can claim a test passes that it never ran. Check the real outcome: the file, the test result, the database record. <a href="/ai/evals.html">Evals</a> make that checking systematic.</p>
-</x-callout>
-
-<h2>Check yourself</h2>
 
 <x-quiz>
 <script type="application/json">
@@ -164,25 +156,25 @@
     {
       "question": "What makes a system an agent rather than a workflow?",
       "options": [
-        { "text": "It makes more than one model call", "why": "A workflow does too. The difference is who chooses the order." },
-        { "text": "The model chooses the next step from the results so far", "correct": true, "why": "Right. In a workflow your code fixes the steps; in an agent the model picks them." },
-        { "text": "It uses tools", "why": "A single call can use a tool too. Tools are necessary, not defining." }
+        { "text": "It makes more than one model call", "why": "A workflow also makes several calls. The difference is who chooses the order." },
+        { "text": "The model chooses the next step from the results so far", "correct": true, "why": "In a workflow your code fixes the steps, and in an agent the model picks them." },
+        { "text": "It uses tools", "why": "A single call can use a tool too, so tools are necessary but do not define an agent." }
       ]
     },
     {
-      "question": "Each step of an agent is right 90% of the time. Roughly how often is a 5-step run right at every step?",
+      "question": "Each step of an agent is right 90% of the time. About how often is a 5-step run right at every step?",
       "options": [
-        { "text": "About 90%", "why": "That is the chance for one step." },
-        { "text": "About 59%", "correct": true, "why": "0.9 × 0.9 × 0.9 × 0.9 × 0.9 ≈ 0.59. Shorter paths are more reliable." },
-        { "text": "About 50%", "why": "Close, but 0.9 to the power 5 is about 0.59, not 0.5." }
+        { "text": "About 90%", "why": "That is the chance for a single step." },
+        { "text": "About 59%", "correct": true, "why": "0.9 multiplied by itself five times is about 0.59, so shorter paths are more reliable." },
+        { "text": "About 50%", "why": "This is close, but 0.9 to the power 5 is about 0.59." }
       ]
     },
     {
-      "question": "Every Friday, last week's sales should be pulled from a database, summarized and emailed to the team. What should you build?",
+      "question": "Every Friday, last week's sales should be pulled from a database, summarised and emailed to the team. What should you build?",
       "options": [
-        { "text": "An agent with database and email tools", "why": "It would work, but adds cost and unpredictability to fixed steps." },
-        { "text": "A workflow: code runs the query, one model call writes the summary, code sends it", "correct": true, "why": "The steps are known, so fix them in code and use the model only for the language." },
-        { "text": "Several agents, one per step", "why": "More cost and more places to fail, for no gain." }
+        { "text": "An agent with database and email tools", "why": "It would work, but it adds cost and unpredictability to steps that never change." },
+        { "text": "A workflow in which code runs the query, one model call writes the summary, and code sends the email", "correct": true, "why": "The steps are known, so they are fixed in code and the model is used only for the writing." },
+        { "text": "Several agents, one for each step", "why": "This adds cost and more places to fail without any benefit." }
       ]
     }
   ]
@@ -192,4 +184,4 @@
 
 <h2>What to practise next</h2>
 
-<p>An agent is only as good as its tools. Continue with <a href="/ai/tool-use.html">Tool Use</a> to design them well, then <a href="/ai/the-agent-loop.html">The Agent Loop</a> to write the loop yourself.</p>
+<p>An agent is only as good as its tools, so continue with <a href="/ai/tool-use.html">Tool Use</a> to see how to design them, and then <a href="/ai/the-agent-loop.html">The Agent Loop</a> to write the loop yourself.</p>

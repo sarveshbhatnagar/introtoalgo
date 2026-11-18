@@ -23,15 +23,13 @@
 <x-coach>Saying early that you would reject a payment rather than double charge shows that you know this design favours consistency over availability, unlike a feed or a cache.</x-coach>
 </x-interview>
 
-<p>The functional requirements are to charge a card through the processor, report the status of a payment, refund all or part of a payment, keep a ledger of what each shop is owed, and reconcile with the processor every day. The non-functional requirements are that the card is charged at most once however often a shop retries, that no acknowledged payment is lost, that every movement of money can be audited for years, that a request is answered in about 2 seconds, and that correctness matters more than availability. The service stops waiting for the processor after 5 seconds.</p>
+<p>The functional requirements are to charge a card through the processor, report the status of a payment, refund all or part of a payment, keep a ledger of what each shop is owed, and reconcile with the processor every day. The non-functional requirements are that the card is charged at most once however often a shop retries, that no acknowledged payment is lost, that every movement of money can be audited for years, that a normal request is answered in about 2 seconds, and that correctness matters more than availability. The service stops waiting for the processor after 5 seconds.</p>
 
 <p>Fraud detection, currency conversion, the bank transfer that pays shops and storing raw card numbers are out of scope. The processor gives the platform a token in place of the card number.</p>
 
 <h2>Estimate the scale</h2>
 
 <p>5 million payments a day is 5 million ÷ 86,400 ≈ 58 payments a second on average. Sales days can reach 10 times that, about 600 a second. One relational database handles that rate.</p>
-
-<p>The money volume explains where the effort goes: 5 million × $40 is $200 million a day, so a bug that mishandles 0.1% of payments affects $200,000 a day.</p>
 
 <p>If 1 processor call in 1,000 times out, then 5,000 payments a day start with an unknown result, so the design must treat unknown outcomes as a normal daily case.</p>
 
@@ -250,8 +248,6 @@ ledger_entries                  -- append-only, never updated
 
 <p>The third is to pass a key to the processor as well, here the payment id <code>pay_88</code>. If the processor's reply is lost and the service retries, the processor recognises the key and returns the first charge's result. Every hop that can be retried needs its own key.</p>
 
-<p>In the interview, say precisely what "exactly once" means: requests can arrive any number of times, and the charge takes effect once.</p>
-
 <h3>The payment state machine and unknown outcomes</h3>
 
 <p>A payment is in exactly one state, and only certain moves between states are allowed.</p>
@@ -305,7 +301,7 @@ ledger_entries                  -- append-only, never updated
 
 <p>Reconciliation is the safety net behind everything else. Each day the processor publishes a settlement file listing what it actually charged and refunded. The reconciler matches each line to a payment by reference and amount.</p>
 
-<p>Fixing a mismatch automatically is fast and works when the cause is known: a missed webhook, for example, is repaired by applying the processor's state through the normal state machine. The risk is that an automatic fix for the wrong cause hides a real bug. Sending a mismatch to a person is safer for money but slow, since 1 line in 10,000 disagreeing is 500 cases a day. Ignoring the file is not an option, because errors then accumulate until a payout is wrong. The usual design repairs mismatches that have one known cause and queues the rest for a person.</p>
+<p>When a mismatch appears, there are three possible responses, and the table summarises them. The usual design repairs mismatches that have one known cause and queues the rest for a person.</p>
 
 <x-tradeoffs caption="What to do with a reconciliation mismatch">
 <script type="application/json">
@@ -352,10 +348,6 @@ ledger_entries                  -- append-only, never updated
 </tbody>
 </table>
 
-<x-callout type="mistake" title="A distributed transaction with the processor">
-<p>An external processor and the platform's database cannot take part in one atomic transaction. The design records its intent first by setting <code>processing</code>, calls the processor with a key, and settles the outcome from the reply, a webhook, a status query or reconciliation.</p>
-</x-callout>
-
 <h2>What a strong answer sounds like</h2>
 
 <table>
@@ -384,6 +376,12 @@ ledger_entries                  -- append-only, never updated
 
 <h3>Could an eventually consistent database be used?</h3>
 <p>It should not be used for payments and the ledger. The insert of the key and the change of status must be atomic, and an acknowledged write that is lost is lost money. A shop's dashboard can still read from a replica that is a few seconds behind, because it only displays data.</p>
+
+<h3>What happens when a customer disputes a charge?</h3>
+<p>A dispute, also called a chargeback, arrives from the processor some weeks after the payment, and it takes the money back from the platform. The platform records it as a new event on the original payment with reversing ledger entries, and it either recovers the amount from the shop's balance or deducts it from the next payout. The shop can submit evidence through the platform, and if it wins, another set of entries reverses the loss.</p>
+
+<h3>How are shops paid out?</h3>
+<p>A daily payout job sums each shop's ledger balance for payments that the processor has already settled, and it creates one payout record for that amount. The record carries its own idempotency key, so a retried job cannot pay the same shop twice. The job runs only after reconciliation for that day has finished, so that a payout is never based on payments the processor disagrees with.</p>
 
 <x-checklist title="Self-review: payment system">
 <script type="application/json">

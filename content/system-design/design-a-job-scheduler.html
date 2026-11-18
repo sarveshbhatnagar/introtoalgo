@@ -9,7 +9,7 @@
 -->
 <p>A job scheduler is a shared service that lets other teams say "run this job at this time" or "run this job on this schedule", for example a reminder email in 24 hours, a retry in 5 minutes or a report every day at 06:00. The scheduler stores each job durably and makes sure a worker starts it close to the requested time. Without one, each team keeps timers on its own servers, and those jobs are lost when a server restarts.</p>
 
-<p>The question is hard for three reasons: finding the few jobs that are due among millions that are waiting, giving each due job to one worker even though workers crash and pause, and getting the effect of "exactly once" from a system that can only promise to run a job at least once. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The question is hard because of three things: finding the few jobs that are due among millions that are waiting, giving each due job to one worker even though workers crash and pause, and getting the effect of "exactly once" from a system that can only promise to run a job at least once. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -20,7 +20,6 @@
 <x-you>How many jobs do we expect, and how precise does the start time have to be?</x-you>
 <x-interviewer>About 100 million runs a day and a million recurring schedules. Starting within a few seconds of the due time is fine.</x-interviewer>
 <x-you>Then I will promise three things. An accepted job is never lost, it starts within 10 seconds of its due time under normal load, and it runs at least once. Because a job can run twice, handlers have to be idempotent.</x-you>
-<x-coach>Saying "at least once" at the start shows that you know exactly-once execution is not on offer.</x-coach>
 </x-interview>
 
 <ul>
@@ -33,12 +32,12 @@
 
 <ul>
 <li><strong>Job runs:</strong> 100 million a day divided by 86,400 seconds is about 1,200 runs a second on average.</li>
-<li><strong>Writes:</strong> each run is written four times (created, enqueued, claimed and finished), which is about 4,800 writes a second. One primary cannot take that at peak, so the store is sharded.</li>
+<li><strong>Writes:</strong> each run is written four times (created, enqueued, claimed and finished), which is about 4,800 writes a second on average. That is more than one primary should carry once peaks and replication are included, so the store is sharded.</li>
 <li><strong>Waiting jobs:</strong> assume 10% of jobs are scheduled a week ahead and the rest within the hour. Then 100 million × 0.1 × 7 days = 70 million jobs are waiting at any moment, which is 70 GB at 1 KB each.</li>
 <li><strong>The burst:</strong> if 20% of the million schedules say "every hour, on the hour", then 200,000 jobs become due in the same second at every :00.</li>
 </ul>
 
-<p>For the worker fleet, assume each job takes 2 seconds and a worker runs 10 jobs at a time. The average load is 1,200 × 2 = 2,400 jobs running at once, which is 240 workers. With 50% headroom the fleet is 360 workers, which can start 360 × 10 ÷ 2 = 1,800 jobs a second.</p>
+<p>For the worker fleet, assume each job takes 2 seconds and a worker runs 10 jobs at a time. The average load is 1,200 × 2 = 2,400 jobs running at once, which is 240 workers, and with 50% headroom 360 workers, which can start 360 × 10 ÷ 2 = 1,800 jobs a second.</p>
 
 <x-estimate title="How long the :00 burst takes to drain">
 <script type="application/json">
@@ -59,7 +58,7 @@
 <p>Write the calls for scheduling, cancelling and inspecting a job, and the calls a worker uses to get work and report the result. Decide whether workers pull jobs or the scheduler pushes them.</p>
 </x-task>
 <x-answer>
-<p>Calls to create, cancel and read a job and to create a schedule. Workers pull: they lease a job, send heartbeats and report the result with their attempt number.</p>
+<p>There are calls to create, cancel and read a job and to create a schedule. Workers pull jobs: a worker leases a job, sends heartbeats while it runs, and reports the result together with its attempt number.</p>
 </x-answer>
 </x-tryit>
 
@@ -96,7 +95,7 @@ POST /jobs/{id}/complete          body: { "attempt": 2, "ok": true }   200, or 4
 <p>Design the job record and its key. Then decide how to make the question "which jobs are due now?" cheap when 70 million jobs are waiting.</p>
 </x-task>
 <x-answer>
-<p>The job, found by its id, and a small "due" index keyed by shard and minute of the run time. A dispatcher reads only the current minute's partition.</p>
+<p>The job is stored under its id, and a separate, small "due" index is keyed by shard and by the minute of the run time. A dispatcher then reads only the current minute's partition.</p>
 </x-answer>
 </x-tryit>
 
@@ -127,7 +126,7 @@ schedules
 </pre>
 </x-code>
 
-<p>A job and its due rows hash to the same shard, so creating a job is one local transaction. A retry or new run time only adds a due row, and the dispatcher checks the job's status before enqueuing, so stale rows from cancelled or rescheduled jobs are skipped. Each dispatcher records the last due row it handled in each shard, so a replacement resumes from there.</p>
+<p>A job and its due rows hash to the same shard, so creating a job is one local transaction. A retry or new run time only adds a due row, and the dispatcher checks the job's status before enqueuing, so stale rows from cancelled or rescheduled jobs are skipped.</p>
 
 <p>Any store with partitions, sorted keys and conditional single-row writes works, for example a sharded relational database. I would pick that, because claims and leases are simple conditional updates there.</p>
 
@@ -136,7 +135,7 @@ schedules
 <p>Sketch the boxes: where the jobs live, what finds the due jobs, how they reach the workers, and how two scheduler machines avoid scanning the same shard.</p>
 </x-task>
 <x-answer>
-<p>An API writes to the sharded store. Dispatchers own shards through a coordinator, scan the current bucket every second and put due job ids on ready queues. Workers pull ids and claim jobs in the store.</p>
+<p>An API writes jobs to the sharded store. Dispatchers take ownership of shards through a coordinator, scan the current bucket every second and put the ids of due jobs on ready queues. Workers pull ids from the queues and claim each job in the store.</p>
 </x-answer>
 </x-tryit>
 
@@ -244,9 +243,9 @@ schedules
 
 <p><strong>One table with an index on the run time.</strong> All jobs sit in one table, and several pollers run a query such as <code>WHERE run_at &lt;= now() ... FOR UPDATE SKIP LOCKED</code>, which lets each poller take different rows. This works at a few hundred jobs a second. At our scale finished rows bloat the index, and 4,800 writes a second land on one primary.</p>
 
-<p><strong>Time-bucketed partitions.</strong> The <code>due</code> table is partitioned by shard and by the minute of the run time, so each scan reads one small partition and old buckets are dropped whole. The costs are that shard ownership has to be managed so that two dispatchers do not scan one partition, and that precision is limited by the one-second scan interval.</p>
+<p><strong>Time-bucketed partitions.</strong> The <code>due</code> table is partitioned by shard and by the minute of the run time, so each scan reads one small partition and old buckets are dropped whole. The costs are that dispatchers need shard ownership, and that precision is limited by the one-second scan interval.</p>
 
-<p><strong>An in-memory timer wheel.</strong> A dispatcher loads the next few minutes of due rows into memory and fires jobs from there, which gives millisecond precision. A crash loses the memory, so the next owner has to reload the window from the store. It is worth adding only for sub-second precision.</p>
+<p><strong>An in-memory timer wheel.</strong> A dispatcher loads the next few minutes of due rows into memory and fires jobs from there, which gives millisecond precision. A crash loses the memory, so the next owner has to reload the window from the store. It is worth adding only when sub-second precision is needed.</p>
 
 <p><strong>Delayed delivery in a message queue.</strong> Many queues can hold a message back until a given time. Delays are usually capped, and it is hard to list, change or cancel waiting messages, so this fits short delays such as retry backoff but not jobs scheduled a week ahead.</p>
 
@@ -258,39 +257,39 @@ schedules
       "name": "One table, index on run_at",
       "good": "It is simple, and several pollers can work at once.",
       "bad": "The index bloats, and one primary takes all 4,800 writes a second.",
-      "pick": "Up to a few hundred jobs a second."
+      "pick": "Use it up to a few hundred jobs a second."
     },
     {
       "name": "Time-bucketed partitions",
       "good": "Each scan reads one small partition, and shards spread the writes.",
       "bad": "Dispatchers need shard ownership, and precision is one scan interval.",
-      "pick": "Millions of jobs a day with a few seconds of tolerance. This design.",
+      "pick": "Use it for millions of jobs a day when a few seconds of delay is acceptable. This design uses it.",
       "default": true
     },
     {
       "name": "In-memory timer wheel",
       "good": "Jobs fire within milliseconds.",
       "bad": "A crash loses the memory, and there are more moving parts.",
-      "pick": "Sub-second precision, added on top of the buckets."
+      "pick": "Add it on top of the buckets when sub-second precision is required."
     },
     {
       "name": "Delayed delivery of a queue",
       "good": "There is no scheduler to build.",
       "bad": "Delays are capped, and waiting jobs are hard to cancel.",
-      "pick": "Short delays such as retry backoff."
+      "pick": "Use it for short delays such as retry backoff."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>I would choose time-bucketed partitions. With 64 shards the 200,000-job burst is about 3,125 rows in each partition, one quick read per shard. A dispatcher that falls behind reads the buckets it missed first, so a slow minute delays jobs but never loses them.</p>
+<p>I would choose time-bucketed partitions. With 64 shards the 200,000-job burst is about 3,125 rows in each partition, one quick read per shard. A dispatcher that falls behind reads the buckets it missed, so a slow minute delays jobs but never loses them.</p>
 
 <h3>Leases and at-least-once execution</h3>
 
 <p>When a worker claims a job, it receives a lease: the right to run the job until <code>lease_until</code>, which the worker extends with heartbeats. If the worker dies, its heartbeats stop, the lease expires, and a sweep puts the job back on the queue for another worker. Execution is therefore at least once. No job stays stuck on a dead worker, but a worker that only looked dead may still finish the job, as W3 did in the walkthrough.</p>
 
-<p>The lease length is a trade-off. A short lease, 30 seconds here, recovers from a dead worker quickly but re-runs the job whenever a worker pauses longer than that. A long lease causes fewer duplicates but slower recovery.</p>
+<p>The lease length is a trade-off: a 30-second lease recovers quickly from a dead worker but re-runs the job whenever a worker pauses longer, and a long lease does the opposite.</p>
 
 <p>Shard ownership works the same way one level up: dispatchers lease shards from a coordination service that uses consensus (see <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>). When a stalled dispatcher's lease expires another takes over, and for a short time two may scan the same shard. That is safe because every step is a conditional update: only one can move a job to <code>enqueued</code>, and a duplicate id finds the job already running and is dropped.</p>
 
@@ -304,8 +303,6 @@ schedules
 
 <p><strong>Fencing tokens.</strong> Every write carries the attempt number, and the receiving system rejects older attempts. The job store does this for the job status. A fencing token cannot take back an action such as a sent email.</p>
 
-<p><strong>Naturally idempotent operations.</strong> Setting the report for 2026-11-15 to a given file gives the same result however often it runs, while appending a row to the report does not.</p>
-
 <h3>Recurring schedules and time zones</h3>
 
 <p>A recurring schedule is stored as a definition with a <code>next_run_at</code>, not as a million future jobs. When a dispatcher claims an occurrence, it creates the next one. The job id is built from the schedule id and the run time, such as <code>s_311@2026-11-15T06:00</code>, so if two dispatchers both create the 07:00 run, insert-if-absent leaves one row. Three policies need an explicit answer.</p>
@@ -314,13 +311,13 @@ schedules
 
 <p><strong>Missed runs</strong> are the occurrences that were due while the scheduler was down. It can run once, run every missed occurrence or skip them, and running once is the usual default.</p>
 
-<p><strong>Time zones</strong> mean the next run time must be computed in the schedule's own zone and stored as a UTC instant. When daylight saving time changes, 02:30 local time may happen twice or not at all, so the design must decide which run to keep and test that case.</p>
+<p><strong>Time zones</strong> matter because the next run time must be computed in the schedule's own zone and stored as a UTC instant. When daylight saving time changes, 02:30 local time may happen twice or not at all, so the design must decide which run to keep and test that case.</p>
 
-<p>The hourly burst is handled by giving schedules that say "hourly, at any minute" a stable minute chosen by hashing the schedule id. The 200,000 jobs then spread out to about 200,000 ÷ 3,600 ≈ 56 starts a second, which the existing fleet handles.</p>
+<p>The hourly burst is handled by giving schedules that only say "hourly" a stable offset within the hour, chosen by hashing the schedule id. The 200,000 jobs then spread out to about 200,000 ÷ 3,600 ≈ 56 starts a second, which the existing fleet handles.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load, about 12,000 runs a second, grow the store from 64 to 512 shards, split dispatcher ownership into smaller ranges and spread the :00 burst across minutes. Separate ready queues for each job type keep one team's flood from delaying others.</p>
+<p>At 10 times the load, about 12,000 runs a second, grow the store from 64 to 512 shards, split dispatcher ownership into smaller ranges and spread the :00 burst across minutes.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -328,7 +325,7 @@ schedules
 <tr><td>A worker</td><td>Its leases run out after at most 30 seconds.</td><td>The lease sweep puts its jobs back on the queue as the next attempt.</td></tr>
 <tr><td>A dispatcher</td><td>Its shards are not scanned until its lease on them expires.</td><td>Another dispatcher takes over the shards and reads the buckets that were missed. Jobs start late but none are lost.</td></tr>
 <tr><td>The coordinator</td><td>No shard lease can be renewed or moved.</td><td>Run it on 3 or 5 nodes with consensus. Dispatchers stop scanning when their lease lapses.</td></tr>
-<tr><td>A job store shard</td><td>Jobs on that shard cannot be created, claimed or finished.</td><td>A replica takes over as primary,.</td></tr>
+<tr><td>A job store shard</td><td>Jobs on that shard cannot be created, claimed or finished.</td><td>A replica is promoted to primary, and the shard's jobs resume from the replica.</td></tr>
 <tr><td>A ready queue</td><td>The job ids that were on it may be lost.</td><td>Re-enqueue jobs that have been in <code>enqueued</code> for more than a minute.</td></tr>
 </tbody>
 </table>
@@ -348,19 +345,22 @@ schedules
 <x-interviewer>Can you guarantee that each job runs exactly once?</x-interviewer>
 <x-you>I cannot guarantee it for execution. I cannot tell a dead worker from a paused one, so I re-run the job, and sometimes both runs finish. I guarantee at-least-once execution and give job owners the tools for an exactly-once effect, which are attempt numbers as fencing tokens and a stable key per job that they pass downstream.</x-you>
 <x-interviewer>So who is responsible for duplicates?</x-interviewer>
-<x-you>The responsibility is shared. The scheduler keeps duplicates rare and visible, and the job owners make their handlers idempotent. I would document that contract from the first day.</x-you>
+<x-you>The scheduler keeps duplicates rare and visible, and the job owners make their handlers idempotent.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How do you cancel a job that is due in a minute?</h3>
-<p>A conditional update sets the status to cancelled only while the job is <code>scheduled</code> or <code>enqueued</code>. Workers check the status when they claim a job, so a cancelled job whose id is already on a queue is dropped at that point. A running job can only be asked to stop.</p>
+<p>A conditional update cancels the job only while it is <code>scheduled</code> or <code>enqueued</code>. Workers check the status when they claim a job, so a cancelled job whose id is already on a queue is dropped at that point. A running job can only be asked to stop.</p>
 
 <h3>How do retries work?</h3>
-<p>A failed attempt gets a new run time, which is the current time plus an exponential backoff with some random jitter, and a new due row is written for it. After <code>max_attempts</code> the job moves to a dead status so that a human can look at it.</p>
+<p>A failed attempt gets a new run time, which is the current time plus an exponential backoff with some random jitter, and a new due row is written for it. After <code>max_attempts</code> the job moves to a dead status, where it is kept for a person to inspect instead of being retried forever.</p>
 
 <h3>One team schedules 10 million jobs for midnight. What protects everyone else?</h3>
 <p>Each team has its own ready queue and a limit on how fast its jobs are dispatched. The team's jobs start late because of the limit, while other teams' jobs stay on time.</p>
+
+<h3>What if a job runs longer than its lease?</h3>
+<p>The worker sends a heartbeat before the lease runs out, and each heartbeat moves <code>lease_until</code> forward, so a long job keeps its lease for as long as the worker is alive. If heartbeats stop, the lease expires and the job is retried.</p>
 
 <x-checklist title="Self-review: job scheduler">
 <script type="application/json">

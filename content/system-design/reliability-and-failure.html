@@ -8,9 +8,9 @@
 -->
 <p>Reliability is the work of keeping a system useful while parts of it fail. It combines redundancy, so that a failed component has a replacement, with protective patterns such as timeouts, circuit breakers and load shedding, which stop a failing component from dragging down its callers. Availability, the share of time that the system does its job, is the number used to set the target.</p>
 
-<p>Without these measures, a slow optional service makes its callers wait, the waiting callers use up their threads, and the callers of those callers start to fail as well.</p>
+<p>Without these measures, a single slow optional service makes its callers wait, the waiting callers use up their threads, and the callers of those callers start to fail as well.</p>
 
-<h2>Where reliability measures sit</h2>
+<h2>Where redundancy and protections sit in a system</h2>
 
 <x-arch caption="Every box that could fail has a second copy in another zone, and the load balancer stops sending traffic to a copy that is down.">
 <script type="application/json">
@@ -36,7 +36,7 @@
 
 <h2>Availability and the nines</h2>
 
-<p>Availability is usually written as a percentage and spoken as a number of nines. 99.9% is "three nines".</p>
+<p>Availability is usually written as a percentage and spoken as a number of nines. A figure of 99.9% is called "three nines".</p>
 
 <table>
 <thead><tr><th>Availability</th><th>Downtime per 30-day month</th><th>Downtime per year</th></tr></thead>
@@ -48,41 +48,40 @@
 </tbody>
 </table>
 
-<p>Each additional nine cuts downtime tenfold and costs more. At 99.99% a paged person cannot log in and fix a problem within the monthly budget, so recovery has to be automatic.</p>
+<p>Each additional nine cuts downtime tenfold and costs more. At 99.99% the monthly budget is about four minutes, which is less time than it takes a person to be paged, log in and fix a problem, so recovery has to be automatic.</p>
 
 <h3>Components in series</h3>
 
-<p>When a request needs every component in a chain, the availability of the chain is the product of the availabilities. Three services that are each 99.9% available give 0.999<sup>3</sup>, about 99.7%, which is roughly 130 minutes of downtime a month instead of 43. Every dependency added to the critical path lowers availability.</p>
+<p>When a request needs every component in a chain, the availability of the chain is the product of the availabilities. Three services that are each 99.9% available give 0.999<sup>3</sup>, about 99.7%, or roughly 130 minutes of downtime a month. Every dependency added to the critical path lowers availability.</p>
 
 <h3>Components in parallel</h3>
 
-<p>When any one of several copies can serve the request, the system is down only if all copies are down at once. Two copies that are each 99% available fail together 0.01 × 0.01 = 0.0001 of the time, so the pair is 99.99% available. This assumes independent failures. Two copies in one rack, or running the same bad release, do not fail independently, and their real availability is much lower.</p>
+<p>When any one of several copies can serve the request, the system is down only if all copies are down at once. Two copies that are each 99% available fail together 0.01 × 0.01 = 0.0001 of the time, so the pair is 99.99% available. This assumes independent failures. Two copies in one rack, or running the same bad release, do not fail independently.</p>
 
 <h2>Redundancy and failover</h2>
 
-<p>Redundancy means having a second component ready to do the work of one that fails. How the second component is used gives two designs, and both are common.</p>
+<p>Redundancy means having a second component ready to do the work of one that fails. It can be used in two ways.</p>
 
 <h3>Active-passive</h3>
 
-<p>One component serves all traffic while a standby copy waits, kept up to date by replication. When the active one fails, a monitor notices, promotes the standby and redirects traffic to it. It is the normal design for a database with a single leader, because only one node accepts writes.</p>
+<p>One component serves all traffic while a standby copy waits, kept up to date by replication. When the active one fails, a monitor notices, promotes the standby and redirects traffic to it. It is the normal design for a database with a single leader.</p>
 
-<p>Downtime is the detection time plus the promotion time. Checks every 5 seconds with three misses required take 15 seconds to detect a failure. Checking more aggressively replaces a leader that is only slow while it is still running, and two nodes then both believe they are the leader, which is called split brain (see <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>). With asynchronous replication, writes that had not reached the standby are lost at failover.</p>
+<p>Downtime is the detection time plus the promotion time. For example, a check every 5 seconds that requires three misses takes 15 seconds to detect a failure. Checking more aggressively risks replacing a leader that is only slow while it is still running, and then two nodes both believe they are the leader, which is called split brain (see <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>). With asynchronous replication, writes that had not reached the standby are lost at failover.</p>
 
 <h3>Active-active</h3>
 
 <p>All copies serve traffic at the same time. Stateless servers behind a load balancer work this way, and when one fails the others simply take its share. There is no promotion step, so there is almost no failover time.</p>
 
-<p>The cost is that the remaining copies must be able to carry the extra load. For stateful systems, active-active means more than one node accepts writes, so concurrent writes to one record can conflict and need a resolution rule or a single owner per record.</p>
+<p>The remaining copies must be able to carry the extra load. For stateful systems, active-active means more than one node accepts writes, so concurrent writes to one record can conflict and need a resolution rule or a single owner per record.</p>
 
 <h2>Cascading failure</h2>
 
-<p>A cascading failure is one in which a failure in a single component increases the load or the waiting time of other components until they fail too. It usually begins in one of four ways:</p>
+<p>A cascading failure is one in which a failure in a single component increases the load or the waiting time of other components until they fail too. It usually begins in one of three ways:</p>
 
 <ul>
 <li>A dependency becomes slow rather than failing outright. Each waiting call holds a thread.</li>
 <li>Callers retry failed requests, so a struggling service receives several times its normal load.</li>
 <li>A server fails and its traffic overloads the remaining servers, which fail in turn.</li>
-<li>A restarted service starts with an empty cache, so every request reaches the database until it warms up.</li>
 </ul>
 
 <p>The first case is the most common. In the trace below, a product page calls a catalog service and an optional recommendations service. Recommendations becomes slow, and the page has no protection. The later steps add the protections described below.</p>
@@ -148,7 +147,7 @@
 
 <h3>Timeouts</h3>
 
-<p>A timeout limits how long a caller waits for a response before it gives up. Every network call needs one, because a dependency that hangs otherwise holds the caller's thread forever. Set it a little above the dependency's 99th percentile latency. A timeout that is too long does not protect anything, because the threads still fill up, and one that is too short turns ordinary slow responses into errors and extra retries.</p>
+<p>A timeout limits how long a caller waits for a response before it gives up. Every network call needs one, because a dependency that hangs otherwise holds the caller's thread forever. Set it a little above the dependency's 99th percentile latency. A timeout that is too long does not protect anything, and one that is too short turns ordinary slow responses into errors and extra retries.</p>
 
 <h3>Retries</h3>
 
@@ -160,43 +159,43 @@
 
 <p>A circuit breaker wraps calls to a dependency and counts failures. While it is closed, calls pass through. When the failure rate in a recent window passes a threshold, the breaker opens, and calls fail immediately or use a fallback without reaching the dependency. After a cool-down it lets a few trial calls through (half-open); if they succeed it closes, and if not it opens again.</p>
 
-<p>A breaker protects the caller, because failing at once costs nothing, and the dependency, which receives no traffic while it recovers. A breaker that opens on normal noise is a nuisance, so most implementations require a minimum number of calls in the window.</p>
+<p>A breaker protects the caller, because failing at once costs nothing, and the dependency, which receives no traffic while it recovers.</p>
 
 <h3>Bulkheads</h3>
 
-<p>A bulkhead gives each dependency its own limited pool of threads or connections, the way a ship's compartments contain a leak. If recommendations becomes slow, it can use up only its own pool. The cost is that pools must be sized, and idle capacity cannot be borrowed.</p>
+<p>A bulkhead gives each dependency its own limited pool of threads or connections, the way a ship's compartments contain a leak. If recommendations becomes slow, it can use up only its own pool. The cost is that pools must be sized, and idle capacity in one pool cannot be borrowed by another.</p>
 
 <h3>Graceful degradation</h3>
 
-<p>Graceful degradation means that when a part fails, the system keeps working with reduced features instead of failing completely. A product page can show popular items when recommendations are down, and a feed can load without ads. Decide for each dependency whether it is critical or optional, and write and test the fallback in advance.</p>
+<p>Graceful degradation means that when a part fails, the system keeps working with reduced features instead of failing completely. A product page can show popular items when recommendations are down, and a feed can load without ads. Decide for each dependency whether it is critical or optional.</p>
 
 <h3>Load shedding</h3>
 
-<p>Load shedding means that a server that is over capacity rejects some requests immediately, usually with a 503 response, instead of accepting all of them and timing out on every one. This keeps the accepted requests fast. Shed the least valuable work first, such as browsing before checkout. Shedding differs from <a href="/system-design/rate-limiting.html">rate limiting</a>, which gives each client a fair share, because shedding responds to the server's own overload.</p>
+<p>Load shedding means that a server that is over capacity rejects some requests immediately, usually with a 503 response, instead of accepting all of them and timing out on every one. Shed the least valuable work first, such as browsing before checkout. Shedding responds to the server's own overload, unlike <a href="/system-design/rate-limiting.html">rate limiting</a>, which gives each client a fair share.</p>
 
 <h3>Backpressure</h3>
 
-<p>Backpressure is the way a slow consumer tells its producer to slow down, so that work does not pile up without limit. The usual form is a bounded queue: when it is full, the producer is blocked or receives an error. Without a bound, the queue grows until memory runs out. Backpressure slows the sender down, while shedding rejects the excess. A consumer that fetches only as many messages as it can process is the common example (see <a href="/system-design/message-queues-and-streams.html">message queues and streams</a>).</p>
+<p>Backpressure is the way a slow consumer tells its producer to slow down, so that work does not pile up without limit. The usual form is a bounded queue: when it is full, the producer is blocked or receives an error. Without a bound, the queue grows until memory runs out. A consumer that fetches only as many messages as it can process is a common example (see <a href="/system-design/message-queues-and-streams.html">message queues and streams</a>).</p>
 
 <h2>Zones, regions, RPO and RTO</h2>
 
-<p>A zone is an isolated group of data centers with its own power and network, and a region is a group of zones in one area. Copies in separate zones survive a building failure, and synchronous replication between zones is practical because they are close. Copies in separate regions survive losing a whole region, at much higher cost.</p>
+<p>A zone is an isolated group of data centers with its own power and network, and a region is a group of zones in one area. Copies in separate zones survive a building failure, and synchronous replication between zones is practical because they are close. Copies in separate regions survive losing a whole region, at higher cost.</p>
 
 <p>Two objectives decide how much protection is needed. The <strong>recovery point objective (RPO)</strong> is how much recent data you can afford to lose, measured as a length of time. The <strong>recovery time objective (RTO)</strong> is how long the service may stay down before it must be working again. Synchronous replication gives an RPO of zero but makes every write wait for the second copy, while asynchronous replication loses whatever had not yet been copied.</p>
 
 <h3>One region, several zones</h3>
 
-<p>Copies in three zones survive a zone failure with automatic failover, and with synchronous replication no data is lost. A region-wide outage still takes the system down. It is enough for most systems.</p>
+<p>Copies in three zones survive a zone failure with automatic failover. A region-wide outage still takes the system down, which is acceptable for most systems.</p>
 
 <h3>Active-passive regions</h3>
 
-<p>A second region holds an asynchronous copy and takes over if the first is lost. Failover takes minutes, and the RPO is the replication lag. Use it when a region outage must cost minutes and a few seconds of lost writes are acceptable.</p>
+<p>A second region holds an asynchronous copy and takes over if the first is lost. Failover takes minutes, and the RPO is the replication lag. Use it when a region outage must cost only minutes of downtime and a few seconds of lost writes are acceptable.</p>
 
 <h3>Active-active regions</h3>
 
-<p>Every region serves live traffic, so users reach a nearby region and there is no untested standby. Writes to one record in two regions can conflict, so records usually have a home region. Use it when users span continents and latency matters.</p>
+<p>Every region serves live traffic, so users reach a nearby region and there is no untested standby. Writes to one record in two regions can conflict, so records usually have a home region. It suits users spread across continents.</p>
 
-<h2>Problems that interviewers probe</h2>
+<h2>Failure modes of failover and health checks</h2>
 
 <h3>Failover that sends all load to the survivors</h3>
 
@@ -204,7 +203,7 @@
 
 <h3>Health checks that are too shallow or too deep</h3>
 
-<p>A check that only tests whether the process runs misses a server that cannot reach its database. A check that queries the database makes every server unhealthy when the database slows down, and the balancer removes all of them. Keep sending traffic to some servers if all of them fail the check.</p>
+<p>A check that only tests whether the process runs misses a server that cannot reach its database. A check that queries the database makes every server unhealthy when the database slows down, and the balancer removes all of them. Most balancers can be set to keep sending traffic to the servers anyway when all of them fail the check, so that a shared dependency problem does not remove the whole fleet.</p>
 
 <h2>In the interview</h2>
 
@@ -213,18 +212,19 @@
 <p>Questions to expect:</p>
 
 <ul>
-<li><strong>"What happens if the database leader dies?"</strong> A monitor detects the missed health checks within seconds and promotes the standby. With asynchronous replication, writes not yet copied are lost, so say which RPO the data allows. Payments replicate synchronously to another zone.</li>
+<li><strong>"What happens if the database leader dies?"</strong> A monitor detects the missed health checks within seconds and promotes the standby. With asynchronous replication, writes not yet copied are lost, so say which RPO the data allows.</li>
+<li><strong>"What happens if the load balancer dies?"</strong> A single balancer would be a single point of failure, so there are at least two, either as an active-passive pair that takes over a shared address or as several balancers that share traffic through DNS or anycast. See <a href="/system-design/load-balancing.html">load balancing</a>.</li>
+<li><strong>"What happens if the cache dies?"</strong> Every read falls through to the database, which may not be able to carry that load. The protections are a replicated cache cluster and load shedding while the cache refills. See <a href="/system-design/caching.html">caching</a>.</li>
 <li><strong>"What happens if one app server dies?"</strong> The load balancer stops sending it traffic within seconds, and the other servers take its share. Requests in flight on it fail and are retried, which is safe only if they are idempotent.</li>
 <li><strong>"A dependency is slow. What happens to your service?"</strong> Without protection, calls pile up and use every thread. With a timeout, a bulkhead and a circuit breaker, calls to it fail quickly and the rest keeps working, and optional dependencies get a fallback.</li>
-<li><strong>"Why not retry everything?"</strong> Retries add load to a service that is already struggling, and retries at several layers multiply. Retry at one layer, with backoff, jitter and a budget, and only for operations that are safe to repeat.</li>
-<li><strong>"What is the difference between load shedding and backpressure?"</strong> Shedding rejects excess requests immediately, so the client sees an error. Backpressure makes the producer slow down, so the work is delayed instead of refused.</li>
-<li><strong>"How would you survive a region failure?"</strong> First ask whether the requirement exists, because multi-region is expensive. Active-passive recovers in minutes with a small data loss, and active-active gives local latency but needs conflict handling. Ask for the RPO and RTO first.</li>
+<li><strong>"What is the difference between load shedding and backpressure?"</strong> Shedding rejects excess requests immediately, so the client sees an error. Backpressure makes the producer slow down, so the work is delayed instead of refused. Shedding suits request traffic from many clients, and backpressure suits a pipeline with a bounded queue between stages.</li>
+<li><strong>"How would you survive a region failure?"</strong> First ask whether the requirement exists, because multi-region is expensive. Active-passive recovers in minutes with a small data loss, and active-active gives local latency but needs conflict handling.</li>
 </ul>
 
 <x-interview title="When a dependency is slow" tone="strong">
 <x-interviewer>Your feed service calls an ads service. The ads service starts taking 10 seconds to respond. What happens?</x-interviewer>
 <x-you>The feed calls ads with a 200 ms timeout and from its own small connection pool, so slow ads cannot use the threads that load the feed. If more than half of the ad calls fail within a 10-second window, a circuit breaker opens and the feed is served without ads until trial calls succeed again.</x-you>
-<x-coach>The answer separates the critical feed from the optional ads and degrades the optional part.</x-coach>
+<x-coach>The answer treats the feed as critical and the ads as optional, and degrades only the optional part.</x-coach>
 </x-interview>
 
 <x-quiz>
@@ -254,4 +254,4 @@
 
 <h2>What to practise next</h2>
 
-<p>A failure you do not notice cannot be fixed, so <a href="/system-design/observability.html">observability</a> is the next lesson. To see failures component by component, work through <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>
+<p>Failures can only be handled once they are detected, so the next lesson is <a href="/system-design/observability.html">observability</a>. To see failures component by component, work through <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>

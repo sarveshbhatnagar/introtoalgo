@@ -9,7 +9,7 @@
 -->
 <p>A top-K trending system shows the most viewed items in a recent time window, for example the 100 most viewed videos of the last hour, the last day and the last month. It has to count a very large stream of view events, keep each window moving as time passes, and serve the result to a page that millions of people load.</p>
 
-<p>Interviewers ask this question because the obvious answer, a database query that groups by video and sorts by count, does not survive the numbers. The question tests whether you work out how much memory exact counting needs for each window and know what to do when it does not fit. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>Interviewers ask this question because the obvious answer, a database query that groups by video and sorts by count, does not survive the numbers. The question tests whether you work out the memory that exact counting needs and know what to do when it does not fit. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -25,7 +25,7 @@
 <x-coach>The two questions that change the design are whether the windows slide and whether the counts must be exact.</x-coach>
 </x-interview>
 
-<p>The system returns the top K videos (K up to 100) with their view counts for the last hour, day or month. The hour and day lists refresh every minute and the month list every hour. A read takes under 50 ms at any load. A video clearly above 100th place is never missing, and month counts are accurate to about 5%. Defining a view, fraud filtering, personalised lists and arbitrary time ranges are out of scope.</p>
+<p>The system returns the top K videos (K up to 100) with their view counts for the last hour, day or month. The hour and day lists refresh every minute and the month list every hour. A read takes under 50 ms at any load. A video clearly above 100th place is never missing, and month counts are accurate to about 5%. Fraud filtering, personalised lists and arbitrary time ranges are out of scope.</p>
 
 <h2>Estimate the scale</h2>
 
@@ -80,7 +80,7 @@ View events (internal, from the video service to the log):
 
 <p>The API decision worth discussing is what it refuses. "The top 50 between 14:00 and 15:30 last Tuesday" would force a scan over billions of events, so arbitrary ranges belong in a warehouse.</p>
 
-<p>Each server sums its views per video for one second and sends one event. A viral video watched 20,000 times a second on 500 servers becomes at most 500 events a second.</p>
+<p>Each server sums its views per video for one second and sends one event, so a viral video watched 20,000 times a second on 500 servers becomes at most 500 events a second.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -98,7 +98,8 @@ View events (internal, from the video service to the log):
 Counter task state (one task per log partition, 32 partitions)
   minute_buckets : ring of 60 maps   video_id -> views in that minute
   hour_totals    : map               video_id -> sum of the 60 buckets
-  hour_buckets   : ring of 24 maps   (same idea for the day)
+  hour_buckets   : ring of 24 maps   video_id -> views in that hour (the day window)
+  day_totals     : map               video_id -> sum of the 24 hour buckets
   day_sketches   : 31 daily count-min sketches + 1 running month sketch
   candidates     : video ids whose month estimate passed a floor
   checkpoint     : state + log offsets, written to object storage every minute
@@ -109,9 +110,7 @@ Results (key-value store, about 10 KB per value)
 </pre>
 </x-code>
 
-<p>The counting state is the keyed state of a stream processor. Each counter task owns one log partition, and the processor snapshots its state so a replacement can recover.</p>
-
-<p>The results are three keys that are read constantly and written once a minute, which suits a key-value store. Titles are added when the list is built, so a read never joins.</p>
+<p>The results are three keys that are read constantly and written once a minute, which suits a key-value store. Titles are added when the list is built.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -150,7 +149,7 @@ Results (key-value store, about 10 KB per value)
 </script>
 </x-arch>
 
-<p>The read path is only the last part: the page asks for one key, and a CDN usually answers first. The tracer follows one minute, then a crash and a stale write.</p>
+<p>The tracer follows one minute of the hour list, then a crash and a stale write.</p>
 
 <x-tracer title="One minute of the hour list, a crash, and a stale write">
 <script type="application/json">
@@ -235,9 +234,7 @@ Results (key-value store, about 10 KB per value)
 
 <p>A sliding window covers the 60 minutes up to now and changes smoothly, but done literally it must forget each view exactly 60 minutes after it arrived.</p>
 
-<p>The practical solution is to build the sliding window from 60 one-minute tumbling buckets and keep a running total for each video. Every minute the task adds the newest bucket to the totals and subtracts the oldest one. The day window uses 24 hourly buckets plus the current partial hour, and it also refreshes every minute.</p>
-
-<p>Recomputing the window from all its buckets at every refresh would cost 60 times more work for the hour. Adjusting running totals touches only two buckets.</p>
+<p>The practical solution is to build the sliding window from 60 one-minute tumbling buckets and keep a running total for each video. Every minute the task adds the newest bucket to the totals and subtracts the oldest one. The day window uses 24 hourly buckets plus the current partial hour and refreshes every minute. The oldest hour is subtracted only at the hour boundary, so the day window covers 23 to 24 hours.</p>
 
 <h3>Partitioning by video and merging local top lists</h3>
 
@@ -247,13 +244,13 @@ Results (key-value store, about 10 KB per value)
 
 <p>If events are partitioned by server or at random, the views of V7 are spread across all 32 partitions. V7 could be 101st in every partition and still be first overall, because its counts add up across partitions. Merging local lists is then wrong.</p>
 
-<p>The cost of partitioning by video is skew. A viral video loads one partition, though pre-summing limits it to a few hundred events a second. If that is not enough, the <a href="/system-design/design-an-ad-click-aggregator.html">ad click aggregator</a> shows how to split a hot key across tasks and combine the pieces in a second stage.</p>
+<p>The cost of partitioning by video is skew. A viral video loads one partition, though pre-summing limits it to a few hundred events a second. The <a href="/system-design/design-an-ad-click-aggregator.html">ad click aggregator</a> shows how to split a hot key across tasks if that is not enough.</p>
 
 <h3>Exact counts or a count-min sketch for the month</h3>
 
 <p>Exact counts for the month need 250 GB. There are three ways to handle that window.</p>
 
-<p>The first is exact counting in the same stream job. It is exact, but the job must checkpoint and restore 250 GB of state, so recovery is slow.</p>
+<p>The first is exact counting in the same stream job, which makes recovery slow because the job must restore 250 GB of state. The third is an hourly warehouse job that sums the last 30 daily counts, which is exact but adds a second system.</p>
 
 <p>The second is a count-min sketch. A sketch is a grid of counters with <em>d</em> rows and <em>w</em> columns, and each row has its own hash function. To record a view, the task hashes the video id with each row's function and adds the count to one cell in every row. To estimate a video's count, it reads those same cells and takes the smallest value. Other videos can collide with the video in a cell and add to it, but nothing ever subtracts, so every cell is at least the true count and the minimum is never too low. The tracer shows this on a small grid.</p>
 
@@ -288,16 +285,14 @@ Results (key-value store, about 10 KB per value)
 
 <p>The error is bounded. With width <em>w</em> and depth <em>d</em>, an estimate is at most the true count plus (e ÷ <em>w</em>) × <em>N</em>, where <em>N</em> is the total of all counts in the sketch and e is about 2.718. This holds with probability at least 1 − e<sup>−<em>d</em></sup> for any one video. A month is 1.5 × 10<sup>11</sup> views, so each of the 32 tasks, which sketches only its partition, has <em>N</em> of about 4.7 × 10<sup>9</sup>.</p>
 
-<p>Choose <em>w</em> = 2<sup>18</sup> = 262,144 columns and <em>d</em> = 5 rows. Then an estimate is too high by at most 2.718 ÷ 262,144 × 4.7 × 10<sup>9</sup> ≈ 48,600 views, with probability 1 − e<sup>−5</sup> ≈ 99.3%. If the video in 100th place has at least a million views, the error is under 5%. With 8-byte counters each sketch takes 5 × 2<sup>18</sup> × 8 B ≈ 10.5 MB.</p>
+<p>Choose <em>w</em> = 2<sup>18</sup> = 262,144 columns and <em>d</em> = 5 rows. Then an estimate is too high by at most 2.718 ÷ 262,144 × 4.7 × 10<sup>9</sup> ≈ 48,600 views, with probability 1 − e<sup>−5</sup> ≈ 99.3%. If the video in 100th place has at least a million views, that is under 5%. With 8-byte counters each sketch takes 5 × 2<sup>18</sup> × 8 B ≈ 10.5 MB.</p>
 
-<p>A sketch answers "how many views does this video have?" but cannot list the top videos, so it is paired with a candidate set and a <a href="/algorithms/heaps-and-priority-queues.html">heap</a>. </p>
+<p>A sketch estimates the count of a given video but cannot list the top videos, so it is paired with a candidate set and a <a href="/algorithms/heaps-and-priority-queues.html">heap</a>. The task works as follows.</p>
 <ul>
 <li>Each view is added to today's sketch and to a running month sketch. If the month estimate of the video is above a floor, here 500,000 (half of the assumed count at 100th place), the video joins the candidate set. Estimates are never low, so no video joins late.</li>
 <li>At midnight the task subtracts the sketch of the expired day from the month sketch, cell by cell. All sketches share hash functions and width.</li>
 <li>Every hour the task re-estimates each candidate, drops those that are below the floor, picks the best 100 with a min-heap and sends them to the merger.</li>
 </ul>
-
-<p>The third option is an hourly batch job in a warehouse that sums the last 30 daily counts per video and takes the top 100. It is exact, but it is a second system with a large hourly scan.</p>
 
 <x-tradeoffs caption="Counting for the month window">
 <script type="application/json">
@@ -305,22 +300,22 @@ Results (key-value store, about 10 KB per value)
   "options": [
     {
       "name": "Exact counts in the stream",
-      "good": "Exact, and the same code as the hour and day.",
-      "bad": "250 GB of state to checkpoint and restore.",
-      "pick": "Few distinct items, or exact counts are required."
+      "good": "The counts are exact and the code is the same as for the hour and day windows.",
+      "bad": "The job has to checkpoint and restore 250 GB of state.",
+      "pick": "Use it when there are few distinct items or exact counts are required."
     },
     {
       "name": "Count-min sketches with a candidate heap",
       "good": "About 11 GB in all, 23 times less, however many videos exist.",
       "bad": "Counts can be too high by about 48,600 views.",
-      "pick": "Close counts are acceptable and the key space is huge. This is the choice for the month.",
+      "pick": "Use it when close counts are acceptable and the key space is huge. This is the choice for the month.",
       "default": true
     },
     {
       "name": "Hourly batch over daily counts",
-      "good": "Exact, and simple.",
-      "bad": "A second system with a large hourly scan.",
-      "pick": "A warehouse already exists and an hour of lag is fine."
+      "good": "The counts are exact and the job is simple to write.",
+      "bad": "It adds a second system and a large scan every hour.",
+      "pick": "Use it when a warehouse already exists and an hour of lag is acceptable."
     }
   ]
 }
@@ -329,15 +324,13 @@ Results (key-value store, about 10 KB per value)
 
 <h3>Precomputing the lists so that a read is one lookup</h3>
 
-<p>At 20,000 page loads a second, computing a list per request would redo one minute's answer 1.2 million times. Instead the merger writes each list under one key, and the API serves that key through a CDN with a lifetime of 30 seconds. A slow pipeline means an older list, not a slow page.</p>
-
-<p>Each write carries its minute as a version, and the store accepts it only if the version is newer, so a stalled merger cannot overwrite a fresher list.</p>
+<p>At 20,000 page loads a second, computing a list per request would redo one minute's answer 1.2 million times. Instead the merger writes each list under one key, and the API serves that key through a CDN with a lifetime of 30 seconds.</p>
 
 <h2>Bottlenecks and failures</h2>
 
 <h3>What breaks first at 10 times the load</h3>
 
-<p>At 10 times the load, the system records 1.75 million views a second and sees 10 times as many distinct videos. Exact state for the hour grows to 75 GB, so you raise the partitions from 32 to 320, about 234 MB per task. Exact state for the day reaches 435 GB, so the day moves to sketches as well. The merger and the read path are unaffected.</p>
+<p>At 10 times the load, the system records 1.75 million views a second and sees 10 times as many distinct videos. Exact state for the hour grows to 75 GB, so you raise the partitions from 32 to 320, about 234 MB per task. Exact state for the day reaches 435 GB, so the day moves to sketches as well.</p>
 
 <h3>What happens when each component fails</h3>
 
@@ -366,22 +359,22 @@ Results (key-value store, about 10 KB per value)
 <x-interviewer>Why not use a count-min sketch for every window?</x-interviewer>
 <x-you>Exact counts are affordable for the hour and day, at 7.5 GB and 43.5 GB over 32 tasks. The month needs 250 GB exactly, and sketches cut that to about 11 GB, with each estimate too high by at most about 48,600 views at 99.3% probability, under 5% for a video near 100th place.</x-you>
 <x-interviewer>What does that error look like on the page?</x-interviewer>
-<x-you>Counts are shown rounded, like 1.2M views, and videos with nearly equal counts around 100th place might swap. A clearly top video cannot disappear, because its estimate is never lower than its true count.</x-you>
+<x-you>Counts are shown rounded, and videos near 100th place might swap. A clearly top video cannot disappear, because its estimate is never lower than its true count.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>What changes if the system ranks the most searched terms instead of videos?</h3>
-<p>Normalise the queries first. Most terms appear only once or twice, so exact maps are mostly wasted memory, and the day window should use sketches too.</p>
+<p>You first normalise the queries, for example by lowercasing and trimming them, so that equivalent searches count together. Most search terms appear only once or twice, so exact maps spend most of their memory on terms that will never rank. The day window should therefore use sketches as well, and the rest of the design stays the same.</p>
 
 <h3>Trending should mean rising fast, not just large. How do you rank for that?</h3>
-<p>Rank videos by this hour's views divided by their usual hourly views. Require a minimum count too, or a video that went from 2 views to 20 would win.</p>
+<p>Rank videos by this hour's views divided by their usual hourly views, where the usual rate comes from the day or week counters you already keep. Also require a minimum count, or a video that went from 2 views to 20 would beat one that went from 50,000 to 200,000.</p>
 
-<h3>How do you stop people from gaming the list?</h3>
-<p>Count only views that passed upstream fraud checks, cap what one account or device adds per video per hour, and let moderation remove videos from the lists.</p>
+<h3>What happens to a view event that arrives late?</h3>
+<p>The event carries the second at which the view happened, and the counter task assigns it to the bucket for that time, not to the bucket for the current minute. If that bucket is still inside the window, the task adds the count to the bucket and to the running total, and the next refresh includes it. Events older than a few minutes are dropped.</p>
 
-<h3>Why not keep the counts in a sorted set in an in-memory store?</h3>
-<p>A sorted set works well for a single window, as shown in <a href="/system-design/design-a-leaderboard.html">Design a Leaderboard</a>. Here it would mean 175,000 network writes a second, and expiry still needs per-minute buckets.</p>
+<h3>How do you avoid counting a view twice after a crash?</h3>
+<p>The checkpoint stores the counter state together with the log offsets it covers. A replacement task restores both and replays the log from that offset, so every event is applied to the restored state exactly once. Writes of the finished lists are safe to repeat, because each carries a version and the store ignores any version that is not newer.</p>
 
 <x-checklist title="Self-review: top-K trending">
 <script type="application/json">

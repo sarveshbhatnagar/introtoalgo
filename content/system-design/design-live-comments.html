@@ -59,7 +59,7 @@
 <p>Write the calls to post a comment, to receive new comments, and to load older comments. Which transport carries new comments to the viewer?</p>
 </x-task>
 <x-answer>
-<p>Posting is plain HTTP. New comments arrive on a server-sent events stream that resumes from the last event id. Older comments are a paged read with a cursor.</p>
+<p>Posting is a plain HTTP request, new comments arrive on a server-sent events stream that resumes from the last event id, and older comments are a paged read with a cursor.</p>
 </x-answer>
 </x-tryit>
 
@@ -93,7 +93,7 @@ GET /videos/{id}/comments?before=7193...&limit=50
 <p>What is the key of a comment, and how do you read "the 50 comments before this one" on a video that receives thousands of comments a second?</p>
 </x-task>
 <x-answer>
-<p>Partition by video and a time bucket, and sort by a time-ordered comment id. Reading history is then one range scan, newest first.</p>
+<p>Partition by video and a time bucket, and sort by a time-ordered comment id, so that reading history is one range scan from newest to oldest.</p>
 </x-answer>
 </x-tryit>
 
@@ -117,14 +117,14 @@ recent:{video_id}              -- in-memory list of the last 200 shown
 
 <p>Comments are only appended, reads ask for the newest N comments before an id, and nothing needs a join. That access pattern suits a <strong>wide-column store</strong> such as Cassandra, which is built for heavy writes, and a <a href="/system-design/unique-ids.html">time-ordered id</a> gives newest-first order without a separate index.</p>
 
-<p>The bucket limits the size of each partition. A quiet stream can use one-hour buckets, but the biggest video writes about 8,300 × 3,600 ≈ 30 million rows, or 6 GB, an hour into one partition, which is too much. Busy videos therefore use one-minute buckets of about 500,000 rows and 100 MB. The bucket size is stored with the video so readers can walk backwards.</p>
+<p>The bucket limits the size of each partition. A quiet stream can use one-hour buckets, but the biggest video writes about 8,300 × 3,600 ≈ 30 million rows, or 6 GB, an hour into one partition, which is too much. Busy videos therefore use one-minute buckets of about 500,000 rows and 100 MB.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
 <p>Sketch the path from a POST to storage and on to 5 million open connections. How does a comment find the servers that hold the viewers of its video?</p>
 </x-task>
 <x-answer>
-<p>Store the comment and append it to a stream partitioned by video. A fan-out worker reads that partition, samples busy videos, and publishes to a pub/sub channel for the video. Every realtime server that holds a viewer of the video is subscribed to that channel.</p>
+<p>Store the comment and append it to a stream partitioned by video. A fan-out worker reads that partition, samples busy videos, and publishes to a pub/sub channel for the video, and every realtime server that holds a viewer of the video is subscribed to that channel.</p>
 </x-answer>
 </x-tryit>
 
@@ -260,7 +260,7 @@ recent:{video_id}              -- in-memory list of the last 200 shown
 
 <p><strong>Sending every comment to every realtime server</strong> needs no state, because each server simply ignores comments for videos it has no viewers of. The cost is 83,000 comments a second × 1,000 servers = 83 million internal messages a second, most of them thrown away.</p>
 
-<p><strong>A pub/sub channel for each video</strong> avoids that. A realtime server subscribes to the channel of a video when its first viewer of that video connects, and unsubscribes when the last one leaves. The fan-out worker publishes to the channel, and only subscribed servers receive the comment. This is the choice for this design. The cost is constant subscription changes, and a popular video is subscribed to by almost every server.</p>
+<p><strong>A pub/sub channel for each video</strong> avoids that. A realtime server subscribes to the channel of a video when its first viewer of that video connects, and unsubscribes when the last one leaves. The fan-out worker publishes to the channel, and only subscribed servers receive the comment. This is the choice for this design. The cost is constant subscription changes.</p>
 
 <p><strong>Routing viewers by video id</strong> uses consistent hashing so that all viewers of a small video connect to the same one or two servers, and comments for it go there directly. The problem is that load becomes uneven and a viral video has to be spread over many servers anyway, so it only helps as an addition to pub/sub for small streams.</p>
 
@@ -286,27 +286,25 @@ recent:{video_id}              -- in-memory list of the last 200 shown
       "name": "Send everything",
       "good": "Simple, and no comment is hidden.",
       "bad": "Unreadable for viewers, and about 40 billion deliveries a second.",
-      "pick": "Not possible at this size."
+      "pick": "This cannot be used at this size."
     },
     {
       "name": "Sample at the fan-out worker",
       "good": "Delivery is capped at 10 comments a second per video, and everything is still stored.",
       "bad": "Most comments on a huge stream are never shown live.",
-      "pick": "Busy videos. My choice.",
+      "pick": "Use it for busy videos. This is my choice.",
       "default": true
     },
     {
       "name": "Slow mode for posters",
       "good": "Less spam and less to store and filter.",
       "bad": "It limits people and not delivery, so a 30-second limit barely changes the load.",
-      "pick": "As a moderation tool next to sampling."
+      "pick": "Use it as a moderation tool alongside sampling."
     }
   ]
 }
 </script>
 </x-tradeoffs>
-
-<p>Joins can spike too: one million viewers in a minute is about 17,000 reads a second of the same recent list. Each realtime server reads the list at most once a second and serves all its joiners from that copy, so the cache sees at most 1,000 reads a second.</p>
 
 <h3>Ordering, duplicates and gaps</h3>
 
@@ -364,6 +362,9 @@ recent:{video_id}              -- in-memory list of the last 200 shown
 
 <h3>How would you run this across several regions?</h3>
 <p>Give each region its own realtime servers and pub/sub, and have the video's worker publish once to each region, so a comment crosses the ocean once per region and not once per viewer.</p>
+
+<h3>How do you stop spam and abusive comments?</h3>
+<p>Rate-limit posting per user at the comment service and run a text filter before the comment is stored, which is why the post call can return 403 or 429. Accounts that are muted or blocked are rejected there, and moderators remove anything that still gets through using the removal event described above.</p>
 
 <x-checklist title="Self-review: live comments">
 <script type="application/json">

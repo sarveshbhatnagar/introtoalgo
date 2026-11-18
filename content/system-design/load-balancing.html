@@ -32,21 +32,19 @@
 </script>
 </x-arch>
 
-<p>A load balancer does not add processing capacity. The servers behind it do, and the balancer only makes it possible to use them evenly.</p>
-
 <h2>Layer 4 and layer 7 load balancers</h2>
 
 <h3>Layer 4</h3>
 
 <p>A layer 4 balancer works with TCP or UDP. It sees source and destination addresses and ports, and nothing inside the stream. When a client opens a connection, the balancer picks a server once and forwards every packet of that connection to it. It is fast and works for any protocol, and it usually passes TLS through to the servers.</p>
 
-<p>The unit of balancing is the connection, not the request, so a client that sends ten thousand requests down one connection keeps all of them on one server. It also cannot route by URL. Pick it for non-HTTP protocols, for very high connection rates, and when traffic must stay encrypted to the server.</p>
+<p>The unit of balancing is the connection, not the request, so a client that sends ten thousand requests down one connection keeps all of them on one server. It also cannot route by URL. Pick it for non-HTTP protocols and when traffic must stay encrypted to the server.</p>
 
 <h3>Layer 7</h3>
 
 <p>A layer 7 balancer terminates the client's connection, reads each HTTP request and forwards it over a connection of its own. Because it reads the request, it can route by hostname, path or header, so that <code>/orders</code> and <code>/users</code> go to different server groups. It can also retry a failed request on another server.</p>
 
-<p>It usually terminates TLS, so the certificates live in one place and the servers receive plain HTTP over the internal network. The cost is extra CPU and a little more latency. Pick it for web applications and APIs.</p>
+<p>It usually terminates TLS, so the certificates live in one place and the servers receive plain HTTP over the internal network. It costs more CPU than layer 4, and it is the usual choice for web applications and APIs.</p>
 
 <h3>HTTP/2, gRPC and long-lived connections</h3>
 
@@ -76,7 +74,7 @@
 
 <h3>Least response time</h3>
 
-<p>The balancer favours the server that has answered fastest recently, which routes around a server that is slow for a hidden reason such as a failing disk. A server that returns errors immediately looks the fastest, so failed requests must be counted as slow.</p>
+<p>The balancer favours the server that has answered fastest recently, which routes around a server that is slow for a hidden reason such as a failing disk. A server that fails instantly looks fastest, so failed requests must count as slow.</p>
 
 <h3>Hashing and consistent hashing</h3>
 
@@ -94,7 +92,7 @@
 
 <p>An <strong>active</strong> health check is a request that the balancer sends to each server on a timer, for example <code>GET /health</code> every five seconds. A <strong>passive</strong> check watches real traffic and removes a server that returns errors or times out. A passive check reacts within one request, and an active check finds idle failed servers and brings recovered ones back, so balancers normally use both.</p>
 
-<p>Detection takes time. The worst case is the check interval multiplied by the number of failures required, plus the timeout, so checks every 5 seconds that need 3 failures take about 15 seconds. A shorter interval detects faster but risks removing a healthy server during a brief pause.</p>
+<p>Detection takes time. The worst case is the check interval multiplied by the number of failures required, plus the timeout, so checks every 5 seconds that need 3 failures take about 15 seconds.</p>
 
 <h3>Liveness and readiness</h3>
 
@@ -102,7 +100,7 @@
 
 <h3>A health check that removes every server at once</h3>
 
-<p>If the health endpoint also queries the database and the database becomes slow, every server fails its check in the same interval and the balancer removes all of them. The endpoint should test only whether this server can do its own work, A panic threshold also helps: when too many servers are unhealthy, the balancer ignores the checks and sends traffic to all of them, which is better than sending it to none.</p>
+<p>If the health endpoint also queries the database and the database becomes slow, every server fails its check in the same interval and the balancer removes all of them. The endpoint should test only whether this server can do its own work. A panic threshold also helps: when too many servers are unhealthy, the balancer ignores the checks and sends traffic to all of them, which is better than sending it to none.</p>
 
 <h2>Problems that interviewers probe</h2>
 
@@ -116,7 +114,7 @@
 
 <h3>Deploying without dropping requests</h3>
 
-<p>To replace a server, the balancer first stops sending it new requests and waits for the requests in progress to finish. This is <strong>connection draining</strong>. Without draining, every deploy cuts off the requests running on the server being replaced. Long-lived connections need a longer drain time.</p>
+<p>To replace a server, the balancer first stops sending it new requests and waits for the requests in progress to finish. This is <strong>connection draining</strong>. Without draining, every deploy cuts off the requests running on the server being replaced.</p>
 
 <h3>Retries and retry storms</h3>
 
@@ -146,6 +144,7 @@
 <li><strong>"Why not send traffic to the server with the lowest CPU?"</strong> The reading is stale by the time it is used, so every balancer picks the same server and overloads it. Count the requests the balancer has sent and not yet seen answered instead.</li>
 <li><strong>"What if every server fails its health check at once?"</strong> The check probably tests a shared dependency. Make it test only the server itself, and set a threshold above which the balancer stops removing servers.</li>
 <li><strong>"Retries made the outage worse. Why?"</strong> Every failed request is sent again, so overloaded servers receive extra load. Retry only idempotent requests, with backoff and jitter, within a retry budget, and at one layer only.</li>
+<li><strong>"How do you keep the load balancer from being a single point of failure?"</strong> Run a standby that shares a virtual IP address with the active balancer and takes it over when heartbeats stop. At larger scale, run several active balancers behind DNS that returns more than one address, or behind an anycast address.</li>
 </ul>
 
 <x-interview title="Errors after every deploy" tone="strong">
@@ -153,7 +152,7 @@
 <x-you>I would check whether the balancer drains connections. If a server is stopped while requests are running on it, those requests fail. I would remove the server from the pool, wait for in-flight requests to finish, and only then restart it.</x-you>
 <x-interviewer>That works, but now new servers are overloaded right after they join.</x-interviewer>
 <x-you>That fits least connections, because an empty server looks like the least loaded one and is flooded. I would turn on slow start so its share rises over a minute.</x-you>
-<x-coach>Each answer names a mechanism and its fix. Neither answer stops at "I would add monitoring".</x-coach>
+<x-coach>Each answer names a mechanism and its fix.</x-coach>
 </x-interview>
 
 <x-quiz>
@@ -172,7 +171,8 @@
       "question": "A health endpoint queries the database, and the database slows down for a minute. What can happen?",
       "options": [
         { "text": "Every server fails its check and the balancer removes all of them", "correct": true, "why": "The shared dependency makes all servers look unhealthy at once." },
-        { "text": "Only the slowest server is removed", "why": "Every server depends on the same database, so they fail together." }
+        { "text": "Only the slowest server is removed", "why": "Every server depends on the same database, so they fail together." },
+        { "text": "Nothing changes, because the balancer only uses the check to restart servers", "why": "The balancer uses the check to decide where to send traffic, and restarts are a separate mechanism." }
       ]
     }
   ]
@@ -182,4 +182,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Read <a href="/system-design/caching.html">Caching</a> to take read load off the database behind the servers, and <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a> to see a balancer in a full design.</p>
+<p>Read <a href="/system-design/caching.html">Caching</a> next, and <a href="/system-design/design-a-url-shortener.html">Design a URL Shortener</a> to see a balancer in a full design.</p>

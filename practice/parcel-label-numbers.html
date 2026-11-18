@@ -56,15 +56,15 @@
     <div class="prose-ui ws__story"><p>A courier prints a barcode number on every parcel at up to 16 depots. Numbers must never repeat, depots cannot call a central server per label (the warehouse network drops out), and sorting by number should roughly sort by time. So each depot builds the number from three parts: the time in milliseconds, its machine number, and a counter for labels printed in the same millisecond.</p>
 <p>This is the Snowflake-style generator from <a href="/system-design/unique-ids.html">Unique IDs</a>. Real layouts use 64 bits; this one fits in 53 bits so every ID is an exact JavaScript number and survives JSON in a browser.</p></div>
     <h2 class="ws__h">Your task</h2>
-    <div class="prose-ui"><p>An ID is <code>t × 4096 + machine × 256 + seq</code>, which is the bit layout:</p>
+    <div class="prose-ui"><p>An ID is <code>t × 4096 + machine × 256 + seq</code>, which corresponds to this bit layout:</p>
 <ul>
-<li>41 bits: <code>t</code>, milliseconds since the courier's chosen epoch (0 to 2<sup>41</sup> − 1, about 69 years).</li>
-<li>4 bits: <code>machine</code>, the depot number, 0 to 15.</li>
-<li>8 bits: <code>seq</code>, 0 to 255, counting IDs made in the same millisecond.</li>
+<li>The top 41 bits hold <code>t</code>, the milliseconds since the courier's chosen epoch (0 to 2<sup>41</sup> − 1, about 69 years).</li>
+<li>The next 4 bits hold <code>machine</code>, the depot number, from 0 to 15.</li>
+<li>The lowest 8 bits hold <code>seq</code>, from 0 to 255, which counts the IDs made in the same millisecond.</li>
 </ul>
-<p>Write a class <code>LabelIds</code>:</p>
+<p>Write a class <code>LabelIds</code> with these methods:</p>
 <ul>
-<li><code>constructor(machine)</code>.</li>
+<li><code>constructor(machine)</code> creates a generator for one depot.</li>
 <li><code>next(t)</code>: return a new ID for time <code>t</code>. If <code>t</code> is later than the last ID's time (or nothing was issued yet), use <code>seq = 0</code>. If <code>t</code> equals it, use the last seq plus 1. Return <code>-1</code> and change nothing if the seq would reach 256 (this millisecond is used up) or <code>t</code> is earlier than the last ID's time (the clock moved backwards).</li>
 <li><code>parts(id)</code>: split any valid ID into <code>[t, machine, seq]</code>.</li>
 </ul>
@@ -110,7 +110,7 @@
 <li><code>parts(4097281)</code>: 4,097,281 ÷ 4096 = 1000 remainder 1,281; 1,281 ÷ 256 = 5 remainder 1. Answer <code>[1000, 5, 1]</code>.</li>
 </ol>
 <p>Both refusals must leave the state untouched, or a refused call would burn a seq or move the clock. Also, IDs sort by time only roughly: depot clocks differ by a few milliseconds, so order across depots within that skew is arbitrary. Real generators wait for the next millisecond instead of failing; here the caller decides.</p></div>
-    <div class="code"><div class="code__bar"><span class="code__title">Reference solution</span><div class="code__tabs" role="tablist" aria-label="Language"><button type="button" role="tab" class="code__tab" data-set-lang="js" aria-controls="code-626-js">JavaScript</button><button type="button" role="tab" class="code__tab" data-set-lang="py" aria-controls="code-626-py">Python</button></div><button type="button" class="code__copy" data-copy aria-label="Copy code"><svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Copy</span></button></div><div id="code-626-js" role="tabpanel" class="code__pane" data-lang="js"><pre class="code__pre" tabindex="0"><code class="lang-js"><span class="ln"><span class="tk-k">const</span> <span class="tk-t">TIME_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">4096</span>;   <span class="tk-c">// 2^12: room for 4 machine bits + 8 seq bits</span></span>
+    <div class="code"><div class="code__bar"><span class="code__title">Reference solution</span><div class="code__tabs" role="tablist" aria-label="Language"><button type="button" role="tab" class="code__tab" data-set-lang="js" aria-controls="code-644-js">JavaScript</button><button type="button" role="tab" class="code__tab" data-set-lang="py" aria-controls="code-644-py">Python</button></div><button type="button" class="code__copy" data-copy aria-label="Copy code"><svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg><span>Copy</span></button></div><div id="code-644-js" role="tabpanel" class="code__pane" data-lang="js"><pre class="code__pre" tabindex="0"><code class="lang-js"><span class="ln"><span class="tk-k">const</span> <span class="tk-t">TIME_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">4096</span>;   <span class="tk-c">// 2^12: room for 4 machine bits + 8 seq bits</span></span>
 <span class="ln"><span class="tk-k">const</span> <span class="tk-t">MACHINE_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">256</span>; <span class="tk-c">// 2^8: room for 8 seq bits</span></span>
 <span class="ln"><span class="tk-k">const</span> <span class="tk-t">MAX_SEQ</span> <span class="tk-o">=</span> <span class="tk-n">255</span>;</span>
 <span class="ln"> </span>
@@ -135,7 +135,7 @@
 <span class="ln">    <span class="tk-k">const</span> rest <span class="tk-o">=</span> id <span class="tk-o">%</span> <span class="tk-t">TIME_SHIFT</span>;</span>
 <span class="ln">    <span class="tk-k">return</span> [t, <span class="tk-b">Math</span>.<span class="tk-f">floor</span>(rest <span class="tk-o">/</span> <span class="tk-t">MACHINE_SHIFT</span>), rest <span class="tk-o">%</span> <span class="tk-t">MACHINE_SHIFT</span>];</span>
 <span class="ln">  }</span>
-<span class="ln">}</span></code></pre></div><div id="code-626-py" role="tabpanel" class="code__pane" data-lang="py"><pre class="code__pre" tabindex="0"><code class="lang-py"><span class="ln"><span class="tk-t">TIME_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">4096</span>    <span class="tk-c"># 2^12: room for 4 machine bits + 8 seq bits</span></span>
+<span class="ln">}</span></code></pre></div><div id="code-644-py" role="tabpanel" class="code__pane" data-lang="py"><pre class="code__pre" tabindex="0"><code class="lang-py"><span class="ln"><span class="tk-t">TIME_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">4096</span>    <span class="tk-c"># 2^12: room for 4 machine bits + 8 seq bits</span></span>
 <span class="ln"><span class="tk-t">MACHINE_SHIFT</span> <span class="tk-o">=</span> <span class="tk-n">256</span>  <span class="tk-c"># 2^8: room for 8 seq bits</span></span>
 <span class="ln"><span class="tk-t">MAX_SEQ</span> <span class="tk-o">=</span> <span class="tk-n">255</span></span>
 <span class="ln"> </span>
@@ -158,7 +158,7 @@
 <span class="ln">    <span class="tk-k">def</span> <span class="tk-f">parts</span>(<span class="tk-l">self</span>, id):</span>
 <span class="ln">        t, rest <span class="tk-o">=</span> <span class="tk-b">divmod</span>(id, <span class="tk-t">TIME_SHIFT</span>)</span>
 <span class="ln">        <span class="tk-k">return</span> [t, rest <span class="tk-o">//</span> <span class="tk-t">MACHINE_SHIFT</span>, rest <span class="tk-o">%</span> <span class="tk-t">MACHINE_SHIFT</span>]</span></code></pre></div></div>
-    <div class="cx cx--badges"><div class="cx__item"><span class="cx__k">Time</span><span class="bigo">O(1)</span><span class="cx__why">Each call is a few comparisons and arithmetic operations.</span></div><div class="cx__item"><span class="cx__k">Space</span><span class="bigo">O(1)</span><span class="cx__why">Only the machine number, the last time and the last seq.</span></div></div>
+    <div class="cx cx--badges"><div class="cx__item"><span class="cx__k">Time</span><span class="bigo">O(1)</span><span class="cx__why">Each call does a few comparisons and arithmetic operations.</span></div><div class="cx__item"><span class="cx__k">Space</span><span class="bigo">O(1)</span><span class="cx__why">The generator stores only the machine number, the last time and the last seq.</span></div></div>
     <aside class="callout callout--key"><div class="callout__head"><svg class="icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3a6 6 0 0 0-3.6 10.8V17h7.2v-3.2A6 6 0 0 0 12 3Z"/><path d="M9.5 20.5h5"/></svg><span>What to take away</span></div><div class="callout__body"><p>A time-ordered ID is time, machine and sequence packed into fixed bit ranges. Size the fields from the requirements (machines, IDs per millisecond, lifetime), refuse when the clock goes backwards, and in JavaScript pack with arithmetic, since bit operators stop at 32 bits.</p></div></aside>
   </div>
 </section>

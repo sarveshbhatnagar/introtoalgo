@@ -8,7 +8,7 @@
 -->
 <p>Choosing a database means matching the way your application reads and writes data to a storage engine built for that pattern. The main categories are relational, key-value, document, wide-column, graph and time-series databases, plus search indexes. They differ in how they organise data, which queries they answer quickly, and how much consistency they guarantee. In an interview you pick one, give a reason that refers to a query or guarantee, and say what it costs.</p>
 
-<p>If you pick the wrong category, the system fights its own storage. Readings from sensors kept in an ordinary relational table slow every insert through its indexes, and expiring old data means deleting millions of rows one by one, while a store built for time-ordered appends drops an expired time range in one operation.</p>
+<p>If you pick the wrong category, the system fights its own storage. Sensor readings kept in an ordinary relational table force the database to maintain its indexes on every insert, and expiring old data means deleting millions of rows individually, while a store built for time-ordered appends drops an expired time range in one operation.</p>
 
 <h2>Where databases sit in a system</h2>
 
@@ -46,15 +46,15 @@
 
 <h2>The database categories</h2>
 
-<p>Real products blend categories. Each subsection covers the data model, strengths, weaknesses and a typical use.</p>
+<p>The boundaries between categories are not sharp, because many products support more than one data model. Each subsection below covers the data model, what the category is good at, what it is bad at, and a typical use.</p>
 
 <h3>Relational</h3>
 
-<p>A relational database stores data in tables of rows and columns with a fixed schema. Tables refer to each other through keys, queries combine them with joins, and the database enforces constraints and supports transactions that make several changes succeed or fail together. PostgreSQL and MySQL are examples. It is the best choice when the data is related, when correctness matters, and when you do not know all the queries in advance, because indexes and joins let you ask new questions without changing the storage. It suits orders, payments, inventory and bookings. Its weakness is that writes scale by making the primary server larger. Beyond that you need <a href="/system-design/replication.html">replicas</a> for reads and <a href="/system-design/sharding-and-partitioning.html">sharding</a> for writes, which loses easy joins and transactions across shards.</p>
+<p>A relational database stores data in tables of rows and columns with a fixed schema. Tables refer to each other through keys, queries combine them with joins, and the database enforces constraints and supports transactions that make several changes succeed or fail together. PostgreSQL and MySQL are examples. It is the best choice when the data is related, when correctness matters, and when you do not know all the queries in advance, because indexes and joins let you ask new questions without changing the storage. Data is normally normalised, so each fact is stored once. It suits orders, payments and bookings. Its weakness is that writes scale by making the primary server larger. Beyond that you need <a href="/system-design/replication.html">replicas</a> for reads and <a href="/system-design/sharding-and-partitioning.html">sharding</a> for writes, which loses easy joins and transactions across shards.</p>
 
 <h3>Key-value</h3>
 
-<p>A key-value store maps a key to a value that the database treats as opaque. The fast operations are get, put and delete by key, plus expiry. Redis and DynamoDB are examples. Because every request names one key, the data partitions across many nodes easily and a lookup takes about a millisecond or less. It suits sessions, carts, feature flags and lookups by id. It cannot answer "find all carts containing this product", because there is no query over the values, so such a query needs a second key that acts as an index or a different category.</p>
+<p>A key-value store maps a key to a value that the database treats as opaque. The fast operations are get, put and delete by key, plus expiry. Redis and DynamoDB are examples. Because every request names one key, the data partitions across many nodes easily and a lookup takes about a millisecond or less. It suits sessions, carts, feature flags and lookups by id. It cannot answer "find all carts containing this product", because there is no query over the values, so such a query needs a second key that acts as an index or a different category. Secondary indexes, where a product offers them, cost extra writes and are less flexible than relational ones.</p>
 
 <h3>Document</h3>
 
@@ -62,11 +62,11 @@
 
 <h3>Wide-column</h3>
 
-<p>A wide-column store keeps rows under a partition key, so all rows with the same key live together on the same nodes, sorted inside the partition by a clustering key. You design each table for one query. Messages might use the chat id as partition key and the message time as clustering key, so the latest 50 messages of a chat are one read from one partition. Cassandra and HBase are examples. These stores take very high write rates across many nodes and tolerate node failures, which suits messages, activity logs and event histories. They can only query efficiently by partition and clustering key, you often keep one copy of the data per query, and transactions across partitions are weak or missing.</p>
+<p>A wide-column store keeps rows under a partition key, so all rows with the same key live together on the same nodes, sorted inside the partition by a clustering key. You design each table for one query. Messages might use the chat id as partition key and the message time as clustering key, so the latest 50 messages of a chat are one read from one partition. Cassandra and HBase are examples. These stores take very high write rates across many nodes and tolerate node failures, which suits messages, activity logs and event histories. They can only query efficiently by partition and clustering key, so you often keep one copy of the data per query, each with a different key, and transactions across partitions are weak or missing.</p>
 
 <h3>Graph</h3>
 
-<p>A graph database stores nodes and the relationships between them as first-class data, and queries follow relationships directly. Finding friends of friends who like a band walks edges without a join per hop. Neo4j is an example. Pick it when the important questions are paths several hops deep, such as fraud rings or recommendations. For one or two hops a relational join table is enough. Graphs are also hard to spread over machines.</p>
+<p>A graph database stores nodes and the relationships between them as first-class data, and queries follow relationships directly. Finding friends of friends who like a band walks edges without a join per hop. Neo4j is an example. Pick it when the important questions are paths several hops deep, such as fraud rings or recommendations. For one or two hops a relational join table is enough. Graph databases are also hard to spread over many machines, because a traversal can cross any partition.</p>
 
 <h3>Time-series</h3>
 
@@ -74,7 +74,7 @@
 
 <h3>Search index</h3>
 
-<p>A search index stores text in an inverted index that maps each word to the documents containing it, so it can answer full-text queries, rank by relevance, and filter and count by field. Elasticsearch and OpenSearch are examples. It is not a system of record: it is filled from the primary database, can be rebuilt from it, and shows new writes after a short delay. See <a href="/system-design/search-systems.html">search systems</a> for the mechanics.</p>
+<p>A search index stores text in an inverted index that maps each word to the documents containing it, so it can answer full-text queries, rank by relevance, and filter and count by field. Elasticsearch and OpenSearch are examples. It is not a system of record: it is filled from the primary database, can be rebuilt from it, and shows new writes after a short delay. It is a poor choice for frequent updates and for transactions. See <a href="/system-design/search-systems.html">search systems</a> for the mechanics.</p>
 
 <h2>SQL or NoSQL</h2>
 
@@ -84,9 +84,9 @@
 
 <h2>When one relational database is enough</h2>
 
-<p>For most systems, and for many interview problems, a single relational database is the right answer. As a rough guide, one well-configured server handles thousands to tens of thousands of simple writes per second and several terabytes of data, and read replicas multiply the read capacity. A shop with two million orders a day writes about 23 orders a second on average, which one primary handles easily.</p>
+<p>For most systems, and for many interview problems, a single relational database is the right answer. As a rough guide, one well-configured server handles thousands to tens of thousands of simple writes per second and several terabytes of data, and read replicas multiply the read capacity.</p>
 
-<p>Moving away from it needs a reason from the numbers or the access pattern: the write rate exceeds one primary, the data is many times larger than one machine, or one simple pattern is cheaper in a partitioned store. Each extra store is another system to run, back up and keep consistent, so "it needs to scale" is not enough.</p>
+<p>Moving away from it needs a reason from the numbers or the access pattern: the write rate exceeds one primary, the data is many times larger than one machine, or one simple pattern is cheaper in a partitioned store. Each extra store is another system to run, back up and keep consistent.</p>
 
 <h2>Using more than one store</h2>
 
@@ -112,9 +112,9 @@
 </script>
 </x-arch>
 
-<p>The usual mistake is a dual write, where the application writes to the database and then to the search index in two calls. If the second call fails, the stores disagree and nothing records it. The safer pattern is to write only to the system of record and let the other stores be updated from its changes, through a change stream or an outbox table that is read and published to a <a href="/system-design/message-queues-and-streams.html">queue</a>. The copies lag slightly and can be rebuilt from the source.</p>
+<p>The usual mistake is a dual write, where the application writes to the database and then to the search index in two calls. If the second call fails, the stores disagree and nothing records it. The safer pattern is to write only to the system of record and let the other stores be updated from its changes, through a change stream or an outbox table that is read and published to a <a href="/system-design/message-queues-and-streams.html">queue</a>.</p>
 
-<h2>Problems that interviewers probe</h2>
+<h2>Nuances that interviewers probe</h2>
 
 <h3>A hot partition from a poor partition key</h3>
 
@@ -126,7 +126,7 @@
 
 <h3>Consistency in distributed stores</h3>
 
-<p>Many partitioned stores replicate each record to several nodes and let you choose per request how many replicas must confirm a read or a write. Requiring a majority for both gives strongly consistent results at the price of latency and availability during failures, while requiring one replica is faster but a read may return an old value. Say which setting you would use for the data in question.</p>
+<p>Many partitioned stores replicate each record to several nodes and let you choose per request how many replicas must confirm a read or a write. Requiring a majority of replicas for both reads and writes means a read sees the latest acknowledged write, at the price of latency and lower availability during failures, while requiring one replica is faster but a read may return an old value.</p>
 
 <h2>In the interview</h2>
 
@@ -140,15 +140,14 @@
 <li><strong>"How do you keep two stores in sync?"</strong> I treat one as the system of record and update the others from its change stream, or from an outbox table that is published to a queue. I avoid writing to both stores from the application, because a failure between the two writes leaves them different and nothing detects it.</li>
 <li><strong>"How would you choose a partition key?"</strong> It must appear in the main query and have many distinct values with an even share of traffic. For chat messages I would use the chat id, and I would watch for a very large group chat that becomes a hot partition.</li>
 <li><strong>"What do you lose by choosing a NoSQL store?"</strong> Usually some combination of ad hoc queries, joins and multi-record transactions. You also design the data for the queries you know, so a new query can mean a new table or a data migration.</li>
-<li><strong>"Why not use one database for everything?"</strong> One store is simpler to run and keep consistent, so I would start there. I would add another only when a requirement, such as full-text search, is poorly served by the first.</li>
 </ul>
 
 <x-interview title="Picking the store for a chat app" tone="strong">
 <x-interviewer>Where do you store the messages?</x-interviewer>
 <x-you>The main read is the latest 50 messages of one chat, and I estimate 20,000 writes a second. So I would use a wide-column store partitioned by chat id and sorted by message time, which makes each page one partition read and spreads the writes across nodes. Users, billing and group membership need constraints and transactions, so they go in a relational database.</x-you>
 <x-interviewer>Why not put everything in the relational database?</x-interviewer>
-<x-you>At 20,000 writes a second I would have to shard it by hand within a short time. At a tenth of that load I would keep everything in one relational database, because running one store is simpler.</x-you>
-<x-coach>The answers name the query, the number and the cost.</x-coach>
+<x-you>At 20,000 writes a second a single relational primary would be under heavy pressure, and I would have to shard it myself. At a tenth of that load I would keep everything in one relational database, because running one store is simpler.</x-you>
+<x-coach>Each answer names the query, the number and the cost of the choice.</x-coach>
 </x-interview>
 
 <x-quiz>

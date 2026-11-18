@@ -34,7 +34,7 @@
 
 <p>A timeout is how long a client waits for a response before giving up. When it fires, the client has learned nothing about what the server did: the request may never have arrived, or the server may have finished and the response may have been lost. A timed-out request is therefore an unknown outcome, not a failure.</p>
 
-<p>Set the timeout a little above the latency that almost all requests have, such as the 99th percentile. Too short, and the client abandons requests that would have succeeded and adds needless retries. Too long, such as 30 seconds, and the client holds a thread for that whole time and can run out of threads before the server recovers.</p>
+<p>Set the timeout a little above the latency that almost all requests have, such as the 99th percentile. Too short, and the client abandons requests that would have succeeded and adds needless retries. Too long, and the client holds a thread for the whole wait and can run out of threads.</p>
 
 <h2>Retries with exponential backoff and jitter</h2>
 
@@ -79,7 +79,7 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
 
 <h3>Retries multiply across layers</h3>
 
-<p>A retry storm happens when retries add so much load that a failing service cannot recover. The worst case is retries at several layers. If a client, an API and an order service each retry a failed call 3 times, a failing database can receive 3 × 3 × 3 = 27 calls for one user request, exactly when it is least able to handle them. The usual fix is to retry at one layer, normally the one that knows how to repeat the whole operation, and let the layers below fail fast.</p>
+<p>A retry storm happens when retries add so much load that a failing service cannot recover. The worst case is retries at several layers. If a client, an API and an order service each make up to 3 attempts at a failed call, a failing database can receive 3 × 3 × 3 = 27 calls for one user request, exactly when it is least able to handle them. The usual fix is to retry at one layer, normally the one that knows how to repeat the whole operation, and let the layers below fail fast.</p>
 
 <h3>Retry budgets</h3>
 
@@ -91,9 +91,9 @@ def with_retries(call, max_attempts=4, base_ms=100, cap_ms=2000):
 
 <h2>Which operations are safe to retry</h2>
 
-<p>Whether a retry is safe depends on the operation, not on the error. Reads are always safe to retry. An operation that sets a fixed value, such as "set the status to shipped" or a <code>PUT</code> that replaces a whole record, is idempotent. A <code>DELETE</code> of a specific record is too, although the second call may return "not found", which the client should treat as success.</p>
+<p>Whether a retry is safe depends on the operation, not on the error. Reads are always safe to retry. An operation that sets a fixed value, such as "set the status to shipped" or a <code>PUT</code> that replaces a whole record, is idempotent. A <code>DELETE</code> of a specific record is too.</p>
 
-<p>An operation that adds or creates something, such as "add $40 to the balance" or a <code>POST</code> that creates an order, changes the state on every repeat, so it needs one of the techniques below. A refused connection is safe to retry for any operation, but a timeout is not.</p>
+<p>An operation that adds or creates something, such as "add $40 to the balance" or a <code>POST</code> that creates an order, changes the state on every repeat, so it needs one of the techniques below.</p>
 
 <h2>Idempotency keys</h2>
 
@@ -126,11 +126,11 @@ ON CONFLICT (account_id, key) DO NOTHING;
 
 <h3>The request fingerprint</h3>
 
-<p>The server also stores a hash of the request body and compares it with any later request that uses the same key. The same key with a different amount is a client bug, so the server rejects it, commonly with <code>422</code>, instead of returning the answer to a different request. Scoping keys to the account stops one customer's key from colliding with another's.</p>
+<p>The server also stores a hash of the request body and compares it with any later request that uses the same key. The same key with a different amount is a client bug, so the server rejects it, commonly with <code>422</code>, instead of returning the answer to a different request.</p>
 
 <h3>How long keys are kept</h3>
 
-<p>Keys must be kept longer than any client keeps retrying the same action. A day is a common choice for payment APIs. After that the key is deleted, and the keys are small enough that storage is rarely a problem.</p>
+<p>Keys must be kept longer than any client keeps retrying the same action. A day is a common choice for payment APIs. After that the key is deleted.</p>
 
 <x-tracer title="A lost response, a retry, one charge">
 <script type="application/json">
@@ -198,9 +198,9 @@ ON CONFLICT (account_id, key) DO NOTHING;
 
 <h3>Deduplication on the consumer</h3>
 
-<p>Message queues and streams usually deliver each message <strong>at least once</strong>: if a consumer crashes or does not acknowledge in time, the broker redelivers it. Consumers therefore deduplicate. Each message carries a unique id, and the consumer records that id in the same transaction as the message's effect and skips ids already recorded. Recording it in a separate step would let a crash lose the message or process it twice. The table of ids must be kept longer than the longest redelivery delay. Queues are covered in <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>.</p>
+<p>Message queues and streams usually deliver each message <strong>at least once</strong>: if a consumer crashes or does not acknowledge in time, the broker redelivers it. Consumers therefore deduplicate. Each message carries a unique id, and the consumer records that id in the same transaction as the message's effect and skips ids already recorded. Recording it in a separate step would let a crash lose the message or process it twice. The table of ids must be kept longer than the longest redelivery delay. At-least-once delivery combined with this deduplication gives an effect equivalent to exactly-once processing, even though the broker itself can still deliver a message twice. Queues are covered in <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>.</p>
 
-<h2>Problems that interviewers probe</h2>
+<h2>Side effects and saved responses</h2>
 
 <h3>Side effects outside the database</h3>
 
@@ -212,7 +212,7 @@ ON CONFLICT (account_id, key) DO NOTHING;
 
 <h2>In the interview</h2>
 
-<p>Raise idempotency whenever a client can repeat an action with side effects, such as a payment, an order or a message. For client-facing writes the answer is an idempotency key, and for state changes inside a database it is often a conditional write. Say why: "A timeout does not mean the request failed, so the client must be able to retry safely."</p>
+<p>Raise idempotency whenever a client can repeat an action with side effects, such as a payment, an order or a message. For client-facing writes the answer is an idempotency key, and for state changes inside a database it is often a conditional write.</p>
 
 <p>Questions to expect:</p>
 
@@ -220,6 +220,7 @@ ON CONFLICT (account_id, key) DO NOTHING;
 <li><strong>"What stops a double charge when the client retries?"</strong> The client sends one idempotency key per payment on every attempt. The server claims the key with an atomic insert before charging, so only one attempt does the work and a repeat gets the stored response. The key is also passed to the card processor, which covers a crash between the charge and saving the result.</li>
 <li><strong>"Who generates the key, and when?"</strong> The client, once per user action and before the first attempt, because only the client knows that two requests are the same action.</li>
 <li><strong>"What if the server crashes after charging but before saving the result?"</strong> The key stays in progress, so it needs a lease. After the lease expires a retry takes over and calls the processor with the same key, which returns the original charge. A processor without key support has to be queried for the charge first.</li>
+<li><strong>"Can a message queue give you exactly-once processing?"</strong> The broker delivers at least once, so a consumer can see the same message twice. The consumer stores each message id in the same transaction as the message's effect and skips ids it has seen, which makes the effect happen once.</li>
 <li><strong>"How do you stop retries from overloading a struggling service?"</strong> Use exponential backoff with jitter, a cap on attempts and a retry budget, and retry at one layer only. A circuit breaker then stops calls to a dependency that is clearly down.</li>
 </ul>
 

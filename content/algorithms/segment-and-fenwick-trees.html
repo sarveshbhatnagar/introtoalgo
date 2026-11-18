@@ -1,30 +1,24 @@
 <!--
 {
   "title": "Segment Trees and Fenwick Trees",
-  "description": "Answer range sums on data that keeps changing, with updates and queries both in O(log n). Segment trees and Fenwick trees, traced in JS and Python.",
-  "minutes": 18,
+  "description": "How segment trees and Fenwick trees answer range queries on changing data in O(log n), when to use each, and what interviewers ask about them.",
+  "minutes": 14,
   "tags": ["trees", "arrays", "range queries"]
 }
 -->
-<p>The café from <a href="/algorithms/prefix-sums.html">Prefix Sums</a> has eight days of takings: 5, 2, 6, 3, 1, 4, 7, 2. The owner keeps asking "how much from day 3 to day 7?", and the bookkeeper keeps correcting old days.</p>
+<p>A segment tree and a Fenwick tree (also called a binary indexed tree) answer range queries, such as the sum of the values from index 2 to index 6, while the values are still being changed. Both handle a query and an update in O(log n) time. You reach for one when a problem mixes many range queries with many updates, and a plain array or a prefix sum array makes one of the two operations too slow.</p>
 
-<p>Prefix sums answer a range in O(1), but a correction changes every later total: O(n). A plain array is the opposite. You want both fast.</p>
+<p>A <a href="/algorithms/prefix-sums.html">prefix sum</a> array answers a range sum in O(1), but changing one value changes every later total, which costs O(n). A plain array has the opposite problem, because an update is O(1) and a range sum is O(n). With a million queries and a million updates either choice is too slow, and these two structures bring each operation down to about 20 steps.</p>
 
-<h2>The idea: precompute sums of blocks</h2>
+<h2>How a segment tree works</h2>
 
-<p>Split the days in half, then each half in half, down to single days, and store every block's total. A range is then a few whole blocks, and a correction touches one block per level.</p>
+<p>A <strong>segment tree</strong> is a <a href="/algorithms/binary-trees.html">binary tree</a> in which each node stores the sum of a range of the array. The root covers the whole array, each child covers one half of its parent's range, and the leaves cover single values. A query can then be answered by adding a few stored blocks, and an update only has to fix the nodes on the path from one leaf to the root.</p>
 
-<p>That is a <strong>segment tree</strong>: a <a href="/algorithms/binary-trees.html">binary tree</a> where each node stores the sum of a range, each child covers half its parent's range, and the leaves are single values. Store it like a <a href="/algorithms/heaps-and-priority-queues.html">heap</a>: node <code>i</code> has children <code>2i + 1</code> and <code>2i + 2</code>. Here node 0 covers indexes 0 to 7 (30), node 1 covers 0 to 3 (16), node 2 covers 4 to 7 (14), down to the leaves at nodes 7 to 14.</p>
+<p>The tree is stored in an array in the same way as a <a href="/algorithms/heaps-and-priority-queues.html">heap</a>, so node <code>i</code> has children <code>2i + 1</code> and <code>2i + 2</code>. For the values 5, 2, 6, 3, 1, 4, 7, 2, node 0 covers indexes 0 to 7 (sum 30), node 1 covers 0 to 3 (sum 16), node 2 covers 4 to 7 (sum 14), and the leaves are nodes 7 to 14.</p>
 
-<h2>Answering a range query</h2>
+<h3>Querying a range</h3>
 
-<p>Days 3 to 7 are indexes 2 to 6. Start at the root and ask each node: how does my range overlap the query?</p>
-
-<ul>
-<li><strong>Not at all</strong>: contribute 0 and stop.</li>
-<li><strong>Completely inside</strong>: contribute the stored sum and stop.</li>
-<li><strong>Partly</strong>: ask both children and add their answers.</li>
-</ul>
+<p>To sum indexes 2 to 6, start at the root and compare each node's range with the query range. If the node's range does not overlap the query at all, the node contributes 0 and its children are not visited. If the node's range lies completely inside the query, the node contributes its stored sum and its children are not visited. If the two ranges overlap only partly, the node asks both of its children and adds their answers.</p>
 
 <x-tracer title="Sum of indexes 2 to 6">
 <script type="application/json">
@@ -37,38 +31,42 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "The root covers 0..7. The query 2..6 partly overlaps it, so split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [0] }, "vars": { "node range": "0..7", "total": 0 } },
-    { "caption": "Node 1 covers 0..3. Partial again: split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [1] }, "vars": { "node range": "0..3", "total": 0 } },
-    { "caption": "Node 3 covers 0..1, before the query. Add 0 and skip its children.", "line": 2, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [3], "dim": [3,7,8] }, "vars": { "node range": "0..1", "total": 0 } },
-    { "caption": "Node 4 covers 2..3, fully inside. Take its 9 (6 + 3).", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4], "dim": [3,7,8] }, "vars": { "node range": "2..3", "total": 9 } },
-    { "caption": "Back to node 2, covering 4..7. Partial: split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [2], "mark": [4], "dim": [3,7,8] }, "vars": { "node range": "4..7", "total": 9 } },
-    { "caption": "Node 5 covers 4..5, fully inside. Add 5.", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5], "dim": [3,7,8] }, "vars": { "node range": "4..5", "total": 14 } },
-    { "caption": "Node 6 covers 6..7: index 6 is in, 7 is out. Split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [6], "mark": [4,5], "dim": [3,7,8] }, "vars": { "node range": "6..7", "total": 14 } },
-    { "caption": "Leaf 13 (index 6) is inside: add 7. Leaf 14 (index 7) adds 0.", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5,13], "dim": [3,7,8,14] }, "vars": { "node range": "6..6", "total": 21 } },
-    { "caption": "9 + 5 + 7 = 21, from three stored blocks. Check: 6 + 3 + 1 + 4 + 7 = 21.", "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5,13], "dim": [3,7,8,14] }, "vars": { "total": 21, "blocks used": 3 } }
+    { "caption": "The root covers 0..7. The query 2..6 overlaps it only partly, so the root is split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [0] }, "vars": { "node range": "0..7", "total": 0 } },
+    { "caption": "Node 1 covers 0..3 and also overlaps the query only partly, so it is split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [1] }, "vars": { "node range": "0..3", "total": 0 } },
+    { "caption": "Node 3 covers 0..1, which is entirely before the query, so it contributes 0 and its children are skipped.", "line": 2, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [3], "dim": [3,7,8] }, "vars": { "node range": "0..1", "total": 0 } },
+    { "caption": "Node 4 covers 2..3, which is fully inside the query, so the total takes its stored value of 9 (6 + 3).", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4], "dim": [3,7,8] }, "vars": { "node range": "2..3", "total": 9 } },
+    { "caption": "Back at node 2, which covers 4..7, the overlap is partial, so it is split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [2], "mark": [4], "dim": [3,7,8] }, "vars": { "node range": "4..7", "total": 9 } },
+    { "caption": "Node 5 covers 4..5, which is fully inside the query, so the total adds its 5.", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5], "dim": [3,7,8] }, "vars": { "node range": "4..5", "total": 14 } },
+    { "caption": "Node 6 covers 6..7. Index 6 is inside the query and index 7 is outside, so the node is split.", "line": 4, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "highlight": [6], "mark": [4,5], "dim": [3,7,8] }, "vars": { "node range": "6..7", "total": 14 } },
+    { "caption": "Leaf 13 (index 6) is inside the query, so the total adds 7. Leaf 14 (index 7) is outside and adds 0.", "line": 3, "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5,13], "dim": [3,7,8,14] }, "vars": { "node range": "6..6", "total": 21 } },
+    { "caption": "The result is 9 + 5 + 7 = 21, taken from three stored blocks.", "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,6,3,1,4,7,2], "mark": [4,5,13], "dim": [3,7,8,14] }, "vars": { "total": 21, "blocks used": 3 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>The query is O(log n): at each of the about log₂(n) levels, at most two nodes are partial (the ones holding the query's edges), and everything between them stops at once.</p>
 
-<h2>Changing one value</h2>
+<p>A query is O(log n) because at each level at most two nodes overlap the query partly, namely the ones that hold the two edges of the range. Every other node on that level is either completely inside or completely outside the query, and those stop at once.</p>
 
-<p>Day 3 (index 2) was really 11, not 6. Change the leaf, then walk up to the root, recomputing each parent from its two children.</p>
+<h3>Updating a value</h3>
+
+<p>To change one value, replace the leaf and then recompute each ancestor from its two children, walking up to the root. In this example, the value at index 2 was recorded as 6 but should be 11.</p>
 
 <x-tracer title="Set index 2 to 11">
 <script type="application/json">
 {
   "steps": [
-    { "caption": "Index 2 is leaf 9: 6 becomes 11.", "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,11,3,1,4,7,2], "highlight": [9] }, "vars": { "change": "+5" } },
-    { "caption": "Its parent, node 4 (range 2..3), becomes 11 + 3 = 14.", "tree": { "label": "segment tree", "values": [30,16,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [4], "mark": [9] }, "vars": { "change": "+5" } },
-    { "caption": "Node 1 (range 0..3) becomes 7 + 14 = 21.", "tree": { "label": "segment tree", "values": [30,21,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [1], "mark": [9,4] }, "vars": { "change": "+5" } },
-    { "caption": "The root becomes 21 + 14 = 35. Four nodes changed, one per level.", "tree": { "label": "segment tree", "values": [35,21,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [0], "mark": [9,4,1] }, "vars": { "nodes updated": 4 } }
+    { "caption": "Index 2 is stored in leaf 9, and its value changes from 6 to 11.", "tree": { "label": "segment tree", "values": [30,16,14,7,9,5,9,5,2,11,3,1,4,7,2], "highlight": [9] }, "vars": { "change": "+5" } },
+    { "caption": "The parent, node 4 (range 2..3), is recomputed as 11 + 3 = 14.", "tree": { "label": "segment tree", "values": [30,16,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [4], "mark": [9] }, "vars": { "change": "+5" } },
+    { "caption": "Node 1 (range 0..3) is recomputed as 7 + 14 = 21.", "tree": { "label": "segment tree", "values": [30,21,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [1], "mark": [9,4] }, "vars": { "change": "+5" } },
+    { "caption": "The root is recomputed as 21 + 14 = 35. Four nodes changed in total, one on each level.", "tree": { "label": "segment tree", "values": [35,21,14,7,14,5,9,5,2,11,3,1,4,7,2], "highlight": [0], "mark": [9,4,1] }, "vars": { "nodes updated": 4 } }
   ]
 }
 </script>
 </x-tracer>
+
+
+<p>The path from a leaf to the root has one node on each level, so an update is O(log n). The code for building the tree, querying it and updating it follows.</p>
 
 <x-code title="Segment tree for range sums">
 <pre lang="js">
@@ -148,15 +146,16 @@ class SegmentTree:
 </pre>
 </x-code>
 
-<p>Nothing here is specific to sums. Combine with <code>min</code> and the same code answers "smallest value from index 2 to 6". Any combine step that works in any grouping fits: sum, min, max, greatest common divisor.</p>
 
-<h2>Fenwick trees: the compact version</h2>
+<p>Nothing in this code is specific to sums. If the combine step is a minimum and the answer for an empty overlap is infinity instead of 0, the same tree answers range minimum queries. Any operation that gives the same result however the values are grouped can be used, such as sum, minimum, maximum, greatest common divisor or bitwise AND.</p>
 
-<p>For sums only, a <strong>Fenwick tree</strong> (or binary indexed tree) does the job with one array of <code>n + 1</code> numbers and two tiny loops.</p>
+<h2>How a Fenwick tree works</h2>
 
-<p>Slots are numbered from 1. Slot <code>i</code> stores the sum of the last <code>lowbit(i)</code> items up to item <code>i</code>, where <code>lowbit(i)</code> is the lowest 1 bit of <code>i</code>, written <code>i &amp; -i</code> (see <a href="/algorithms/bit-manipulation.html">Bit Manipulation</a>). Slot 6 is <code>110</code> in binary, lowest bit 2, so it holds items 5 and 6. Slot 7 holds one item; slot 8 holds all eight.</p>
+<p>For sums, a <strong>Fenwick tree</strong> gives the same O(log n) bounds with less code and less memory. It is a single array of <code>n + 1</code> numbers with two short loops, and it has no explicit tree.</p>
 
-<x-figure caption="Each slot covers a block ending at its own position. The first 7 items are slots 7, 6 and 4.">
+<p>The slots are numbered from 1. Slot <code>i</code> stores the sum of the last <code>lowbit(i)</code> items that end at item <code>i</code>, where <code>lowbit(i)</code> is the lowest 1 bit of <code>i</code>, computed as <code>i &amp; -i</code> (see <a href="/algorithms/bit-manipulation.html">Bit Manipulation</a>). Slot 6 is <code>110</code> in binary, so its lowest bit is 2 and it holds items 5 and 6. Slot 7 holds only item 7, and slot 8 holds all eight items.</p>
+
+<x-figure caption="Each slot covers a block of items that ends at the slot&#39;s own position. The total of the first 7 items is read from slots 7, 6 and 4.">
 <svg viewBox="0 0 480 250" aria-label="Eight item columns numbered 1 to 8. Under them, bars show what each slot covers: slots 1, 3, 5, 7 cover one item; slots 2 and 6 cover two; slot 4 covers items 1 to 4; slot 8 covers all eight. Slots 7, 6 and 4 are highlighted.">
   <text x="70" y="20" text-anchor="middle" class="t-small f-muted">1</text>
   <text x="120" y="20" text-anchor="middle" class="t-small f-muted">2</text>
@@ -187,12 +186,10 @@ class SegmentTree:
 </svg>
 </x-figure>
 
-<ul>
-<li><strong>Total of the first <code>i</code> items</strong>: add slot <code>i</code>, jump to <code>i − lowbit(i)</code>, repeat until 0. For 7: slots 7, 6, 4.</li>
-<li><strong>Add to item <code>i</code></strong>: add to slot <code>i</code>, jump to <code>i + lowbit(i)</code> (the next block covering item <code>i</code>), repeat while inside the array. For item 3: slots 3, 4, 8.</li>
-</ul>
 
-<p>Each jump removes or carries a 1 bit, so either loop runs at most about log₂(n) times. Here is the same correction, then a query.</p>
+<p>To get the total of the first <code>i</code> items, add slot <code>i</code>, then move to slot <code>i − lowbit(i)</code>, and repeat until the slot is 0. For 7 the slots are 7, 6 and 4. Each step removes the lowest 1 bit, so the loop runs at most about log₂(n) times.</p>
+
+<p>To add a value to item <code>i</code>, add it to slot <code>i</code>, then move to slot <code>i + lowbit(i)</code>, which is the next larger block that also covers item <code>i</code>, and repeat while the slot is inside the array. For item 3 the slots are 3, 4 and 8. This loop also runs at most about log₂(n) times. The trace below adds 5 to item 3 and then totals the first 7 items.</p>
 
 <x-tracer title="Fenwick tree: add 5 to item 3, then total the first 7">
 <script type="application/json">
@@ -202,19 +199,20 @@ class SegmentTree:
     "first(i): s = 0; while i > 0: s += t[i]; i -= i & -i"
   ],
   "steps": [
-    { "caption": "Slots for 5, 2, 6, 3, 1, 4, 7, 2. Slot 0 is unused.", "array": { "label": "t", "values": [null,5,7,6,16,1,5,7,30] }, "vars": { "i": "-" } },
-    { "caption": "Add 5 at item 3. Slot 3: 6 becomes 11. lowbit(3) = 1, jump to 4.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,16,1,5,7,30], "pointers": { "i": 3 }, "highlight": [3] }, "vars": { "i": 3 } },
-    { "caption": "Slot 4 covers items 1 to 4: 16 becomes 21. lowbit(4) = 4, jump to 8.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,30], "pointers": { "i": 4 }, "highlight": [4], "mark": [3] }, "vars": { "i": 4 } },
-    { "caption": "Slot 8: 30 becomes 35. The next jump, 16, is past the end. Three slots changed.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 8 }, "highlight": [8], "mark": [3,4] }, "vars": { "i": 8 } },
-    { "caption": "Total the first 7. Slot 7 (item 7 alone): s = 7. lowbit(7) = 1, jump to 6.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 7 }, "highlight": [7] }, "vars": { "i": 7, "s": 7 } },
-    { "caption": "Slot 6 (items 5 and 6): s = 7 + 5 = 12. lowbit(6) = 2, jump to 4.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 6 }, "highlight": [6], "mark": [7] }, "vars": { "i": 6, "s": 12 } },
-    { "caption": "Slot 4 (items 1 to 4): s = 12 + 21 = 33. Jump to 0 and stop. Check: 5 + 2 + 11 + 3 + 1 + 4 + 7 = 33.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 0 }, "mark": [7,6,4] }, "vars": { "i": 0, "s": 33 } }
+    { "caption": "The slots for the values 5, 2, 6, 3, 1, 4, 7, 2. Slot 0 is not used.", "array": { "label": "t", "values": [null,5,7,6,16,1,5,7,30] }, "vars": { "i": "none" } },
+    { "caption": "Add 5 to item 3. Slot 3 changes from 6 to 11, and because lowbit(3) is 1 the next slot is 4.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,16,1,5,7,30], "pointers": { "i": 3 }, "highlight": [3] }, "vars": { "i": 3 } },
+    { "caption": "Slot 4 covers items 1 to 4, so it changes from 16 to 21. Because lowbit(4) is 4, the next slot is 8.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,30], "pointers": { "i": 4 }, "highlight": [4], "mark": [3] }, "vars": { "i": 4 } },
+    { "caption": "Slot 8 changes from 30 to 35. The next slot would be 16, which is past the end, so the update stops after changing three slots.", "line": 1, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 8 }, "highlight": [8], "mark": [3,4] }, "vars": { "i": 8 } },
+    { "caption": "Now total the first 7 items. Slot 7 holds item 7 alone, so s is 7, and because lowbit(7) is 1 the next slot is 6.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 7 }, "highlight": [7] }, "vars": { "i": 7, "s": 7 } },
+    { "caption": "Slot 6 holds items 5 and 6, so s becomes 7 + 5 = 12, and because lowbit(6) is 2 the next slot is 4.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 6 }, "highlight": [6], "mark": [7] }, "vars": { "i": 6, "s": 12 } },
+    { "caption": "Slot 4 holds items 1 to 4, so s becomes 12 + 21 = 33, and the next slot is 0, which ends the loop. Adding the items directly gives 5 + 2 + 11 + 3 + 1 + 4 + 7 = 33 as well.", "line": 2, "array": { "label": "t", "values": [null,5,7,11,21,1,5,7,35], "pointers": { "i": 0 }, "mark": [7,6,4] }, "vars": { "i": 0, "s": 33 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>The code takes 0-based indexes and shifts by one inside, so the sum of <code>left..right</code> is <code>first(right + 1) − first(left)</code>, as with prefix sums.</p>
+
+<p>The code uses 0-based indexes and shifts them by one inside the class. The sum of <code>left..right</code> is <code>first(right + 1) − first(left)</code>, which is the same subtraction that prefix sums use.</p>
 
 <x-code title="Fenwick tree">
 <pre lang="js">
@@ -267,40 +265,66 @@ fw.range_sum(2, 6) # 26
 </pre>
 </x-code>
 
+
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
-    { "name": "Plain array", "time": "O(1) update, O(n) query", "space": "O(1)", "note": "Every sum is a loop." },
+    { "name": "Plain array", "time": "O(1) update, O(n) query", "space": "O(1)", "note": "Every range sum is a loop over the range." },
     { "name": "Prefix sums", "time": "O(n) update, O(1) query", "space": "O(n)", "note": "A change shifts every later total." },
-    { "name": "Segment tree", "time": "O(log n) both", "space": "O(n)", "note": "One node per level on update; at most two partial nodes per level on query. Build is O(n)." },
-    { "name": "Fenwick tree", "time": "O(log n) both", "space": "O(n)", "note": "Each loop step strips or carries one bit. Building by n adds is O(n log n)." }
+    { "name": "Segment tree", "time": "O(log n) both", "space": "O(n)", "note": "An update touches one node per level, and a query visits at most two partly overlapping nodes per level. Building the tree is O(n)." },
+    { "name": "Fenwick tree", "time": "O(log n) both", "space": "O(n)", "note": "Each loop step removes or carries one bit of the slot number. Building by n separate adds is O(n log n)." }
   ]
 }
 </script>
 </x-complexity>
 
-<x-callout type="key">
-<p>Any range is a few blocks and any item sits in a few blocks, so queries and changes are both O(log n).</p>
+<h2>Choosing between a Fenwick tree and a segment tree</h2>
+
+<p>Use a Fenwick tree when the query is a sum or a count. It is shorter to write, it needs n + 1 numbers instead of up to 4n, and it is faster in practice. Its range query subtracts one prefix total from another, so it only fits operations that can be undone. Sum and count qualify. Minimum and maximum do not, because knowing the minimum of the first 7 items and of the first 2 items says nothing about the minimum of items 3 to 7.</p>
+
+<p>Use a segment tree for minimum, maximum, greatest common divisor, or any other operation that cannot be subtracted.</p>
+
+<h2>Variants</h2>
+
+<h3>Range updates with lazy propagation</h3>
+
+<p>Sometimes an update applies to a whole range, such as "add 3 to every value from index 2 to 6". A segment tree can do it in O(log n) with <strong>lazy propagation</strong>. When an update covers a node's whole range, the node changes its own stored sum and records the pending addition, without touching its children. The pending addition is passed down to the children only when a later query or update has to go below that node. Forgetting to push the pending addition down before visiting the children gives stale sums.</p>
+
+<h3>Counting with a Fenwick tree</h3>
+
+<p>A Fenwick tree is also used to count items, which covers a common family of problems such as counting how many earlier values are smaller than the current one, or counting inversions in an array. The tree stores a count for each possible value. For each element you ask for the number of stored values below it, which is a prefix query, and then add 1 at the element's own position. If the values are large, first replace each one by its rank among the sorted distinct values, which is called coordinate compression.</p>
+
+<h3>When neither structure is needed</h3>
+
+<p>If the values never change, use <a href="/algorithms/prefix-sums.html">prefix sums</a> for range sums, because they are simpler and answer in O(1). If the problem asks for something that is not a range aggregate, such as the k-th smallest value in a range, these trees do not solve it in their basic form.</p>
+
+<h2>Pitfalls</h2>
+
+<x-callout type="mistake" title="Setting a value instead of adding a change in a Fenwick tree">
+<p>The <code>add</code> method takes the change, not the new value. To set index 2 from 6 to 11, call <code>add(2, 5)</code>. If the problem gives new values, keep a plain copy of the array so that you can compute <code>new − old</code>.</p>
 </x-callout>
 
-<p>Use a Fenwick tree for sums and counts: less code, less memory. Use a segment tree for min, max or anything that subtraction cannot undo, since a Fenwick range subtracts two prefixes.</p>
-
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Setting instead of adding in a Fenwick tree">
-<p><code>add</code> takes a change, not a new value: to set index 2 from 6 to 11, call <code>add(2, 5)</code>. Keep a plain copy of the values to compute <code>new − old</code>.</p>
+<x-callout type="mistake" title="Allocating only 2n entries for a segment tree">
+<p>The heap-style layout leaves gaps when the length is not a power of 2, so node numbers can go beyond 2n. With 10 items the tree uses node 24, which is more than 2 × 10. Allocate 4n entries.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Slot 0 in a Fenwick tree">
-<p><code>0 &amp; -0</code> is 0, so an <code>add</code> loop starting at slot 0 never moves. That is why slots start at 1.</p>
+<x-callout type="mistake" title="Returning 0 for an empty overlap when the operation is not a sum">
+<p>The "no overlap" case must return the identity of the operation, which is 0 for sums, infinity for minimum and negative infinity for maximum. Returning 0 in a minimum tree makes every query that skips a node answer 0.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Sizing the segment tree array 2n">
-<p>When the length is not a power of 2, indexes can pass <code>2n</code>: with 10 items, index 24 is used. Allocate <code>4n</code>.</p>
-</x-callout>
+<h2>In the interview</h2>
 
-<h2>Check yourself</h2>
+<p>The signal is a problem that gives you an array and a long list of operations that mix changes to single values with queries about ranges, such as sums, minimums or counts. If all the queries come after all the updates, or there are no updates, a prefix sum array is enough. When both kinds of operation are frequent and a loop over the range would be too slow, say that you need O(log n) for each and choose between a Fenwick tree and a segment tree. For sums choose the Fenwick tree, and for minimum or maximum choose the segment tree.</p>
+
+<p>Interviewers commonly follow up with these questions.</p>
+
+<ul>
+<li><strong>"Why is a query O(log n)?"</strong> At each level at most two nodes overlap the query range partly, and those are the nodes that hold the edges of the range. Every other node on that level is either fully inside, so it returns a stored sum, or fully outside, so it returns nothing. The tree has about log₂(n) levels.</li>
+<li><strong>"Can a Fenwick tree find a range minimum?"</strong> No. The range query subtracts two prefix results, and a minimum cannot be subtracted. Use a segment tree instead.</li>
+<li><strong>"How would you add a value to every element in a range?"</strong> Use a segment tree with lazy propagation. A node whose range is completely covered records the pending addition and updates its own sum, and the addition is pushed to the children only when a later operation needs to go below that node. Updates and queries both stay O(log n).</li>
+<li><strong>"How do you build the structure from an initial array?"</strong> A segment tree is built recursively in O(n), because each node is computed once from its two children. A Fenwick tree built by n separate adds costs O(n log n), but it can be built in O(n) by copying the array into the slots and then, for each slot <code>i</code>, adding its value to slot <code>i + lowbit(i)</code> if that slot exists.</li>
+</ul>
 
 <x-quiz>
 <script type="application/json">
@@ -309,25 +333,25 @@ fw.range_sum(2, 6) # 26
     {
       "question": "In a segment tree over 1,000,000 values, about how many nodes change on one update?",
       "options": [
-        { "text": "About 20", "correct": true, "why": "One node per level, and there are about log₂(1,000,000) ≈ 20 levels." },
-        { "text": "About 1,000", "why": "That is √n, the cost of splitting into √n buckets. A segment tree touches only the path to the root." },
-        { "text": "About 500,000", "why": "That is roughly what prefix sums cost on average." }
+        { "text": "About 20", "correct": true, "why": "One node on each level changes, and there are about log₂(1,000,000), which is roughly 20, levels." },
+        { "text": "About 1,000", "why": "That is the square root of n, which is the cost of splitting the array into square-root-sized buckets. A segment tree changes only the path to the root." },
+        { "text": "About 500,000", "why": "That is roughly what an update costs on average when you keep prefix sums." }
       ]
     },
     {
-      "question": "Which Fenwick slots does the query \"total of the first 6 items\" read?",
+      "question": "Which Fenwick slots does the query for the total of the first 6 items read?",
       "options": [
-        { "text": "6, then 4", "correct": true, "why": "Slot 6 covers items 5 and 6. lowbit(6) = 2, so jump to 4 (items 1 to 4), then 0." },
-        { "text": "6, 5, 4, 3, 2, 1", "why": "Each jump skips a whole block, not one item." },
-        { "text": "6, then 8", "why": "Moving up with <code>i + lowbit(i)</code> is <code>add</code>. Queries move down." }
+        { "text": "6, then 4", "correct": true, "why": "Slot 6 covers items 5 and 6. Since lowbit(6) is 2, the next slot is 4, which covers items 1 to 4, and then the loop reaches 0 and stops." },
+        { "text": "6, 5, 4, 3, 2, 1", "why": "Each step skips a whole block, not a single item." },
+        { "text": "6, then 8", "why": "Moving up with i + lowbit(i) is what the add operation does. A query moves down." }
       ]
     },
     {
-      "question": "You need the smallest value in any range, and values keep changing. Which fits?",
+      "question": "You need the smallest value in any range, and the values keep changing. Which structure fits?",
       "options": [
-        { "text": "Prefix sums of minimums", "why": "Minimums cannot be subtracted, so two prefixes do not give a middle range. Updates are also O(n)." },
-        { "text": "A Fenwick tree", "why": "A Fenwick range query subtracts two prefixes: fine for sums, not minimums." },
-        { "text": "A segment tree storing the minimum of each block", "correct": true, "why": "Combine children with <code>min</code> instead of <code>+</code>. Queries and updates stay O(log n)." }
+        { "text": "Prefix sums of minimums", "why": "Minimums cannot be subtracted, so two prefixes do not give a middle range, and each update would cost O(n)." },
+        { "text": "A Fenwick tree", "why": "A Fenwick range query subtracts two prefix results, which works for sums but not for minimums." },
+        { "text": "A segment tree that stores the minimum of each block", "correct": true, "why": "The children are combined with a minimum instead of a sum, and queries and updates both stay O(log n)." }
       ]
     }
   ]
@@ -337,4 +361,4 @@ fw.range_sum(2, 6) # 26
 
 <h2>What to practise next</h2>
 
-<p>Change the segment tree to answer range minimums and check it on the café numbers by hand. Then read <a href="/algorithms/designing-data-structures.html">Designing Data Structures</a>, on combining simple structures to meet several targets at once.</p>
+<p>Change the segment tree to answer range minimums and check it by hand on the numbers above. Then read <a href="/algorithms/designing-data-structures.html">Designing Data Structures</a>, which covers combining simple structures to meet several cost targets at once.</p>

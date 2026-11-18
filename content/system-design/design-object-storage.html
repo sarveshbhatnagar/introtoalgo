@@ -7,9 +7,9 @@
   "tags": ["case study", "storage", "durability", "erasure coding", "metadata"]
 }
 -->
-<p>An object store keeps immutable blobs of any size, from empty to a terabyte, under a bucket and a key, and returns them later by that key. Amazon S3 is the best-known example. Many other designs in this track simply say "the bytes go in an object store", and this case study designs that component itself. The client-side view is in <a href="/system-design/blob-storage.html">Blob Storage</a>.</p>
+<p>An object store keeps immutable blobs of any size, from empty to a terabyte, under a bucket and a key, and returns them later by that key. Amazon S3 is the best-known example. Many other designs in this track simply say "the bytes go in an object store", and this case study designs that component itself. The client-side view is in <a href="/system-design/blob-storage.html">Blob Storage</a>, and the steps here follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
-<p>The design is hard because durability must hold across many disk failures over many years, yet at hundreds of petabytes the extra copies are the largest cost, and the index of billions of keys must be strongly consistent and listable by prefix. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The design is hard because durability must hold across many disk failures over many years, yet at hundreds of petabytes the extra copies are the largest cost, and the index of billions of keys must be strongly consistent and listable by prefix.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -48,7 +48,7 @@
 </script>
 </x-estimate>
 
-<p>Raw disk depends on the durability scheme: three full copies of 100 PB need 300 PB (15,000 disks of 20 TB), while erasure coding with 10 data and 4 parity fragments needs 100 PB × 14 ÷ 10 = 140 PB (7,000 disks).</p>
+<p>Raw disk depends on the durability scheme: three full copies of 100 PB need 300 PB, while erasure coding with 10 data and 4 parity fragments needs 100 PB × 14 ÷ 10 = 140 PB.</p>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
@@ -215,7 +215,7 @@ multipart_parts
     {
       "caption": "The first copy fails its CRC check, so the front end reads the second copy and streams it to the client. A repair worker then rewrites the damaged copy.",
       "arch": { "fail": ["data"], "active": ["bg", ["api", "client"], ["bg", "data"]], "mark": ["client"], "dim": ["place"], "notes": { "data": "CRC mismatch", "bg": "repair copy 1" } },
-      "vars": { "good copies": 3 }
+      "vars": { "good copies": 2 }
     },
     {
       "caption": "Now a different put. Its bytes reach all three nodes, and then the front end crashes before it writes the metadata row. The client retries, and the old version of the object is untouched.",
@@ -242,9 +242,9 @@ multipart_parts
 
 <p><strong>Erasure coding with 10 data and 4 parity fragments.</strong> The object is cut into 10 data fragments and 4 parity fragments are computed from them; any 10 of the 14 rebuild it. One of the 14 disks fails 14 × 0.02 = 0.28 times a year, and the object is lost only if 4 of the other 13 fail before the rebuild, with probability 715 × p⁴ ≈ 6.4 × 10<sup>−15</sup>. The yearly loss is about 0.28 × 6.4 × 10<sup>−15</sup> ≈ 1.8 × 10<sup>−15</sup>, almost fifteen nines, for 140 PB.</p>
 
-<p>The cost of coding is repair work. Rebuilding one fragment reads 10 others, which over 7,000 disks failing 2% a year (one every 2.6 days) means rebuilding a 20 TB disk by reading 200 TB, about 2.3 GB/s over 24 hours, against 0.23 GB/s for copies. Normal reads are unaffected, because the 10 data fragments hold the original bytes.</p>
+<p>The cost of coding is repair work. Rebuilding one fragment reads 10 others, so rebuilding a 20 TB disk reads 200 TB, about 2.3 GB/s over 24 hours, against 0.23 GB/s for copies. Normal reads are unaffected, because the 10 data fragments hold the original bytes.</p>
 
-<p>Coding needs a whole volume, so new data goes to an open volume as three full copies, and a sealed volume is later encoded into 14 fragments in the background. Most data is old, so most data ends up coded.</p>
+<p>Coding needs a whole volume, so new data goes to an open volume as three full copies, and a sealed volume is later encoded into 14 fragments in the background.</p>
 
 <x-tradeoffs caption="How to survive disk failures">
 <script type="application/json">
@@ -284,7 +284,7 @@ multipart_parts
 
 <h3>Listing keys by prefix</h3>
 
-<p>An object store has no real folders. A key such as <code>photos/2026/cat.jpg</code> is one string, and listing <code>photos/2026/</code> is a range scan over the sorted metadata store, starting at the prefix and stopping at the first key that no longer matches. Because related keys are adjacent, the scan usually touches one or two ranges. A listing returns at most 1,000 keys plus a token that holds the last key returned, and the next call continues from that key.</p>
+<p>An object store has no real folders. A key such as <code>photos/2026/cat.jpg</code> is one string, and listing <code>photos/2026/</code> is a range scan over the sorted metadata store, starting at the prefix and stopping at the first key that no longer matches. A listing returns at most 1,000 keys plus a token that holds the last key returned, and the next call continues from that key.</p>
 
 <p>With <code>delimiter=/</code>, keys under <code>photos/2026/01/</code> come back as one entry in <code>prefixes</code>, and the scan skips past that prefix.</p>
 
@@ -313,7 +313,6 @@ multipart_parts
 <li><strong>A metadata range leader.</strong> That range pauses for a few seconds while a new leader is elected. No committed row is lost, because a majority had it before the acknowledgement.</li>
 <li><strong>The placement service.</strong> No new volumes are handed out, but front ends keep writing to their open volumes and reading with the cached volume map.</li>
 <li><strong>A disk, a node or a rack.</strong> Reads use another copy or decode from any 10 of 14 fragments, and repair rebuilds the lost pieces within hours. Each volume has at most one piece per rack, so a rack failure costs each volume one piece.</li>
-<li><strong>The scrubber or garbage collector.</strong> Rot is found later and disks fill with garbage, so alert on scrub age and free space.</li>
 </ul>
 
 <h2>What a strong answer sounds like</h2>
@@ -342,6 +341,9 @@ multipart_parts
 
 <h3>One object gets 50,000 reads a second. What breaks?</h3>
 <p>The few disks holding it are overloaded. Cache hot objects in the front ends or a CDN; objects never change in place, so an entry can only be stale until its time to live ends.</p>
+
+<h3>What goes wrong with millions of tiny objects?</h3>
+<p>The object data is small but every object still needs one metadata row of about 500 bytes, so metadata can outgrow the data and the metadata store becomes the cost and the bottleneck.</p>
 
 <x-checklist title="Self-review: object storage">
 <script type="application/json">

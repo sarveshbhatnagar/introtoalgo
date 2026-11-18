@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design a Chat App",
-  "description": "How to design one-to-one and group chat: connection servers, message ordering, offline delivery, read receipts, online status and the partition key.",
+  "description": "How a chat app routes messages to connected users, keeps one order per conversation, delivers to offline users and shows receipts and presence.",
   "minutes": 28,
   "kind": "design",
   "tags": ["case study", "realtime", "websockets", "messaging", "ordering"]
@@ -35,7 +35,7 @@
 <li><strong>Messages sent:</strong> 50 million users × 40 messages is 2 billion messages a day. Dividing by 86,400 seconds gives about 23,000 a second, and a peak of three times the average is about 70,000 a second.</li>
 <li><strong>Messages delivered:</strong> assume 80% of messages go to one person and 20% go to a group with 20 other members on average. The average message then has 0.8 × 1 + 0.2 × 20 = 4.8 recipients, which gives about 110,000 deliveries a second on average and 330,000 at the peak.</li>
 <li><strong>Connections:</strong> if 20% of daily users are connected at the peak, that is 10 million WebSockets. One server can hold about 100,000 of them (roughly 1 GB at 10 KB each), so 100 connection servers are enough and 200 leaves room for failures and deploys.</li>
-<li><strong>Heartbeats:</strong> a ping every 30 seconds from 10 million connections is about 330,000 pings a second, as many as the peak deliveries, so connection servers must answer pings themselves.</li>
+<li><strong>Heartbeats:</strong> a ping every 30 seconds from 10 million connections is about 330,000 pings a second, as many as the peak deliveries, so connection servers answer pings themselves.</li>
 </ul>
 
 <x-estimate title="Message storage per year">
@@ -54,7 +54,7 @@
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>List what should go over the open connection and what should stay plain HTTP. Then say how a client can retry a send without creating a duplicate.</p>
+<p>List what should go over the open connection and what should stay plain HTTP. Then say how a client can retry a send safely.</p>
 </x-task>
 <x-answer>
 <p>Sends, deliveries, acknowledgements, receipts and presence go over the WebSocket, and history and catch-up use HTTP with a cursor. The client puts its own id on each send, so the server can recognise a retry.</p>
@@ -132,7 +132,7 @@ members                        -- PRIMARY KEY (user_id, conv_id):
 
 <h2>High-level design</h2>
 
-<p>The system is split by what each part remembers. Connection servers hold the sockets and contain no business logic, so they are redeployed rarely. The chat service holds no state and can be redeployed freely. The session cache records which user is connected to which connection server.</p>
+<p>A client opens one WebSocket through a load balancer that picks a connection server, and the connection then stays on that server. The system is split by what each part remembers. Connection servers hold the sockets and contain no business logic, so they are redeployed rarely. The chat service holds no state and can be redeployed freely. The session cache records which user is connected to which connection server.</p>
 
 <x-arch caption="The chat service orders and stores each message, then looks up the recipient's connection server in the session cache, and offline recipients get a phone push instead.">
 <script type="application/json">
@@ -221,7 +221,7 @@ members                        -- PRIMARY KEY (user_id, conv_id):
       "vars": { "conversation": "c_123", "seq": 1045, "Ben has up to": 1044 }
     },
     {
-      "caption": "Ben reconnects and says he has conversation c_123 up to 1044. The chat service reads everything after 1044 from the store, which is one message.",
+      "caption": "Ben reconnects and asks to sync. The chat service sees that c_123 has activity after his last position, 1044, and reads everything after 1044 from the store, which is one message.",
       "arch": { "active": ["ben", "cs2", "chat", "store", ["ben", "cs2"], ["cs2", "chat"], ["chat", "store"]], "dim": ["push"], "notes": { "store": "read after 1044" } },
       "vars": { "conversation": "c_123", "seq": 1045, "Ben has up to": 1044 }
     },
@@ -241,7 +241,7 @@ members                        -- PRIMARY KEY (user_id, conv_id):
 
 <p>With 10 million sockets on 100 to 200 servers, Ana and Ben are almost never on the same server, so the chat service needs a way to reach the one server that holds Ben's socket.</p>
 
-<p>A <strong>session registry</strong> is a shared cache in which each connection server writes "user Ben is on server 2" when Ben connects. To deliver, the chat service looks up the recipients and calls the right servers. For a group message it looks up all members in one batch and makes one call per server that holds at least one member. The weakness is that a crashed server leaves stale entries, so each server refreshes its entries every 30 seconds and they expire after 90. A message sent to a dead server meanwhile is not lost, because it is already stored.</p>
+<p>A <strong>session registry</strong> is a shared cache in which each connection server writes "user Ben is on server 2" when Ben connects. To deliver, the chat service looks up the recipients and calls the right servers. For a group message it looks up all members in one batch and makes one call per server that holds at least one member. A crashed server leaves stale entries, so each server refreshes its entries every 30 seconds and they expire after 90. A message sent to a dead server is not lost, because it is already stored.</p>
 
 <p>With a <strong>pub/sub channel per user</strong>, Ben's server subscribes to a channel named for Ben, and the chat service delivers by publishing to it. This needs no registry, but it means about 10 million live channels in a pub/sub system that must itself be sharded, and a group message becomes 199 publishes.</p>
 
@@ -275,48 +275,46 @@ members                        -- PRIMARY KEY (user_id, conv_id):
 </script>
 </x-tradeoffs>
 
-<p>Restarting a server drops its 100,000 sockets, so deploy one server at a time and have clients wait a random delay before reconnecting. Spread over 30 seconds, that is about 3,300 a second.</p>
-
 <h3>Delivery guarantees and ordering</h3>
 
-<p>A weak answer promises "exactly once" delivery. The server sends a message and waits for an acknowledgement, and if the acknowledgement is lost it must send the message again, so delivery is <strong>at least once</strong>. The client ignores any <code>(conv_id, seq)</code> pair it already has, so the user sees each message once. The server must also store the message, then acknowledge it to the sender, and only then deliver it. If it delivered first and crashed before storing, Ben would have seen a message that no longer exists, and Ana's retry would create a second copy.</p>
+<p>A weak answer promises "exactly once" delivery. The server sends a message and waits for an acknowledgement, and if the acknowledgement is lost it must send the message again, so delivery is <strong>at least once</strong>. The client ignores any <code>(conv_id, seq)</code> pair it already has. The server must also store the message, then acknowledge it to the sender, and only then deliver it. If it delivered first and crashed before storing, Ben would have seen a message that no longer exists, and Ana's retry would create a second copy.</p>
 
-<p>For ordering, the sender's clock is useless, because phone clocks can be wrong by seconds or hours and two people would see different orders. A server timestamp is closer, but server clocks drift by milliseconds and two messages in one conversation can tie, so it only suits ordering across conversations. A <strong>sequence number per conversation</strong> gives one agreed order, and a gap tells a client that it missed a message. The cost is that one place per conversation must issue the numbers.</p>
+<p>For ordering, the sender's clock is useless, because phone clocks can be wrong by seconds or hours and two people would see different orders. A server timestamp is closer, but two messages in one conversation can tie. A <strong>sequence number per conversation</strong> gives one agreed order, and a gap tells a client that it missed a message. The cost is that one place per conversation must issue the numbers.</p>
 
-<p>The interviewer will ask where the number comes from. One answer is to route every send for conversation <code>c_123</code> to one chat service instance, chosen by <a href="/system-design/consistent-hashing.html">consistent hashing</a> on the conversation id, which keeps the counter. The other is to keep the counter in a store with an atomic increment or conditional write. Plain quorum reads and writes are not enough, because two servers can both read 1043 and both write 1044.</p>
+<p>The interviewer will ask where the number comes from. One answer is to route every send for conversation <code>c_123</code> to one chat service instance, chosen by <a href="/system-design/consistent-hashing.html">consistent hashing</a> on the conversation id, which keeps the counter. The other is to keep the counter in a store with an atomic increment or conditional write. Plain quorum reads and writes are not enough, because two servers can both write 1044.</p>
 
-<p>The next question is what happens when the owning instance crashes. Another instance takes over, reads the highest stored seq and continues from there. During the handover two instances may both believe they own the conversation, so the store write is conditional on that seq not existing yet, and the instance that loses retries with the next number. A number that was issued but never stored leaves a gap, which is harmless because clients fetch from the store when they see one.</p>
+<p>The next question is what happens when the owning instance crashes. Another instance takes over and continues from the highest stored seq. During the handover two instances may both believe they own the conversation, so the store write is conditional on that seq not existing yet, and the instance that loses retries with the next number. A number that was issued but never stored leaves a gap, which is harmless.</p>
 
 <h3>Offline delivery and sync</h3>
 
-<p>The message store guarantees delivery, and sockets and push notifications only tell the client that something is new. On reconnect the client calls <code>/v1/sync</code>. The server reads the user's <code>members</code> rows, checks each conversation's <code>last_seq</code> and returns the conversations that are ahead of the client, and the client fetches each missing range. Messages of a conversation are fetched only when the user opens it.</p>
+<p>The message store guarantees delivery, and sockets and push notifications only tell the client that something is new. On reconnect the client calls <code>/v1/sync</code>. The server reads the user's <code>members</code> rows, finds the conversations with activity after the cursor, and returns each one's <code>last_seq</code>. The client compares that with its own position and fetches the missing range.</p>
 
-<p>A phone push service can delay or drop notifications, so "push sent" never means "delivered". A socket can also die unnoticed, so if Ben does not acknowledge within about 10 seconds, the chat service sends a push anyway. See the <a href="/system-design/design-a-notification-system.html">notification system</a> case study.</p>
+<p>A phone push service can delay or drop notifications, so "push sent" never means "delivered". A socket can also die unnoticed, so if Ben does not acknowledge within about 10 seconds, the chat service sends a push anyway. The <a href="/system-design/design-a-notification-system.html">notification system</a> case study covers push in detail.</p>
 
 <h3>Read receipts and presence</h3>
 
-<p>Receipts are cursors, not rows per message. Ben's <code>members</code> row holds a delivered position and a read position, so "read up to 1045" is one small write. In a one-to-one chat the server pushes each change to the other person. In a group of 200, pushing every cursor change to every member is about 200 × 199 = 40,000 messages when everyone reads one message, so groups compute "read by 37" only when someone opens the message info.</p>
+<p>A receipt is stored as a position in the conversation rather than as a row for each message. Ben's <code>members</code> row holds a delivered position and a read position, so "read up to 1045" is one small write. In a one-to-one chat the server pushes each change to the other person. In a group of 200, pushing every cursor change to every member is about 200 × 199 = 40,000 messages when everyone reads one message, so groups compute "read by 37" only when someone opens the message info.</p>
 
-<p>Presence is usually the most expensive feature. It lives only in the session cache with the 90 second expiry. If each user goes online or offline about 20 times a day, 50 million users cause about 11,600 changes a second. Pushing each change to 100 contacts would be about 1.16 million presence messages a second, ten times the delivery rate. So the server pushes presence only to users who have that contact's chat open, and everyone else fetches it when they open the chat.</p>
+<p>Presence is usually the most expensive feature. It lives only in the session cache with the 90 second expiry. If each user goes online or offline about 20 times a day, 50 million users cause about 11,600 changes a second. Pushing each change to 100 contacts would be about 1.16 million presence messages a second, ten times the delivery rate, so the server pushes presence only to users who have that contact's chat open, and everyone else fetches it when they open the chat.</p>
 
 <h3>Storage and the partition key</h3>
 
 <p>Partitioning by <strong>message id</strong> spreads data perfectly evenly, but reading the last 50 messages of a chat then touches up to 50 partitions. Partitioning by <strong>recipient user id</strong>, an inbox per user, makes sync one read, but every message is written once per recipient, 4.8 copies on average and 199 in a full group. Partitioning by <strong>conversation id plus a month bucket</strong> stores each message once, and both history and catch-up read one partition. The cost is that sync must first find the changed conversations in <code>members</code>, and a history read across a month boundary needs a second query.</p>
 
-<p>The bucket stops a busy conversation from growing one partition forever. A full group in which everyone sends 40 messages a day writes 200 × 40 × 200 B = 1.6 MB a day, about 3 GB in five years, and monthly buckets keep each partition near 48 MB.</p>
+<p>The bucket stops a busy conversation from growing one partition forever. A full group in which everyone sends 40 messages a day writes 200 × 40 × 200 B = 1.6 MB a day, so a monthly bucket stays near 48 MB.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load, with 500 million daily users, peak deliveries reach about 3.3 million a second. The connection tier needs about 1,000 servers for 100 million sockets, which is more servers and no design change. The message store adds nodes, and conversation ids hash evenly across them. The session cache strains first, with 100 million entries refreshed every 30 seconds, so shard it by user id.</p>
+<p>At 10 times the load, with 500 million daily users, peak deliveries reach about 3.3 million a second. The connection tier needs about 1,000 servers for 100 million sockets, which is more servers but no design change. The message store adds nodes. The session cache strains first, so shard it by user id.</p>
 
 <table>
 <thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
 <tr><td>A connection server</td><td>Its 100,000 users lose their sockets.</td><td>Their apps reconnect to other servers after a random delay and sync from their last seq.</td></tr>
 <tr><td>A chat service instance</td><td>Sends in flight time out.</td><td>Clients retry with the same <code>client_msg_id</code>, and the conversations it owned move to another instance.</td></tr>
-<tr><td>The session cache</td><td>The chat service cannot find recipients.</td><td>Messages still arrive through sync. Do not push for every message, which would be 110,000 pushes a second. Replicate the cache, and servers re-register their users within one refresh.</td></tr>
+<tr><td>The session cache</td><td>The chat service cannot find recipients.</td><td>Messages still arrive through sync. Do not push for every message. Replicate the cache, and servers re-register their users within one refresh.</td></tr>
 <tr><td>A message store replica</td><td>One of three copies is gone.</td><td>Majority reads and writes keep working while you rebuild it. The majority matters because 2 + 2 &gt; 3, so a catch-up read always sees the latest write.</td></tr>
-<tr><td>The phone push services</td><td>Offline users are not nudged.</td><td>Messages wait in the store, and sync delivers them when the app opens.</td></tr>
+<tr><td>The phone push services</td><td>Offline users are not nudged.</td><td>Messages wait in the store until sync.</td></tr>
 </tbody>
 </table>
 
@@ -341,14 +339,17 @@ members                        -- PRIMARY KEY (user_id, conv_id):
 
 <h2>Follow-up questions</h2>
 
+<h3>Why use WebSockets instead of polling?</h3>
+<p>With polling, a message waits up to one polling interval before it appears, and every idle client still sends requests. A WebSocket lets the server push a message the moment it is stored, and an idle connection costs only a ping every 30 seconds. See <a href="/system-design/realtime-communication.html">Realtime Communication</a> for the alternatives.</p>
+
+<h3>How do you handle a very large group or channel?</h3>
+<p>Delivering a message to every member does not scale to thousands of members, so large groups stop pushing each message to every socket. Members who are connected get a short "new messages" signal and fetch from the store, and members who are offline sync later.</p>
+
 <h3>How do you support several devices per user?</h3>
 <p>The registry maps a user to a list of (device, server) pairs, and each device keeps its own delivered position. A new message goes to every connected device, and "delivered" to the sender means that at least one device acknowledged it. Read state is shared through the read cursor.</p>
 
 <h3>Where do photos and videos go?</h3>
 <p>The client uploads the file to <a href="/system-design/blob-storage.html">blob storage</a> with a short-lived signed URL, then sends a normal message containing the file's id. The file never passes through the chat path.</p>
-
-<h3>What changes with end-to-end encryption?</h3>
-<p>The server forwards ciphertext that it cannot read, so it cannot offer server-side search or moderation, and groups need a way to distribute keys to members. Routing, ordering and storage stay the same.</p>
 
 <h3>How would you run this across several regions?</h3>
 <p>Each user connects to the nearest region, and each conversation has a home region that owns its sequence numbers. A sender in another region pays one cross-region round trip per message.</p>

@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design Typeahead Search",
-  "description": "How to design search-box autocomplete: precomputing the top five suggestions per prefix, rebuilding popularity offline, and caching to stay under 100 ms.",
+  "description": "How to design search-box autocomplete, including precomputed top-five lists per prefix, offline popularity rebuilds, and caching to stay under 100 ms.",
   "minutes": 26,
   "kind": "design",
   "tags": ["case study", "trie", "caching", "cdn", "batch processing"]
@@ -33,7 +33,7 @@
 
 <h2>Estimate the scale</h2>
 
-<p>The users run 50 million × 6 = 300 million searches a day. A 20-character query could send 20 suggestion requests, but people pick a suggestion early, the client waits for a short pause in typing before it sends a request (debouncing), and the client's own cache answers repeated prefixes. We assume 6 suggestion requests per search, which is 1.8 billion a day. Dividing by about 86,400 seconds gives about 21,000 a second on average, and a 3 times peak is about 62,500 a second. The query log that feeds the offline build grows by 300 million × 100 bytes, which is about 30 GB a day.</p>
+<p>The users run 50 million × 6 = 300 million searches a day. A 20-character query could send 20 suggestion requests, but people pick a suggestion early, the client waits for a short pause in typing before it sends a request (debouncing), and the client's own cache answers repeated prefixes. We assume 6 suggestion requests per search, which is 1.8 billion a day. Dividing by about 86,400 seconds gives about 21,000 a second on average, and a 3 times peak is about 62,500 a second. The query log grows by about 30 GB a day (300 million × 100 bytes).</p>
 
 <x-estimate title="Memory for every prefix's top five">
 <script type="application/json">
@@ -75,7 +75,7 @@ GET /v1/suggest?q=pi&limit=5
 </pre>
 </x-code>
 
-<p>The API decision worth arguing is making the response public and cacheable. The request carries no cookie and no user id, so everyone who types "pi" in the same hour can be served from one cached response at the edge. A user id would make every response unique and defeat the cache. The cost is that the API cannot personalise, so the client merges the user's recent searches itself. A one-hour <code>max-age</code> is acceptable because the data is rebuilt daily.</p>
+<p>The API decision worth arguing is making the response public and cacheable. The request carries no cookie and no user id, so everyone who types "pi" in the same hour can be served from one cached response at the edge. A user id would make every response unique and defeat the cache. The cost is that the API cannot personalise, so the client merges the user's recent searches itself.</p>
 
 <x-tryit variant="turn" minutes="2" title="Model the data">
 <x-task>
@@ -92,7 +92,7 @@ GET /v1/suggest?q=pi&limit=5
 <pre lang="sql">
 -- serving: read-only, rebuilt each build, held in memory on every server
 prefix_top5
-  prefix       VARCHAR(20)   PRIMARY KEY   -- "pi"
+  prefix       VARCHAR(50)   PRIMARY KEY   -- "pi"
   suggestions  [ (query, score) x 5 ]       -- about 150 bytes a row with the key
   version      DATE
 
@@ -234,11 +234,11 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 
 <p>A <a href="/algorithms/tries.html">trie</a> stores every past query on a path of letters, so all queries that start with "pi" sit under one node, reached in one step per character. Finding the five best completions below that node is the problem. The subtree under a short prefix such as "p" can hold millions of queries, and short prefixes are the most frequent requests. There are three ways to deal with this.</p>
 
-<p><strong>Plain trie with a search per request.</strong> The server walks to the prefix node, visits every query below it and keeps the five with the highest counts. It is small and exact, but the work grows with the subtree, so the common short prefixes are the slowest requests. It suits only a small vocabulary.</p>
+<p><strong>Plain trie with a search per request.</strong> The server walks to the prefix node, visits every query below it and keeps the five with the highest counts. It is small and exact, but the work grows with the subtree, so the common short prefixes are the slowest requests.</p>
 
 <p><strong>Trie with the top five stored on every node.</strong> The build calculates the top five once, and each node keeps its own list by merging its own query with the lists of its children, so it never looks deeper than its children. A request walks one node per character and reads the list. The cost is a custom structure to load and shard.</p>
 
-<p><strong>Hash map from prefix to top five.</strong> The same build writes every node's list into a map keyed by the prefix string, so a request is one lookup in any key-value store. The cost is memory, because every prefix is stored in full. The estimate shows this is at most 30 GB, which fits on one server.</p>
+<p><strong>Hash map from prefix to top five.</strong> The same build writes every node's list into a map keyed by the prefix string, so a request is one lookup in any key-value store. The cost is memory, because every prefix is stored in full. The estimate shows this is at most 30 GB.</p>
 
 <x-tracer title="Top two per prefix: searching at request time versus storing the answer">
 <script type="application/json">
@@ -259,9 +259,9 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 <script type="application/json">
 {
   "options": [
-    { "name": "Plain trie, search per request", "good": "It is small and exact.", "bad": "Short prefixes are the slowest requests.", "pick": "The vocabulary is small." },
-    { "name": "Trie with the top five on each node", "good": "A lookup takes one step per character.", "bad": "It is a custom structure to load and shard.", "pick": "Memory is tight." },
-    { "name": "Hash map from prefix to top five", "good": "A lookup is a single read, and it shards by prefix hash.", "bad": "Every prefix is stored in full.", "pick": "The table fits in memory. This is my choice, built from a trie offline.", "default": true }
+    { "name": "Plain trie, search per request", "good": "It is small and exact.", "bad": "Short prefixes are the slowest requests.", "pick": "Use it when the vocabulary is small enough that a subtree search is cheap." },
+    { "name": "Trie with the top five on each node", "good": "A lookup takes one step per character.", "bad": "It is a custom structure to load and shard.", "pick": "Use it when memory is too tight to store every prefix as its own entry." },
+    { "name": "Hash map from prefix to top five", "good": "A lookup is a single read, and it shards by prefix hash.", "bad": "Every prefix is stored in full.", "pick": "Use it when the table fits in memory. This is my choice, built from a trie offline.", "default": true }
   ]
 }
 </script>
@@ -289,13 +289,13 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 
 <h3>Removing a bad suggestion quickly</h3>
 
-<p>Filtering only in the daily build would leave an offensive suggestion visible for up to a day. Instead, each suggest server refreshes a small blocklist every minute and filters results against it at serve time. The edge may still hold the old response for an hour, so the operator also purges that prefix from the CDN. App copies expire with the session, and the next build drops the query for good.</p>
+<p>Filtering only in the daily build would leave an offensive suggestion visible for up to a day. Instead, each suggest server refreshes a small blocklist every minute and filters results against it at serve time. The edge may still hold the old response for an hour, so the operator also purges that prefix from the CDN. The next build drops the query for good.</p>
 
 <h2>Bottlenecks and failures</h2>
 
 <h3>What breaks first at 10 times the traffic</h3>
 
-<p>At 10 times the traffic the peak is 625,000 requests a second. The edge still answers 60%, so 250,000 a second reach the suggest servers. They share nothing, so you add more of them: at about 10,000 requests a second each, limited by the HTTP stack and not the lookup, that is 25 servers plus spares. The build hits a wall first, because 300 GB of log a day needs a distributed batch job.</p>
+<p>At 10 times the traffic the peak is 625,000 requests a second. The edge still answers 60%, so 250,000 a second reach the suggest servers. They share nothing, so you add more of them: at about 10,000 requests a second each, limited by the HTTP stack and not the lookup, that is 25 servers plus spares. The build breaks first, because 300 GB of log a day needs a distributed batch job.</p>
 
 <h3>A suggest server, a region or an edge location fails</h3>
 
@@ -303,11 +303,11 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 
 <h3>The build job or the log stream fails</h3>
 
-<p>If the build fails, the servers keep serving yesterday's table, and an alert fires when the table is more than 2 days old. If the log stream loses a few hours of searches, the ranking barely changes, because it is built from 300 million searches a day.</p>
+<p>If the build fails, the servers keep serving yesterday's table, and an alert fires when the table is more than 2 days old. If the log stream loses a few hours of searches, the ranking barely changes.</p>
 
 <h2>What a strong answer sounds like</h2>
 
-<p>Interviewers look for precomputed top-five lists instead of a subtree search per keystroke, a latency budget spent across the client, the edge and the server, a stated freshness decision with its cost, and a plan for a failed build or a bad suggestion.</p>
+<p>The table below shows how answers differ by level.</p>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
@@ -337,6 +337,9 @@ blocklist      -- queries and patterns never to suggest; small, edited by people
 
 <h3>How do you stop a bad table from reaching users?</h3>
 <p>The build compares the new table with the previous one, for example the number of prefixes and how many lists changed, and stops with an alert if the difference is far outside the normal range. Servers also load the file into spare memory first, so a corrupt file fails to load while the old table keeps serving.</p>
+
+<h3>How would you handle spelling mistakes and other languages?</h3>
+<p>Prefix matching cannot fix a typo, because a misspelled prefix matches nothing. A separate spelling-correction step can map the typed prefix to likely intended prefixes, using the query log to learn common corrections, and then look those up in the same table. Each language gets its own table, built from its own log.</p>
 
 <x-checklist title="Self-review: typeahead search">
 <script type="application/json">

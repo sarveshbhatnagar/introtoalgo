@@ -34,7 +34,7 @@
 <ul>
 <li><strong>Stored data:</strong> 10 million users × 2 GB = 2 × 10<sup>16</sup> B, which is 20 PB before deduplication and redundancy.</li>
 <li><strong>Changes:</strong> assume 3 million active users make 20 saves each, which is 60 million changes a day. Dividing by 86,400 seconds gives about 700 changes a second, and a 3x peak during working hours gives about 2,100 a second.</li>
-<li><strong>Connected devices:</strong> 10 million users × 3 devices = 30 million devices, and if 30% are online, 9 million are waiting to hear about changes.</li>
+<li><strong>Connected devices:</strong> 30 million devices, of which 30% online is 9 million waiting for changes.</li>
 </ul>
 
 <x-estimate title="Size of the chunk index">
@@ -184,7 +184,7 @@ chunks:      sha256 PK, blob_key, size, ref_count
       "vars": { "base rev": 7 }
     },
     {
-      "caption": "The laptop uploads the missing chunk, which is 4 MB instead of 200 MB,.",
+      "caption": "The laptop uploads the missing chunk, which is 4 MB instead of 200 MB.",
       "arch": { "active": ["block", "blob", ["dev", "block"], ["block", "blob"]], "dim": ["notify", "events"], "notes": { "blob": "+4 MB" } },
       "vars": { "base rev": 7, "uploaded": "4 MB" }
     },
@@ -263,13 +263,11 @@ chunks:      sha256 PK, blob_key, size, ref_count
 </script>
 </x-tradeoffs>
 
-<p>Interviewers often ask about deduplicating across users. It saves more space, but the server's reply to an upload then reveals whether anyone else has that exact file, so a safe answer is to deduplicate within one user's files.</p>
-
 <h3>The metadata service and consistency</h3>
 
 <p>Chunks can be eventually consistent, because a chunk either exists or does not and never changes. The file list cannot be. If a device applied "rename A to B" before "create A", it would end up with the wrong folder contents. For this reason each change receives the next journal sequence number in the same transaction that changes the file record, and every device applies the journal entries in sequence order.</p>
 
-<p>Within one namespace, every device then sees the same changes in the same order, and never sees a revision whose chunks are not stored. Changes in different namespaces are not ordered relative to each other, so a normal save never needs a transaction across shards. The cost is that one very large shared folder lives on a single shard and needs a dedicated one.</p>
+<p>Within one namespace, every device then sees the same changes in the same order, and never sees a revision whose chunks are not stored. Changes in different namespaces are not ordered relative to each other, so a normal save never needs a transaction across shards. A very large shared folder lives on a single shard, which then needs to be dedicated to it.</p>
 
 <p>Failover needs care. If the metadata primary fails, promote only a replica that has every committed transaction, which means a synchronous replica or a database that uses consensus. An asynchronous replica that is behind could lose a commit a phone has already applied. See <a href="/system-design/replication.html">replication</a>.</p>
 
@@ -279,13 +277,13 @@ chunks:      sha256 PK, blob_key, size, ref_count
 
 <p><strong>Last writer wins</strong> keeps whichever version arrived last and discards the other. It needs no user interaction, but it silently destroys someone's work, depending only on whose upload finished first. <strong>Conflicted copy</strong> keeps both. The losing device uploads its version under a new name, such as <code>budget (Desktop's conflicted copy).xlsx</code>, and both files appear on every device, so the user can merge them by hand. It is the usual default for files the server cannot parse. <strong>Automatic merge</strong> combines the two edits when they touch different parts of the file. It works only for formats the server can parse, such as plain text, and a faulty merge corrupts the file.</p>
 
-<p>Deletes can conflict too. If one device deletes a file that another device edited, the usual rule is to keep the edit.</p>
+<p>Deletes can conflict too. If one device deletes a file that another device edited from the same revision, the usual rule is to keep the edit and restore the file.</p>
 
 <h3>Notifying other devices</h3>
 
 <p>A device has to find out quickly that another device changed a folder. With plain polling, 9 million online devices asking every 5 seconds would send 9 million ÷ 5 = 1.8 million requests a second, almost all of them answered with nothing new.</p>
 
-<p>Long polling avoids this trade-off. Each device keeps one request open that lists its namespaces and cursors, and the notification service answers it as soon as one of those namespaces changes, or after 60 seconds if nothing does. With 9 million devices that is about 9 million ÷ 60 = 150,000 empty answers a second, and changes still arrive within seconds. A WebSocket per device works similarly, as <a href="/system-design/realtime-communication.html">realtime communication</a> explains.</p>
+<p>Long polling avoids this cost. Each device keeps one request open that lists its namespaces and cursors, and the notification service answers it as soon as one of those namespaces changes, or after 60 seconds if nothing does. With 9 million devices that is about 9 million ÷ 60 = 150,000 empty answers a second, and changes still arrive within seconds. A WebSocket per device works similarly, as <a href="/system-design/realtime-communication.html">realtime communication</a> explains.</p>
 
 <p>The notification only says that namespace N changed. It never carries file data, because a dropped data message would be a missed change and an offline device would have nothing to replay. If a hint is lost, nothing is harmed, because the device's next poll sends its cursors and the service answers immediately if any of them is behind. For this reason the notification path can be fast and best-effort, while the journal stays strict.</p>
 
@@ -294,7 +292,6 @@ chunks:      sha256 PK, blob_key, size, ref_count
 <p>At 10x the scale there are 200 PB of data, about 21,000 commits a second at peak and 90 million online devices.</p>
 <ul>
 <li>The chunk store grows by adding object storage nodes, and the metadata database adds shards, with the busiest namespaces getting shards of their own.</li>
-<li>The notification service adds connection servers, because each one holds a share of the open long polls.</li>
 <li>Storage is the largest cost. Use erasure coding instead of three full copies, and when a version is older than 30 days, delete it and decrement its chunks' reference counts so they can be collected.</li>
 </ul>
 
@@ -310,8 +307,6 @@ chunks:      sha256 PK, blob_key, size, ref_count
 
 <h2>What a strong answer sounds like</h2>
 
-<p>Interviewers mostly probe three points: avoiding re-uploads, strict ordering of metadata, and two devices editing one file.</p>
-
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
@@ -323,7 +318,7 @@ chunks:      sha256 PK, blob_key, size, ref_count
 
 <x-interview title="Defending the conflict design" tone="strong">
 <x-interviewer>Why not just keep whichever version arrived last?</x-interviewer>
-<x-you>That would silently destroy someone's work, and which edit survives would depend only on whose upload finished first. Instead every commit names its base revision. If that revision is no longer the latest, the server returns 409 and the client saves its version as a conflicted copy. Merging by hand is annoying, but nothing is lost, and a conflict needs two devices to edit the same file at the same time, which is rare.</x-you>
+<x-you>That would silently destroy someone's work, and which edit survives would depend only on whose upload finished first. Instead every commit names its base revision. If that revision is no longer the latest, the server returns 409 and the client saves its version as a conflicted copy. Merging by hand is annoying, but nothing is lost.</x-you>
 <x-coach>The answer states the cost of its choice, which is manual merging, and explains why that cost is acceptable.</x-coach>
 </x-interview>
 
@@ -336,7 +331,10 @@ chunks:      sha256 PK, blob_key, size, ref_count
 <p>The new device requests a snapshot of the file list with the journal cursor at which it was taken, instead of replaying every journal entry. It then downloads chunks in parallel, starting with the newest or smallest files. It then follows the journal from that cursor, so changes made during the download are not missed.</p>
 
 <h3>How does sharing work?</h3>
-<p>A shared folder is its own namespace with its own journal and a members table. Members' devices add it to their long poll.</p>
+<p>A shared folder is its own namespace with its own journal and a members table. The metadata service checks the caller's role on every commit, and each member's devices add the namespace to their long poll.</p>
+
+<h3>How do you handle renaming or moving a folder with thousands of files?</h3>
+<p>A rename or move is a metadata change and moves no file data, because chunks are named by content and not by path. The client commits the new paths in one transaction, so no chunk is uploaded again.</p>
 
 <h3>Can you encrypt files so the server cannot read them?</h3>
 <p>Yes, by encrypting the chunks on the device before upload. The cost is that identical files from different users no longer produce identical chunks, so cross-user deduplication stops working. Chunk names must also be keyed hashes, or anyone holding a file could confirm that it is stored.</p>

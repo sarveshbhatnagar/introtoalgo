@@ -7,7 +7,7 @@
   "tags": ["case study", "sorted sets", "ranking", "in-memory store", "sharding"]
 }
 -->
-<p>A leaderboard records the best score of each player in a game and shows the top players, together with a player's own rank and the players just above and below them. The system receives a stream of score updates and must answer rank queries immediately after each update.</p>
+<p>A leaderboard records the best score of each player in a game and shows the top players, a player's own rank and the players just above and below them. It must answer rank queries immediately after each score update.</p>
 
 <p>The difficulty is the rank. The obvious query, <code>ORDER BY score DESC</code>, works for a thousand players, but with fifty million players, finding a rank means counting everyone with a higher score. Interviewers ask it to see whether you know a structure that ranks in O(log n), can keep an in-memory ranking durable, and can split one global order across machines. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
@@ -27,15 +27,15 @@
 <ul>
 <li><strong>Functional:</strong> record a score and keep each player's best score on each board; show the top 10; show a player's rank together with the 5 players above and the 5 below.</li>
 <li><strong>Non-functional:</strong> a new score appears in the rankings within about a second; reads take under 50 ms; no accepted score is lost; the player who reached a score first wins a tie; the boards stay readable when one node fails.</li>
-<li><strong>Out of scope:</strong> cheat detection and rewards for top players.</li>
+<li><strong>Out of scope:</strong> cheat detection and rewards.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Score writes:</strong> 10 million players × 10 matches is 100 million matches a day. Dividing by 86,400 seconds gives about 1,200 matches a second, and a 5x peak gives about 5,800. Each match updates three boards, so the peak is 3 × 5,800 = 17,400 board writes a second.</li>
-<li><strong>Reads:</strong> assume 3 views per match, which is 300 million a day, about 3,500 a second and about 17,000 at peak. The top 10 comes from a 1-second cache, and each rank read needs 2 sorted-set operations.</li>
-<li><strong>Operations at peak:</strong> 17,400 board writes plus 17,000 × 2 = 34,000 read operations is 51,400 sorted-set operations a second. If one node performs about 100,000 such operations a second (state this assumption), one primary is about half busy, and read replicas add headroom.</li>
+<li><strong>Score writes:</strong> 10 million players × 10 matches is 100 million matches a day. Dividing by 86,400 seconds gives about 1,200 matches a second, and a 5x peak gives about 5,800. Each match updates three boards, so the peak is 17,400 board writes a second.</li>
+<li><strong>Reads:</strong> assuming 3 views per match gives 300 million a day, about 3,500 a second and about 17,000 at peak. Each rank read needs 2 sorted-set operations.</li>
+<li><strong>Operations at peak:</strong> 17,400 board writes plus 17,000 × 2 = 34,000 read operations is 51,400 sorted-set operations a second. If one node performs about 100,000 such operations a second, one primary is about half busy, and read replicas add headroom.</li>
 </ul>
 
 <x-estimate title="Memory for the all-time board">
@@ -47,7 +47,7 @@
   "answer": "5 GB",
   "accept": ["1 GB", "20 GB"],
   "steps": ["50 × 10<sup>6</sup> × 100 B = 5 × 10<sup>9</sup> B = 5 GB", "The weekly and daily boards add a few GB more"],
-  "note": "The boards fit in the memory of one machine, so sharding is a question of throughput and not of size."
+  "note": "The boards fit in the memory of one machine, so sharding is about throughput and not size."
 }
 </script>
 </x-estimate>
@@ -57,7 +57,7 @@
 <p>Who submits a score, and how does a client read the top 10 and its own rank? What should happen if the same score arrives twice?</p>
 </x-task>
 <x-answer>
-<p>The game server submits each score together with a match id, so a retried request is ignored. The app reads the top entries and "around me" for each board.</p>
+<p>The game server submits each score together with a match id, so a retried request is ignored. The app reads the top entries and the entries around the player.</p>
 </x-answer>
 </x-tryit>
 
@@ -80,7 +80,7 @@ GET  /boards/{board}/players/{id}?around=5
 </pre>
 </x-code>
 
-<p>The API decision to argue about is who may write a score. If phones post scores, anyone with a proxy can claim 99,999 points. The game server that ran the match submits the score with a <code>match_id</code>, so a retry cannot count a match twice.</p>
+<p>The API decision to argue about is who may write a score. If phones post scores, anyone with a proxy can claim 99,999 points. The game server submits the score with a <code>match_id</code>, so a retry cannot count a match twice.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -113,14 +113,14 @@ weekly:2026-W46   member = player_id, sort key = score combined with a tie-break
 </pre>
 </x-code>
 
-<p>A score update changes one player's row, which any database can do with a conditional update such as "set the score to 4,200 if it is higher". Finding a rank is a different kind of query: <code>SELECT COUNT(*) WHERE score &gt; 4200</code> has to walk every higher entry in the score index, which can be up to 50 million entries. An <strong>in-memory sorted set</strong>, such as the one in Redis, finds a rank in about log<sub>2</sub>(50 million), or roughly 26, steps. The sorted sets therefore hold the rankings as a fast view of the database that can be rebuilt from it.</p>
+<p>A score update changes one player's row, which any database can do with a conditional update such as "set the score to 4,200 if it is higher". Finding a rank is a different kind of query: <code>SELECT COUNT(*) WHERE score &gt; 4200</code> has to walk every higher entry in the score index, which can be up to 50 million entries. An <strong>in-memory sorted set</strong>, such as the one in Redis, finds a rank in about log<sub>2</sub>(50 million), or roughly 26, steps. The sorted sets therefore hold the rankings as a view that can be rebuilt from the database.</p>
 
 <x-tryit variant="turn" minutes="3" title="High-level design">
 <x-task>
 <p>Sketch the write path for a finished match and the read path for "my rank". Which store is written first?</p>
 </x-task>
 <x-answer>
-<p>The path is game server, score service, database (deduplicated by match id), then the sorted sets. Reads use only the sorted sets. The database is written first, so a crash can only leave the sorted set behind, and a replay repairs that.</p>
+<p>The path is game server, score service, database (deduplicated by match id), then the sorted sets. Reads use only the sorted sets. The database is written first, so a crash can only leave the sorted set behind.</p>
 </x-answer>
 </x-tryit>
 
@@ -215,11 +215,11 @@ weekly:2026-W46   member = player_id, sort key = score combined with a tie-break
 
 <p>There are three ways to answer "what is my rank?".</p>
 
-<p><strong>A database query.</strong> The database stores one row per player with an index on score, and the rank is <code>COUNT(*)</code> of the rows with a higher score, plus one.  A rank near the bottom is not cheap, because the database has to walk every higher index entry, which for rank 30,000,000 means 30 million entries for a single request. This is correct and acceptable for tens of thousands of players.</p>
+<p><strong>A database query.</strong> The database stores one row per player with an index on score, and the rank is <code>COUNT(*)</code> of the rows with a higher score, plus one. A rank near the bottom is expensive, because the database walks every higher index entry, which is 30 million entries for rank 30,000,000. This is acceptable for tens of thousands of players.</p>
 
-<p><strong>An in-memory sorted set.</strong> A sorted set keeps two structures in step: a hash map from player to score, and an index ordered by score, built as a skip list or a balanced tree. Every link in the index stores how many entries it jumps over. To find a rank, the lookup walks down from the top of the index and adds up those counts, so it never visits the entries it skips. Rank, top N and a range around a player take O(log n). The cost is that the sorted set lives in memory, so it needs a durable source to rebuild from, and a single set is limited to the throughput of one node.</p>
+<p><strong>An in-memory sorted set.</strong> A sorted set keeps two structures in step: a hash map from player to score, and an index ordered by score, built as a skip list or a balanced tree. Every link in the index stores how many entries it jumps over. To find a rank, the lookup walks down from the top of the index and adds up those counts, so it never visits the entries it skips. Rank, top N and a range around a player take O(log n). The cost is that it lives in memory, so it needs a durable source, and one set is limited to one node's throughput.</p>
 
-<p><strong>Score-bucket counts.</strong> Instead of ordering players, you count how many players have each score value and keep the counts in a <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick tree</a>. A player's rank is the sum of the counts of all higher scores, which takes O(log of the score range). It cannot tell you who the neighbours are. It suits very large boards where an approximate rank is acceptable below the top.</p>
+<p><strong>Score-bucket counts.</strong> Instead of ordering players, you count how many players have each score value and keep the counts in a <a href="/algorithms/segment-and-fenwick-trees.html">Fenwick tree</a>. A player's rank is the sum of the counts of all higher scores, which takes O(log of the score range). It cannot tell you who the neighbours are. It suits very large boards where an approximate rank is acceptable.</p>
 
 <x-tradeoffs caption="Ways to answer &quot;what is my rank?&quot;">
 <script type="application/json">
@@ -235,23 +235,23 @@ weekly:2026-W46   member = player_id, sort key = score combined with a tie-break
 
 <h3>Why a sorted set finds a rank in O(log n)</h3>
 
-<p>A skip list is a sorted linked list with express lanes. Level 0 links every entry, and each higher level links a random half of the entries on the level below. Every link also records its span, the number of entries it jumps over. To find a rank, the lookup starts at the top level and moves forward while the next entry scores higher than the target, adding the span of each link it follows, and drops a level when the next entry would pass the target. Take players A 980, B 950, C 900, D 870, E 820 and F 760, where level 1 links the head, B, D and F with a span of 2 each. The rank of C is found by following the level 1 link to B, which adds 2, then dropping to level 0, where the next entry is C itself. Two players are above C, so its rank is 3, and A was never visited. With 50 million players there are about 26 levels and a couple of links per level, so a rank takes roughly 50 steps instead of a count over tens of millions of entries.</p>
+<p>A skip list is a sorted linked list with express lanes. Level 0 links every entry, and each higher level links a random half of the entries on the level below. Every link also records its span, the number of entries it jumps over. To find a rank, the lookup starts at the top level and moves forward while the next entry scores higher than the target, adding the span of each link it follows, and drops a level when the next entry would pass the target. For example, with players A 980, B 950, C 900, D 870, E 820 and F 760, suppose level 1 links the head, B, D and F with a span of 2 each. The rank of C is found by following the level 1 link to B, which adds 2, then dropping to level 0, where the next entry is C, which adds 1, so its rank is 3. With 50 million players a rank takes roughly 50 steps.</p>
 
-<p>Updating a score removes the old entry and inserts the new one, each in O(log n). A balanced tree that stores subtree sizes costs the same.</p>
+<p>Updating a score removes the old entry and inserts the new one, each in O(log n).</p>
 
 <h3>Sharding the sorted set</h3>
 
-<p>Say first that sharding is probably not needed: the boards take 5 GB and the peak load is about 51,000 operations a second, which one primary with read replicas can handle. Sharding becomes necessary at roughly 10x this load.</p>
+<p>At the estimated scale sharding is not needed, because the boards take 5 GB and the peak load is about 51,000 operations a second, which one primary with read replicas can handle. Say this first in an interview. Sharding becomes necessary at roughly 10x this load.</p>
 
-<p><strong>Shard by player id.</strong> A hash of the player id picks the shard, so writes spread evenly. Queries then have to combine results from all shards. For the top 10 with, say, 8 shards, you take each shard's top 10 and keep the best 10 of those 80 entries, which is exact because every player in the global top 10 is also in the top 10 of their own shard. For a rank, you ask every shard how many scores are higher than 4,200 (O(log n) on each) and add the answers.  For the neighbours, you take each shard's 5 entries on each side of the score and keep the nearest 5 on each side. The cost is that every rank lookup makes 8 parallel calls and is as slow as the slowest.</p>
+<p><strong>Shard by player id.</strong> A hash of the player id picks the shard, so writes spread evenly. Queries then have to combine results from all shards. For the top 10 with, say, 8 shards, you take each shard's top 10 and keep the best 10 of those 80 entries, which is exact because every player in the global top 10 is also in the top 10 of their own shard. For a rank, you ask every shard how many scores are higher than 4,200 (O(log n) on each) and add the answers. The neighbours are found the same way, from each shard's 5 entries on each side of the score. The cost is 8 parallel calls per rank lookup, which is as slow as the slowest one.</p>
 
-<p><strong>Shard by score range.</strong> Each shard owns a band of scores. A rank is then the number of players in all higher shards (a small stored counter) plus the player's rank inside their own shard, so a lookup touches only one shard. The problems are that the shard with the top scores is the hottest, the bands need rebalancing as scores grow, and a player who crosses a boundary has to move shards.</p>
+<p><strong>Shard by score range.</strong> Each shard owns a band of scores. A rank is then the number of players in all higher shards (a small stored counter) plus the player's rank inside their own shard, so a lookup touches only one shard. The problems are that the shard with the top scores is the hottest, the bands need rebalancing as scores grow, and a player who crosses a boundary moves shards.</p>
 
-<p>Choose hashing by player. Even load matters more than saving parallel calls, and the cached top 10 is merged once a second.</p>
+<p>I would shard by player hash. An even load matters more than saving parallel calls, and the merged top 10 is computed only once a second and cached.</p>
 
 <h3>Keeping the in-memory board durable</h3>
 
-<p>The persistence features of an in-memory store (a log flushed every second, snapshots, asynchronous replicas) can each lose the most recent writes. A better design makes the database the only source of truth and treats the sorted set as a copy that can be repaired:</p>
+<p>The persistence features of an in-memory store (a log flushed every second, snapshots, asynchronous replicas) can each lose the most recent writes. The better design makes the database the only source of truth and treats the sorted set as a copy that can be repaired.</p>
 
 <ul>
 <li><strong>After a failover,</strong> replay the rows whose <code>updated_at</code> falls in the last few minutes. Setting a score only if it is higher gives the same result when applied again and in any order, so overlapping replays are safe.</li>
@@ -260,17 +260,15 @@ weekly:2026-W46   member = player_id, sort key = score combined with a tie-break
 
 <h3>Daily and weekly boards</h3>
 
-<p>Each period gets its own sorted set, named after the period, such as <code>weekly:2026-W46</code>, so a new period starts with an empty set and needs no cleanup job. When a period ends, copy its final top results to the database and let the set expire. Late scores are assigned by the match's <code>ended_at</code> time and not by when they arrive, the previous period stays open for a few minutes before its results are final, and the boundaries use one agreed clock, usually UTC.</p>
+<p>Each period gets its own sorted set, named after the period, such as <code>weekly:2026-W46</code>, so a new period starts with an empty set and needs no cleanup job. When a period ends, copy its final top results to the database and let the set expire. Scores are assigned to a period by the match's <code>ended_at</code> time, and the boundaries use one clock, usually UTC.</p>
 
 <h3>Breaking ties</h3>
 
-<p>To make the earlier player win a tie, put the time into the sort key. Pack one number with the score in the high bits and (2<sup>20</sup> − 1 − seconds into the week) in the low bits, so that an earlier time gives a bigger number. A week has 604,800 seconds, which fits in 20 bits (2<sup>20</sup> = 1,048,576), and so do scores up to a million. For example, score 4,200 reached 190,800 seconds into the week gives 4,200 × 1,048,576 + (1,048,575 − 190,800) = 4,404,876,975. This number has 40 bits, below the 53 bits that a 64-bit float stores exactly, which matters because some sorted sets store scores as floats. The all-time board needs about 30 bits for 34 years of seconds, so 50 bits in total.</p>
-
-<p>If players with equal scores should share a rank, such as "joint 12th", compute the rank as the number of players with a strictly higher score plus one. That is a count over a score range and not a position in the order.</p>
+<p>To make the earlier player win a tie, put the time into the sort key. Pack one number with the score in the high bits and (2<sup>20</sup> − 1 − seconds into the week) in the low bits, so that an earlier time gives a bigger number. A week has 604,800 seconds, which fits in 20 bits (2<sup>20</sup> = 1,048,576), and so do scores up to a million. For example, score 4,200 reached 190,800 seconds into the week gives 4,200 × 1,048,576 + (1,048,575 − 190,800) = 4,404,876,975. Every packed number fits in 40 bits, which is below the 53 bits that a 64-bit float stores exactly, and that matters because some sorted sets store scores as floats. The all-time board needs about 30 bits for the seconds, since 2<sup>30</sup> seconds is about 34 years, so 50 bits in total, which still fits.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x the load there are about 58,000 matches a second at peak and about 514,000 sorted-set operations a second, which is too much for one primary, so you shard each board by player into, say, 8 sorted sets. The database takes 58,000 conditional updates a second, which works because it is partitioned by player.</p>
+<p>At 10x the load there are about 58,000 matches a second at peak and about 514,000 sorted-set operations a second, which is too much for one primary, so you shard each board by player into, say, 8 sorted sets. Each match updates three rows, so the database takes about 174,000 conditional updates a second, which works because it is partitioned by player. Every rank read goes to every shard, so each shard still sees about 360,000 operations a second (340,000 reads and 22,000 writes), and each shard needs several read replicas.</p>
 
 <table>
 <thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -278,34 +276,43 @@ weekly:2026-W46   member = player_id, sort key = score combined with a tie-break
 <tr><td>A sorted-set primary</td><td>Writes to that board pause, and the promoted replica may be missing the most recent updates.</td><td>Replay the recent rows from the database, and keep serving reads from the replicas.</td></tr>
 <tr><td>All copies of a sorted set</td><td>Rank queries cannot be answered.</td><td>Show the cached top 10 and rebuild the set from the database, which takes about 100 seconds.</td></tr>
 <tr><td>The database</td><td>New scores cannot be stored durably.</td><td>The game servers queue the scores and retry them, and match ids make the retries safe. Reads keep working from memory.</td></tr>
-<tr><td>A score service instance</td><td>A request can fail between the database write and the sorted-set write.</td><td>The game server retries, and the retry sends the bests to the sorted sets again. The service must not return early when it sees a match that was already applied.</td></tr>
+<tr><td>A score service instance</td><td>A request can fail between the database write and the sorted-set write.</td><td>The game server retries, and the retry sends the bests to the sorted sets again. The service must not return early for a match that was already applied.</td></tr>
 </tbody>
 </table>
 
 <h2>What a strong answer sounds like</h2>
 
-<p>A weak answer stops at a table with <code>ORDER BY</code>. A strong answer explains why counting rows is too slow, uses a sorted set, keeps the board rebuildable from the database, makes updates safe to repeat, and shards by player with a correct merge of the top 10.</p>
+<p>The answers differ in whether they notice that rank is the hard part, and in how well they handle failure and scale.</p>
+
+<table>
+<thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
+<tbody>
+<tr><td>Junior</td><td>Stores scores in a table and uses <code>ORDER BY</code> and <code>COUNT</code>, and moves to an in-memory sorted set only after the interviewer asks about 50 million players.</td></tr>
+<tr><td>Mid-level</td><td>Chooses a sorted set from the start, explains why counting rows is too slow, and adds a match id so that retries are safe.</td></tr>
+<tr><td>Senior</td><td>Shows that one node is enough at the estimated scale, explains how the board recovers after a failover, handles ties, and shards by player with a correct merge when the load grows.</td></tr>
+</tbody>
+</table>
 
 <x-interview title="Rank among millions" tone="strong">
 <x-interviewer>How do you show a player their rank?</x-interviewer>
 <x-you>I keep the board in an in-memory sorted set. Each link in its index stores how many entries it skips, so the rank is a sum along about 26 levels and not a count of 48,000 rows. The board is 5 GB, so one primary holds it.</x-you>
 <x-interviewer>What changes at 500 million players?</x-interviewer>
-<x-you>I would shard by player. The top 10 is an exact merge of each shard's top 10, and a rank is the sum of a parallel count of higher scores on every shard. If that is too slow, I would keep exact ranks for the top entries and use score-bucket counts to give an approximate rank such as "about #2 million" below them.</x-you>
+<x-you>I would shard by player. The top 10 is an exact merge of each shard's top 10, and a rank is the sum of a parallel count of higher scores on every shard. If that is too slow, I would keep exact ranks for the top entries and use score-bucket counts for an approximate rank below them.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you build a friends-only leaderboard?</h3>
-<p>A sorted set per player would be far too much data to keep up to date. Instead, fetch the scores of the player's few hundred friends in one batch and sort them on request.</p>
-
-<h3>The top 10 must update live on screen. How?</h3>
-<p>Recompute the top 10 once a second and push it to connected clients over server-sent events or a WebSocket.</p>
+<p>A sorted set for each player's friends would be far too much data to keep up to date, because one score change would have to be written into every friend's set. Instead, read the scores of the player's few hundred friends in one batch and sort them when the request arrives.</p>
 
 <h3>Why not use a heap for the top 10?</h3>
 <p>A <a href="/algorithms/heaps-and-priority-queues.html">heap</a> returns the top k entries cheaply, but it cannot tell you the rank of an arbitrary player, and changing the score of an arbitrary player needs extra bookkeeping to locate the entry. The sorted set answers all of these with one structure.</p>
 
 <h3>What if a score must be removed after a ban?</h3>
 <p>Delete the player's row in the database and remove the member from each sorted set. Every player below moves up automatically, because ranks are computed and not stored.</p>
+
+<h3>How does a player see their new rank right after a match?</h3>
+<p>The write path updates the sorted sets before the score service answers the game server, so a read that starts after the response sees the new score. If reads go to replicas, a replica can be a fraction of a second behind, so the app can read from the primary for a short time after the player's own match.</p>
 
 <x-checklist title="Self-review: leaderboard">
 <script type="application/json">

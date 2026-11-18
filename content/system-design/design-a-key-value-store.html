@@ -1,7 +1,7 @@
 <!--
 {
   "title": "Design a Key-Value Store",
-  "description": "How to design a distributed, highly available key-value store: partitioning, replication with quorums, conflict resolution, repair and the storage engine.",
+  "description": "How to design a distributed key-value store: partitioning, quorum replication, conflict resolution, repair, and what interviewers ask.",
   "minutes": 22,
   "kind": "design",
   "tags": ["case study", "distributed storage", "quorums", "replication", "consistency"]
@@ -13,16 +13,13 @@
 
 <h2>Clarify the problem</h2>
 
-<p>The most important question is whether the store should reject writes during a failure to stay consistent, or accept them and resolve conflicts later.</p>
-
 <x-interview title="The first five minutes">
 <x-interviewer>Design a distributed key-value store.</x-interviewer>
 <x-you>How large are keys and values, do we need anything beyond get, put and delete, and how much data and traffic should it handle?</x-you>
-<x-interviewer>Keys are up to 256 bytes and values up to 1 MB, usually around 10 KB. Only get, put and delete. Assume 2 billion keys, and at peak 150,000 reads and 50,000 writes a second.</x-interviewer>
+<x-interviewer>Keys are up to 256 bytes and values up to 1 MB, usually around 10 KB. You only need get, put and delete. Assume 2 billion keys, and at peak 150,000 reads and 50,000 writes a second.</x-interviewer>
 <x-you>If a node or a network link fails, should the store reject writes, or accept them and resolve conflicts afterwards? Think of a shopping cart.</x-you>
 <x-interviewer>Accept them, because a lost "add to cart" costs money. Some callers will want stronger reads, though.</x-interviewer>
 <x-you>Then I will favour availability, let each request choose its consistency level, and never lose an acknowledged write. I will assume one region with three zones.</x-you>
-<x-coach>Asking about failure behaviour in product terms gets an answer that justifies every later choice.</x-coach>
 </x-interview>
 
 <ul>
@@ -57,7 +54,7 @@
   "accept": ["5 thousand/s", "50 thousand/s"],
   "choices": ["1.5 thousand/s", "15 thousand/s", "150 thousand/s", "1.5 million/s"],
   "steps": ["Replica reads: 150,000 × 2 = 300,000 a second", "Replica writes: 50,000 × 3 = 150,000 a second", "(300,000 + 150,000) ÷ 30 = 15,000 a second per node"],
-  "note": "Disk size, not traffic, sets the node count."
+  "note": "The 30 nodes needed for disk space can already handle this traffic, so disk size, not traffic, sets the node count."
 }
 </script>
 </x-estimate>
@@ -120,7 +117,7 @@ cluster metadata (same on every node, a few MB)
 </pre>
 </x-code>
 
-<p>Every operation reads or overwrites a single key, and each node receives about 5,000 replica writes a second to random keys. A log-structured merge tree (LSM tree) suits this pattern because it turns random writes into sequential appends, as described in <a href="/system-design/indexing.html">Indexing</a>. The cost is that a read may have to check several files. A B-tree would be the better choice only if writes were rare.</p>
+<p>Every operation reads or overwrites a single key, and each node receives about 5,000 replica writes a second to random keys. A log-structured merge tree (LSM tree) suits this pattern because it turns random writes into sequential appends, as described in <a href="/system-design/indexing.html">Indexing</a>. The cost is that a read may have to check several files.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -133,7 +130,7 @@ cluster metadata (same on every node, a few MB)
 
 <h2>High-level design</h2>
 
-<p>Any node can coordinate any request, because every node holds the ring. A key's <strong>preference list</strong> is the first 3 distinct servers found clockwise from the key's hash, chosen from 3 different zones. Ring positions of a server already chosen are skipped, so one zone outage cannot take all three copies.</p>
+<p>Any node can coordinate any request, because every node holds the ring. The client library also caches the ring, so it can send a request straight to one of the key's replicas, and a node that receives a request for a key it does not own simply forwards it. A key's <strong>preference list</strong> is the first 3 distinct servers found clockwise from the key's hash, chosen from 3 different zones. Ring positions of a server already chosen are skipped, so one zone outage cannot take all three copies.</p>
 
 <x-arch caption="The node that receives a request coordinates it and sends it to the key's 3 replicas. When one replica is down, a stand-in node holds its writes as hints.">
 <script type="application/json">
@@ -196,7 +193,7 @@ cluster metadata (same on every node, a few MB)
       "vars": { "N": 3, "W": 2, "acks": 0 }
     },
     {
-      "caption": "Each replica appends the write to its commit log and confirms. B and C confirm first, which equals W, so the client receives OK. The version is <code>{B: 1}</code>, stamped by B as the first owner. D confirms a moment later.",
+      "caption": "Each replica appends the write to its commit log and confirms. B and C confirm first, which equals W, so the client receives OK. The version is <code>{B: 1}</code>. D confirms a moment later.",
       "arch": { "active": [["coord", "client"]], "mark": ["client", "b", "c", "d"], "dim": ["e"], "notes": { "d": "logged" } },
       "vars": { "N": 3, "W": 2, "acks": 3 }
     },
@@ -230,13 +227,13 @@ cluster metadata (same on every node, a few MB)
 
 <p>The simplest way to place keys is to compute <code>hash(key) mod number_of_nodes</code>. Adding or removing one node changes the result for almost every key, so nearly all the data has to move. <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> places nodes and keys on a ring, so a node joining or leaving only affects the keys next to it.</p>
 
-<p>With one position per node the ring is unevenly loaded, so each server gets about 100 positions, called virtual nodes. For a replicated store the main benefit is <strong>parallel rebuilds</strong>: a dead node's 2 TB is split into small ranges across the other 29 servers. If each of them streams its share at 100 MB/s, the rebuild takes 2 × 10<sup>12</sup> ÷ (29 × 10<sup>8</sup>) ≈ 690 seconds, or about 11 minutes, whereas copying from a single peer would take about 5.6 hours.</p>
+<p>With one position per node the ring is unevenly loaded, so each server gets about 100 positions, called virtual nodes. For a replicated store the main benefit is <strong>parallel rebuilds</strong>: a dead node's 2 TB is split into small ranges across the other 29 servers. If each of them streams its share at 100 MB/s, the rebuild takes 2 × 10<sup>12</sup> ÷ (29 × 10<sup>8</sup>) ≈ 690 seconds, or about 11 minutes.</p>
 
 <h3>Replication and tunable quorums</h3>
 
 <p>Each key is stored on N = 3 replicas. A write waits for W of them to confirm and a read waits for R of them to answer. <a href="/system-design/replication.html">Replication</a> explains why R + W &gt; N means every read set overlaps every write set.</p>
 
-<p><strong>W = 2, R = 2</strong> is the default. A read overlaps every acknowledged write, so it normally sees the latest value, and one replica can be down. The cost is waiting for the second-fastest replica.</p>
+<p><strong>W = 2, R = 2</strong> is the default. A read overlaps every acknowledged write, so it normally sees the latest value, and one replica can be down.</p>
 
 <p><strong>W = 1, R = 1</strong> is the fastest setting, and writes succeed even when two replicas are down. The cost is that a read can miss a write that was just acknowledged, which is acceptable for caches and session data.</p>
 
@@ -299,7 +296,7 @@ cluster metadata (same on every node, a few MB)
 
 <p><strong>Last-write-wins</strong> keeps the value with the newest timestamp and discards the other. It silently drops one of two concurrent writes, which in the example would lose the eggs or the bread, and clock differences between nodes decide which one. It suits keys with one writer or harmless lost updates.</p>
 
-<p><strong>Version vectors with siblings</strong>, as in the tracer, detect concurrency exactly and never lose a write. The cost is that every caller must merge siblings, and the vectors grow with the number of coordinators. A plain union merge also brings back an item that was removed on one device.</p>
+<p><strong>Version vectors with siblings</strong>, as in the tracer, detect concurrency exactly and never lose a write. The cost is that every caller must merge siblings, and the vectors grow with the number of coordinators.</p>
 
 <p><strong>Conflict-free data types (CRDTs)</strong> let the store do the merge itself, because the value is a counter, a set or a map whose merge rule is built in. This only applies to those data shapes, and removals need extra metadata.</p>
 
@@ -338,7 +335,7 @@ cluster metadata (same on every node, a few MB)
 <p>A suspected node triggers no data movement. Streaming 2 TB to replace a node that reboots in a minute would do harm. Its ranges are rebuilt only after an operator, or automation with a long timeout, declares the node gone. Three mechanisms keep the replicas in sync:</p>
 
 <ul>
-<li><strong>Hinted handoff</strong> covers short outages. A node down for 10 minutes misses 5,000 writes a second × 600 s = 3 million writes, about 30 GB, which stand-ins hold until it returns.</li>
+<li><strong>Hinted handoff</strong> covers short outages. A node down for 10 minutes misses 5,000 writes a second × 600 s = 3 million writes, about 30 GB, which stand-ins hold until it returns. Stand-ins keep hints only for a limited time, such as a few hours, so a node that stays down longer is caught up by anti-entropy.</li>
 <li><strong>Read repair</strong> fixes a stale replica that a read notices, by sending it the newer version.</li>
 <li><strong>Anti-entropy</strong> handles whatever the first two missed. Two replicas compare Merkle trees, which are trees of hashes over sub-ranges of keys, and descend only into branches whose hashes differ. With about 200 million keys per node and 2<sup>15</sup> leaves, each leaf covers about 6,000 keys. One wrong key then costs a walk down 15 levels and a sync of one leaf.</li>
 </ul>
@@ -351,7 +348,7 @@ cluster metadata (same on every node, a few MB)
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load there are 600 TB of replicated data and 2 million client operations a second, which needs about 300 nodes. Consistent hashing handles the growth, but two problems remain. <strong>Hot keys</strong> do not spread, because a popular key still lives on only 3 nodes. <strong>Compaction debt</strong> builds up when writes arrive faster than files are merged, and every read then has to check more files. Watch the number of files per read and slow writes down early.</p>
+<p>At 10 times the load there are 600 TB of replicated data and 2 million client operations a second, which needs about 300 nodes. Consistent hashing handles the growth, but two problems remain. <strong>Hot keys</strong> do not spread, because a popular key still lives on only 3 nodes. <strong>Compaction debt</strong> builds up when writes arrive faster than files are merged, and every read then has to check more files.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -360,7 +357,6 @@ cluster metadata (same on every node, a few MB)
 <tr><td>One node, permanently</td><td>Its 2 TB of data exists only as 2 copies.</td><td>Declare it gone, and the other 29 nodes rebuild it in about 11 minutes.</td></tr>
 <tr><td>A whole zone</td><td>Every key loses one of its 3 copies.</td><td>Quorums keep working on the other two zones.</td></tr>
 <tr><td>A network partition</td><td>Both sides may accept writes to the same keys.</td><td>Version vectors keep both writes as siblings, and callers merge them afterwards.</td></tr>
-<tr><td>A disk silently corrupts data</td><td>One replica returns wrong bytes.</td><td>Block checksums detect it, and the replica re-fetches the data from the others.</td></tr>
 </tbody>
 </table>
 
@@ -380,7 +376,6 @@ cluster metadata (same on every node, a few MB)
 <x-you>No, it is not linearizable. Every read overlaps every acknowledged write, so it normally sees the latest value. However, concurrent writes can both succeed and become siblings, a failed write can still show up on one replica, and with a sloppy quorum a read can miss a write until the hint is delivered.</x-you>
 <x-interviewer>So when would you not use this design?</x-interviewer>
 <x-you>I would not use it for an account balance or a uniqueness check. Those need one leader per key range with consensus, and writes pause for a few seconds during failover, which is the right trade-off for that kind of data.</x-you>
-<x-coach>A weak answer says "yes". The strong answer says what overlap gives you, where it falls short, and when to choose a different design.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
@@ -388,14 +383,14 @@ cluster metadata (same on every node, a few MB)
 <h3>How would you run it in two regions?</h3>
 <p>Keep N replicas in each region, acknowledge a write after a quorum in the local region, and replicate to the other region asynchronously. Version vectors detect conflicts between regions, and a lost region takes its unreplicated writes with it.</p>
 
-<h3>How do you add expiry (TTL)?</h3>
-<p>Store an expiry time in the record and treat expired records as missing. An expired record must then act as a tombstone for the grace period, or repair could bring back an older copy.</p>
-
 <h3>How does a new node join without downtime?</h3>
-<p>The new node takes about 100 positions on the ring, and the current owners stream it the ranges it now owns while new writes for them also go to it. It serves reads once streaming finishes, and the old owners then delete their copies.</p>
+<p>The new node takes about 100 positions on the ring, and the current owners stream it the ranges it now owns while new writes for them also go to it. The old owners delete their copies once it has them.</p>
 
 <h3>One key gets 100,000 reads a second. What do you do?</h3>
 <p>With R = 2 that is 200,000 replica reads spread over only 3 nodes, about 67,000 each, which is more than 4 times the 15,000 a node normally handles. Cache the value for a second in the coordinators, or read with R = 1 if slightly stale data is acceptable.</p>
+
+<h3>What happens when a client retries a put after a timeout?</h3>
+<p>The client cannot tell whether the first attempt was stored, so it sends the same <code>put</code> with the same context again. Because a <code>put</code> overwrites the value rather than adding to it, storing the same value twice is harmless, and the second write supersedes the first. A change that must not be applied twice, such as an increment, needs a unique request id that the store deduplicates.</p>
 
 <x-checklist title="Self-review: key-value store">
 <script type="application/json">

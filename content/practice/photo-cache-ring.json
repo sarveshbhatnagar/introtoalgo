@@ -14,10 +14,10 @@
     "<p>The ring has positions 0 to 2<sup>32</sup> − 1. Positions come from <code>ringHash(s)</code>, a 32-bit FNV-1a hash plus a mixing step, given in the starter code so JavaScript and Python agree exactly. Use it as it is.</p>",
     "<p>Write a class <code>HashRing</code>:</p>",
     "<ul>",
-    "<li><code>constructor(vnodes)</code>: every server gets <code>vnodes</code> points.</li>",
+    "<li><code>constructor(vnodes)</code> sets the number of points that every server gets, <code>vnodes</code>.</li>",
     "<li><code>addNode(name)</code>: add the server's points. Point <code>i</code> (0 to <code>vnodes − 1</code>) has the label <code>name + \"#\" + i</code> and sits at <code>ringHash(label)</code>. Adding a server already on the ring does nothing.</li>",
     "<li><code>removeNode(name)</code>: remove all of that server's points. Removing a server not on the ring does nothing.</li>",
-    "<li><code>owners(key, count)</code>: start at position <code>ringHash(key)</code> and walk clockwise: the first point at or after that position, then the next, wrapping from the highest position to the lowest. Collect server names in the order you meet them, skipping servers already collected, until you have <code>count</code> names or have seen every server. Return the list. An empty ring gives <code>[]</code>.</li>",
+    "<li><code>owners(key, count)</code>: start at position <code>ringHash(key)</code> and walk clockwise. The first point is the one at or after that position, and the walk then moves to the next point, wrapping from the highest position to the lowest. Collect server names in the order you meet them, skipping servers already collected, until you have <code>count</code> names or have seen every server. Return the list. An empty ring gives <code>[]</code>.</li>",
     "</ul>",
     "<p>If two points share a position, the one whose label sorts first (by character codes) comes first clockwise.</p>"
   ],
@@ -49,8 +49,8 @@
     "Adding a server inserts its <code>vnodes</code> points and keeps the list sorted; removing filters its points out. A set of servers on the ring makes duplicate adds and unknown removes easy to ignore."
   ],
   "bruteForce": [
-    "<p>For each lookup, compute the clockwise distance from the key to every point, <code>(point − key) mod 2<sup>32</sup></code>, and sort. Correct, but O(P log P) per lookup for P points: with 20 servers × 50 points, 1,000 points sorted for every cache read.</p>",
-    "<p>Sort the points once when servers join or leave (rare), and each lookup becomes a binary search plus a short walk.</p>"
+    "<p>For each lookup, compute the clockwise distance from the key to every point, <code>(point − key) mod 2<sup>32</sup></code>, and sort. This is correct but costs O(P log P) per lookup for P points, which with 20 servers × 50 points means sorting 1,000 points for every cache read.</p>",
+    "<p>Servers join or leave rarely, so the points can be sorted once at that time, and each lookup then needs only a binary search and a short walk.</p>"
   ],
   "signature": {
     "class": "HashRing",
@@ -265,12 +265,12 @@
       "        return out"
     ],
     "walkthrough": [
-      "<p>The ring is a sorted list of points. A lookup is a binary search for the first point at or after the key's position, then a clockwise walk that wraps with <code>% n</code>. Servers change rarely, so re-sorting on add is fine; lookups happen on every cache read, so they get the fast path.</p>",
+      "<p>The ring is a sorted list of points. A lookup is a binary search for the first point at or after the key's position, then a clockwise walk that wraps with <code>% n</code>. Servers change rarely, so re-sorting when one is added is acceptable, while lookups happen on every cache read and need to be fast.</p>",
       "<p>Trace the first example (positions in millions). Sorted points: a#0 25.1, a#1 152.6, c#1 414.5, b#0 616.2, b#1 1,845.2, c#0 3,752.1.</p>",
       "<ol>",
-      "<li><code>owners(\"sun.jpg\", 2)</code>: hash 476.3. Binary search lands on index 3, b#0: cache-b. Index 4, b#1: cache-b again, skip. Index 5, c#0: cache-c. Two names: done.</li>",
-      "<li><code>owners(\"photo-3\", 3)</code>: hash 3,939.4 is above every point, so the search returns 6 = n, and <code>6 % 6 = 0</code> wraps to a#0: cache-a. Then a#1 (skip), c#1: cache-c, b#0: cache-b.</li>",
-      "<li>Remove cache-b: the list becomes a#0, a#1, c#1, c#0. \"sun.jpg\" now lands on index 3, c#0: cache-c. \"photo-3\" still wraps to cache-a.</li>",
+      "<li>For <code>owners(\"sun.jpg\", 2)</code>, the hash is 476.3 and the binary search lands on index 3, which is b#0, so the first owner is cache-b. Index 4 is b#1, which is cache-b again, so it is skipped. Index 5 is c#0, so the second owner is cache-c, and the walk stops with two names.</li>",
+      "<li>For <code>owners(\"photo-3\", 3)</code>, the hash 3,939.4 is above every point, so the search returns 6, which equals n, and <code>6 % 6 = 0</code> wraps to a#0 (cache-a). The walk then skips a#1, takes c#1 (cache-c), and takes b#0 (cache-b).</li>",
+      "<li>After cache-b is removed, the list is a#0, a#1, c#1, c#0. \"sun.jpg\" now lands on index 3, which is c#0 (cache-c), and \"photo-3\" still wraps to cache-a.</li>",
       "</ol>",
       "<p>Without the skip-seen set, a server's second virtual node would count as a second replica, and both copies of a key would sit on one machine. Stopping once every server is collected keeps the walk to one lap when <code>count</code> exceeds the number of servers.</p>"
     ],

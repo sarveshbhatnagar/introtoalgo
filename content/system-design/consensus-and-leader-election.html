@@ -30,11 +30,11 @@
 </script>
 </x-arch>
 
-<p>The coordination service is a small cluster that runs a consensus protocol internally. The rest of the system asks it who the leader is, or asks it to hold a small piece of shared state such as a lock or a configuration value, and trusts the answer.</p>
+<p>The coordination service is a small cluster that runs a consensus protocol internally. The rest of the system asks it who the leader is, or asks it to hold a small piece of shared state such as a lock, and trusts the answer.</p>
 
 <h2>Why agreeing is hard</h2>
 
-<p>When a machine stops answering, the other machines cannot tell whether it has crashed, is overloaded, is paused by garbage collection, or is running normally but unreachable. A timeout turns that uncertainty into a guess, and the guess can be wrong. Messages can also arrive late, twice or never, and clocks on different machines drift apart.</p>
+<p>When a machine stops answering, the other machines cannot tell whether it has crashed, is overloaded, is paused by garbage collection, or is running normally but unreachable. A timeout turns that uncertainty into a guess, and the guess can be wrong. Messages can also arrive late or never, and clocks drift apart.</p>
 
 <p>Two machines cannot solve this with a heartbeat rule. If each waits for the other before acting, one failure stops everything, and if each acts alone once the other goes silent, a partition gives you two leaders. Consensus protocols therefore always keep the data safe, so two leaders never both commit conflicting writes, but they make progress only while enough machines can talk to each other. During a bad partition they stop answering instead of risking a wrong answer, which is the choice described in <a href="/system-design/cap-and-consistency.html">CAP and consistency</a>.</p>
 
@@ -54,7 +54,7 @@
 
 <h3>The replicated log and commit</h3>
 
-<p>Every change goes to the leader, which appends it to its log and sends it to the followers. An entry is <strong>committed</strong> once a majority of nodes, counting the leader, have stored it. Only then does the leader apply the change and answer the client. A slow or dead minority delays nothing, but every write waits for a round trip to a majority, which is slow when the nodes are far apart.</p>
+<p>Every change goes to the leader, which appends it to its log and sends it to the followers. An entry is <strong>committed</strong> once a majority of nodes, counting the leader, have stored it. Only then does the leader apply the change and answer the client. Every write waits for a round trip to a majority, which is slow when the nodes are far apart.</p>
 
 <h3>Leader election</h3>
 
@@ -110,7 +110,7 @@
       "vars": { "term": 4, "votes for 2": 2 }
     },
     {
-      "caption": "The client retries against Node 2. Failover took well under a second.",
+      "caption": "The client retries against Node 2.",
       "arch": { "fail": ["n1"], "active": ["client", ["client", "n2"]], "mark": ["n2"], "notes": { "n2": "leader, term 4" } },
       "vars": { "term": 4, "leader": "Node 2" }
     },
@@ -126,11 +126,11 @@
 
 <h2>Leader election with leases and fencing tokens</h2>
 
-<p>Application teams almost never implement Raft. They ask a coordination service for leadership, using a lease, and make the lease safe with a fencing token.</p>
+<p>Application teams almost never implement Raft; they ask a coordination service for leadership, using a lease, and make the lease safe with a fencing token.</p>
 
 <h3>Leases</h3>
 
-<p>A <strong>lease</strong> is a lock that expires on its own. A node asks the coordination service for leadership and receives it for a fixed period, for example ten seconds, and it must renew the lease before the period ends. If the leader crashes or is cut off, it stops renewing, the lease expires and another node can take it. A plain lock would stay held forever by a dead owner.</p>
+<p>A <strong>lease</strong> is a lock that expires on its own. A node asks the coordination service for leadership and receives it for a fixed period, for example ten seconds, and it must renew the lease before the period ends. If the leader crashes or is cut off, it stops renewing, the lease expires and another node can take it.</p>
 
 <p>A lease alone does not prevent two leaders. The leader checks its own clock to decide that it still holds the lease, and its process can be paused by garbage collection or a virtual machine freeze for longer than the lease lasts. It then wakes up, still believes it leads, and writes, although the lease now belongs to someone else.</p>
 
@@ -191,7 +191,7 @@
 </script>
 </x-tracer>
 
-<h2>Ways to get a single leader</h2>
+<h2>Options for getting a single leader</h2>
 
 <h3>A lease from a coordination service</h3>
 
@@ -203,11 +203,11 @@
 
 <h3>A lock row in an existing database</h3>
 
-<p>A table with one row holds the current owner and an expiry time, and a node takes leadership by updating the row only if it is free or expired. It needs no new system and can be enough for a small service. It is only as available as that database, the expiry must be judged by the database's clock, and you must add the fencing counter yourself. Avoid it when the database replicates asynchronously, because a failover can lose the latest lock update and grant the lock twice.</p>
+<p>A table with one row holds the current owner and an expiry time, and a node takes leadership by updating the row only if it is free or expired. It needs no new system, but it is only as available as that database, the expiry must be judged by the database's clock, and you must add the fencing counter yourself. Avoid it when the database replicates asynchronously, because a failover can lose the latest lock update and grant the lock twice.</p>
 
 <h2>What a coordination service stores</h2>
 
-<p>A coordination service holds small pieces of state that many machines must agree on: the current leader, locks (the same lease mechanism, held by whoever is doing a task), configuration that every node must see consistently, and membership, the list of live nodes, which works because a crashed node's session expires and its entry disappears. Keep the data small and the write rate low, because every write goes through a majority. Store the pointer to the leader or the shard map there, and keep bulk data in an ordinary database.</p>
+<p>A coordination service holds small pieces of state that many machines must agree on: the current leader, locks (the same lease mechanism, held by whoever is doing a task), configuration that every node must see consistently, and membership, the list of live nodes, which works because a crashed node's session expires and its entry disappears. Keep the data small and the write rate low, because every write goes through a majority, and keep bulk data in an ordinary database.</p>
 
 <h2>Problems interviewers probe</h2>
 
@@ -217,7 +217,7 @@
 
 <h3>A stale leader serves old reads</h3>
 
-<p>An isolated leader can still believe it leads and answer a read with data that a newer leader has since changed. Systems that promise fresh reads make the leader confirm with a majority first, or let it serve reads only while it holds a time-based lease. Reads that may be slightly old can be served by any node.</p>
+<p>An isolated leader can still believe it leads and answer a read with data that a newer leader has since changed. Systems that promise fresh reads make the leader confirm with a majority first, or let it serve reads only while it holds a time-based lease. Reads that may be slightly old can come from any node.</p>
 
 <h2>In the interview</h2>
 
@@ -231,6 +231,8 @@
 <li><strong>"What if the leader pauses and wakes up after a new leader was elected?"</strong> It still thinks it leads and tries to write. Each lease carries a fencing token, and the storage rejects any write with a lower token than the highest it has seen.</li>
 <li><strong>"What happens during a network partition?"</strong> The side with a majority elects a leader and keeps working. The minority side cannot commit and refuses writes, so the system chooses consistency over availability.</li>
 <li><strong>"Would you store user data in ZooKeeper or etcd?"</strong> No, because each write goes through a majority and the data set is kept small. They hold leaders, locks, configuration and membership, and user data belongs in a database built for that load.</li>
+<li><strong>"What is the difference between Raft and Paxos?"</strong> Both use majorities and tolerate the same failures. Raft is built around one strong leader and a replicated log and was designed to be easy to understand, while Paxos is described as agreement on a single value that real systems extend into a log.</li>
+<li><strong>"Is a lock from a coordination service enough to guarantee that only one process works at a time?"</strong> No, because the holder can be paused and keep acting after its lease expires. The lock is safe only when the resource being protected checks a fencing token, or when the work is idempotent so that a duplicate run does no harm.</li>
 </ul>
 
 <x-interview title="Making the scheduler safe" tone="strong">
@@ -260,7 +262,8 @@
         { "text": "Reject it", "correct": true, "why": "A newer leader exists, and this write most likely comes from a paused former leader." },
         { "text": "Accept it if it arrived within ten seconds", "why": "Time checks fail when processes pause and clocks drift, which is the case fencing tokens exist for." }
       ]
-    }  ]
+    }
+  ]
 }
 </script>
 </x-quiz>

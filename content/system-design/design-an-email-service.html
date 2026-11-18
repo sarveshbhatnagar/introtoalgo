@@ -1,15 +1,15 @@
 <!--
 {
   "title": "Design an Email Service",
-  "description": "How to design an email service for 100 million users: receiving mail over SMTP, storing mailboxes, searching, sending with retries, and syncing devices.",
+  "description": "How to design an email service: SMTP receiving, per-user mailbox storage, search, sending with retries, device sync, and what interviewers ask.",
   "minutes": 23,
   "kind": "design",
   "tags": ["case study", "email", "partitioning", "search", "sync"]
 }
 -->
-<p>An email service receives messages from other mail servers over SMTP, stores them in each user's mailbox, lets users read, label and search them from several devices, and sends outgoing mail to other providers. Interviewers ask about it because it combines a strict durability requirement (an accepted message must never be lost) with large storage, per-user partitioning, search, and communication with servers that you do not control.</p>
+<p>An email service receives messages from other mail servers over SMTP, stores them in each user's mailbox, lets users read, label and search them from several devices, and sends outgoing mail to other providers. Interviewers ask about it because it combines a strict durability requirement, large storage, per-user partitioning, search, and communication with servers that you do not control.</p>
 
-<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read the section that follows it.</p>
+<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -20,7 +20,7 @@
 <x-you>How many users are there, and how much mail does each one get?</x-you>
 <x-interviewer>There are 100 million users. Each receives about 40 emails a day after spam is rejected, and sends about 5.</x-interviewer>
 <x-you>Then my priorities are these. Once we tell the sender's server that a message is accepted, we never lose it. New mail reaches every device within a few seconds. A user's own actions show up immediately. Search results can lag by a few seconds.</x-you>
-<x-coach>The candidate names the one promise that must never be broken and says where delay is acceptable.</x-coach>
+<x-coach>The candidate names the promise that must never be broken and says where delay is acceptable.</x-coach>
 </x-interview>
 
 <ul>
@@ -35,9 +35,8 @@
 
 <ul>
 <li><strong>Received mail:</strong> 100 million users × 40 emails = 4 billion emails a day. That is about 46,000 a second on average and about 92,000 a second at peak.</li>
-<li><strong>Sent mail:</strong> 100 million × 5 = 500 million a day, about 5,800 a second on average.</li>
 <li><strong>Reads:</strong> at 20 opened messages per user a day, 2 billion reads a day, about 23,000 a second.</li>
-<li><strong>Inbound bandwidth:</strong> 4 billion × 30 KB = 120 TB a day, which is 120 TB ÷ 86,400 s ≈ 1.4 GB/s on average. Over a year that is about 44 PB before replication, so bodies and attachments go to object storage, and only about 500 B of metadata per email (2 TB a day) goes in a database.</li>
+<li><strong>Inbound bandwidth:</strong> 4 billion × 30 KB = 120 TB a day, which is 120 TB ÷ 86,400 s ≈ 1.4 GB/s on average. Bodies and attachments go to object storage, and only about 500 B of metadata per email (2 TB a day) goes in a database.</li>
 </ul>
 
 <x-estimate title="Inbound message rate">
@@ -93,7 +92,7 @@ GET  /changes?since=81237
 </pre>
 </x-code>
 
-<p>The decision worth arguing is how devices sync. Re-downloading the first 50 inbox messages on every wake-up transfers 50 rows when one changed, and misses label changes on older mail. Instead, each user has a change log, and a device asks for everything after the last sequence number it has seen, for example "everything after 81,237". Label changes are sent as operations ("add Receipts, remove INBOX"), so two devices that edit different labels on one message both succeed.</p>
+<p>The decision worth arguing is how devices sync. Re-downloading the first 50 inbox messages on every wake-up wastes bandwidth and misses label changes on older mail. Instead, each user has a change log, and a device asks for everything after the last sequence number it has seen, for example "everything after 81,237". Label changes are sent as operations such as "add Receipts, remove INBOX", so two devices editing different labels on one message both succeed.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
@@ -133,7 +132,7 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 
 <p>A message can carry many labels. Inbox, Sent, Spam and Trash are system labels, and archiving a message removes its <code>INBOX</code> label without moving anything.</p>
 
-<p>Almost every query is about one user's mail, so everything is partitioned by <code>user_id</code>. The <code>label_index</code> table has one row for each message and label, so "the newest 50 messages in the Inbox" is a single range scan. Mailbox metadata goes in a sharded relational database, and the deep dives explain why. Bodies and attachments never change after they are written, which suits <a href="/system-design/blob-storage.html">object storage</a>.</p>
+<p>Almost every query is about one user's mail, so everything is partitioned by <code>user_id</code>. The <code>label_index</code> table has one row for each message and label, so "the newest 50 messages in the Inbox" is a single range scan. Bodies and attachments never change after they are written, which suits <a href="/system-design/blob-storage.html">object storage</a>.</p>
 
 <x-tryit variant="turn" minutes="5" title="High-level design">
 <x-task>
@@ -259,9 +258,11 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 
 <p>There are three places to deal with unwanted mail. The first is to reject it during the SMTP conversation. The sender learns immediately and you store nothing, but the check runs while the sender waits, so only fast and certain checks belong here, such as an unknown recipient or a sending IP address with a bad reputation.</p>
 
-<p>The second is to accept the message and file it in the Spam label. This leaves time for content classifiers and virus scans, which are too slow to run while the connection is open, and the user can rescue a false positive. The cost is storing the spam.</p>
+<p>The second is to accept the message and file it in the Spam label. This leaves time for content classifiers and virus scans, which are too slow to run while the connection is open, and the user can rescue a false positive. The cost is that you store the spam.</p>
 
 <p>The third is to accept the message and then send a bounce to the sender. This is the option to avoid. Spam usually forges its sender address, so the bounce goes to an innocent person who never sent anything. That is called backscatter, and it can get your servers blocklisted. Bounces are only for undeliverable mail, from the send path described later.</p>
+
+<p>SMTP in also checks who is really sending the message, because the From address is easy to forge. SPF checks that the connecting IP address is allowed to send for the sender's domain. DKIM checks a cryptographic signature that the sending domain put on the message. DMARC is the policy the domain publishes for what to do when those checks fail, such as reject the message or file it as spam. The results feed into the spam score.</p>
 
 <x-tradeoffs caption="Where to stop unwanted mail">
 <script type="application/json">
@@ -285,9 +286,9 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 </script>
 </x-tradeoffs>
 
-<p>The pipeline delivers each message at least once, and this is deliberate. A sender may retry after a <code>250</code> reply gets lost, and the queue may give one message to two workers. Exactly-once delivery is not practical, so the mailbox write is made idempotent with a per-recipient dedupe key, which is a hash of the Message-ID header and the content (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>). A message addressed to three of your users is stored once and queued as three deliveries.</p>
+<p>If the inbound queue is nearly full, SMTP in replies <code>451</code>, so senders retry later and mail is delayed but not dropped.</p>
 
-<p>The queue also provides back-pressure. If it is nearly full, SMTP in replies <code>451</code>, a temporary failure, and senders retry later, so mail is delayed but never dropped.</p>
+<p>The pipeline delivers each message at least once, and this is deliberate. A sender may retry after a <code>250</code> reply gets lost, and the queue may give one message to two workers. Exactly-once delivery is not practical, so the mailbox write is made idempotent with a per-recipient dedupe key, which is a hash of the Message-ID header and the content (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
 
 <h3>Storing mailboxes, partitioned by user</h3>
 
@@ -297,15 +298,15 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 
 <p>A wide-column store such as Cassandra also partitions by user and adds capacity by adding nodes, so it absorbs 46,000 writes a second without much effort. Its transactions only cover a single partition, so the label rows, counters and change log can drift apart and need repair jobs.</p>
 
-<p>Users are mapped to shards through a directory and not with <code>user_id</code> modulo the number of shards. With a directory you can move a single user without redistributing everyone (see <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>).</p>
+<p>Users are mapped to shards through a directory and not with <code>user_id</code> modulo the number of shards, so you can move a single user without redistributing everyone (see <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>).</p>
 
-<p>Attachments are stored under the SHA-256 hash of their bytes. A 5 MB file that is sent to 200 of your users then takes 5 MB of storage and not 1,000 MB. Users reach an attachment only through a message that they own, never by its hash. A background sweep deletes objects that nothing has referenced for a few days.</p>
+<p>Attachments are stored under the SHA-256 hash of their bytes. A 5 MB file that is sent to 200 of your users then takes 5 MB of storage and not 1,000 MB. Users reach an attachment only through a message that they own, never by its hash.</p>
 
 <h3>Searching one user's mail</h3>
 
-<p>Every search is limited to the mail of the person who asks, so the index is sharded by user. All of one user's documents sit on one shard, a query goes to a single machine, and it cannot return another user's mail. A user with millions of messages creates a hot shard, which you fix by moving the user, as with mailboxes.</p>
+<p>Every search is limited to the mail of the person who asks, so the index is sharded by user. All of one user's documents sit on one shard, a query goes to a single machine, and it cannot return another user's mail.</p>
 
-<p>The alternative is one global index, as a web search engine uses. Every query then goes to all shards and filters down to one user, and a bug in that filter shows people each other's mail. Mail search never crosses users, so a global index has no benefit.</p>
+<p>A global index would send every query to all shards and filter down to one user, and a bug in that filter would show people each other's mail. Mail search never crosses users, so a global index has no benefit.</p>
 
 <p>The index covers headers, body text and attachment names. Operators such as <code>from:</code>, <code>has:attachment</code> and <code>label:</code> are filters on stored fields. The indexer reads the change log, which is why search lags by a couple of seconds, and results are checked against the mailbox so that a message deleted a second ago does not appear. <a href="/system-design/search-systems.html">Search systems</a> explains the inverted index itself.</p>
 
@@ -341,7 +342,7 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 <ul>
 <li><strong>Delivery:</strong> it groups the recipients by domain, looks up each domain's MX record, connects over TLS, and signs the message with DKIM so that the receiving server can verify that it came from you.</li>
 <li><strong>Temporary failures:</strong> a <code>4xx</code> reply or a timeout means the message goes to the retry schedule. The gaps grow, for example 5 minutes, then 15, then hourly, for at least four to five days as the SMTP standard suggests.</li>
-<li><strong>Permanent failures:</strong> a <code>5xx</code> reply such as "no such user", or running out of retries, produces a bounce message in the sender's inbox with the address and the reason. This is the only path that creates bounces.</li>
+<li><strong>Permanent failures:</strong> a <code>5xx</code> reply such as "no such user", or running out of retries, produces a bounce message in the sender's inbox with the address and the reason. </li>
 </ul>
 
 <h3>Syncing devices</h3>
@@ -395,10 +396,13 @@ changes   (user_id, seq, message_id, kind)   PRIMARY KEY (user_id, seq)
 <p>The outbound message is queued with a delay of about 10 seconds, and pressing undo deletes it from the queue before it is released. After the message has been handed to another provider it cannot be recalled.</p>
 
 <h3>A mailing list sends one message to 1 million of your users. What happens?</h3>
-<p>You store the body once and queue 1 million deliveries, about 22 seconds of work at 46,000 a second. Bulk deliveries use a lower-priority queue so that personal mail keeps its normal delay.</p>
+<p>You store the body once and queue 1 million deliveries, about 22 seconds of work at 46,000 a second. A lower-priority queue keeps this bulk work from delaying personal mail.</p>
 
 <h3>How would you support IMAP clients?</h3>
 <p>You add an IMAP front end that maps labels to folders and maps the change log to IMAP's modification sequence numbers. A message with two labels appears in two folders, and deleting it from one folder must remove only that label.</p>
+
+<h3>How do you group messages into conversations?</h3>
+<p>Each message carries a Message-ID, and a reply names its parent in the In-Reply-To and References headers. At delivery the worker looks up those ids among the user's recent messages and reuses the existing <code>thread_id</code>, or creates a new one if none matches.</p>
 
 <x-checklist title="Self-review: email service">
 <script type="application/json">

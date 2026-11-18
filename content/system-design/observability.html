@@ -36,19 +36,17 @@
 </script>
 </x-arch>
 
-<p>Services send their data through a local agent that buffers it, so a slow monitoring system does not slow down user requests.</p>
-
 <h2>Metrics, logs and traces</h2>
 
 <h3>Metrics</h3>
 
 <p>A metric is a number measured over time, such as requests per second, the share of requests that fail, the 99th percentile of latency or the memory in use. Metrics answer the question "is something wrong, and since when?". The cost depends on the number of distinct metrics and not on the traffic.</p>
 
-<p>Metrics are cheap, so they are kept for months and used for dashboards and alerts. They are aggregates, so a metric can show that 2% of requests fail but not which requests or why.</p>
+<p>Metrics are kept for months and drive dashboards and alerts, but a metric can show that 2% of requests fail without showing which requests or why.</p>
 
 <h3>Logs</h3>
 
-<p>A log is a record of one event, for example "payment 9f2 timed out after 800 ms on attempt 2". Logs answer the question "what happened in this particular case?", and they can answer questions nobody planned for, because they keep the detail that a metric throws away. Write them as structured records with named fields, such as JSON, and include the trace id so a log line can be matched to a trace.</p>
+<p>A log is a record of one event, for example "payment 9f2 timed out after 800 ms on attempt 2". Logs answer the question "what happened in this particular case?", and they can answer questions nobody planned for, because they keep the detail that a metric throws away. Write them as structured records with named fields and include the trace id, so a log line can be matched to a trace.</p>
 
 <p>Logs are the most expensive signal, because the volume grows with traffic and every request can write several lines. They are searched only after something else, such as a metric or a trace, has narrowed the problem down.</p>
 
@@ -56,7 +54,7 @@
 
 <p>A trace follows one request through all the services it touches. The first service creates a trace id and passes it to each service it calls, usually in an HTTP header. Each service records a span, which has a name, a start time and a duration, and the spans of one trace form a tree. Traces answer the question "which call made this request slow?", which neither a metric nor a log can answer when ten services are involved.</p>
 
-<p>Tracing only works if every service forwards the trace id, because one service that drops it hides everything below it. Most systems keep only a sample of traces, as described below.</p>
+<p>Tracing only works if every service forwards the trace id, because one service that drops it hides everything below it.</p>
 
 <h2>Percentiles and why averages mislead</h2>
 
@@ -74,7 +72,9 @@
 
 <h2>SLIs, SLOs and error budgets</h2>
 
-<p>A service level indicator (SLI) is a measurement of one aspect of the service that users care about, written as a ratio of good events to all events. An example is "the share of checkout requests that succeed in under one second". A service level objective (SLO) is the target for that ratio over a period, for example 99.9% over 30 days. The difference between the target and 100% is the error budget. A 99.9% SLO allows 0.1% of requests to be bad, and for a service with 1.3 billion requests a month that is about 1.3 million requests.</p>
+<p>A service level indicator (SLI) is a measurement of one aspect of the service that users care about, written as a ratio of good events to all events. An example is "the share of checkout requests that succeed in under one second". A service level objective (SLO) is the target for that ratio over a period, for example 99.9% over 30 days. The difference between the target and 100% is the error budget. A 99.9% SLO allows 0.1% of requests to be bad.</p>
+
+<p>An SLO is an internal target. A service level agreement (SLA) is a contract with customers that says what the provider owes them, such as a refund, when a target is missed. The SLO is set stricter than the SLA, so the team is warned before the contract is broken.</p>
 
 <p>While budget remains, the team ships features and takes risks. When it is nearly spent, the team slows releases and works on reliability.</p>
 
@@ -84,13 +84,13 @@
 
 <h3>Burn-rate alerts</h3>
 
-<p>The standard way to alert on an SLO is the burn rate, which is how fast the error budget is being used compared with a steady, sustainable pace. A burn rate of 1 uses exactly the whole budget in the SLO period. A common rule pages a person when the burn rate over the last hour is above 14.4. At that speed a 30-day budget would be gone in about two days, and one hour alone uses 14.4 ÷ 720, which is 2% of the month's budget. A slower burn creates a ticket instead of a page.</p>
+<p>The standard way to alert on an SLO is the burn rate, which is how fast the error budget is being used compared with a steady, sustainable pace. A burn rate of 1 uses exactly the whole budget in the SLO period. A common rule pages a person when the burn rate over the last hour is above 14.4. At that speed a 30-day budget would be gone in about two days. A slower burn creates a ticket instead of a page.</p>
 
 <h3>Total outage with no traffic</h3>
 
 <p>An alert based on the share of failed requests cannot fire when no requests arrive, so a total outage needs synthetic checks, which are test requests sent from outside the system every minute.</p>
 
-<h2>From alert to cause</h2>
+<h2>Tracing an alert from metric to trace to log</h2>
 
 <p>The tracer below follows an alert from a metric to a trace and then to a log line.</p>
 
@@ -114,7 +114,7 @@
   },
   "steps": [
     {
-      "caption": "An alert pages the on-call engineer because the checkout error budget is burning fast. The alert is about slow checkouts, not about CPU.",
+      "caption": "An alert pages the on-call engineer because the checkout error budget is burning fast.",
       "arch": { "active": ["user", "gw", ["user", "gw"]], "fail": ["user"], "notes": { "user": "slow checkouts" } },
       "vars": { "checkout p99": "2.1 s", "SLO": "99.9% under 1 s" }
     },
@@ -134,7 +134,7 @@
       "vars": { "trace": "4bf9", "inventory": "15 ms", "payment": "1,980 ms" }
     },
     {
-      "caption": "The logs for trace 4bf9 show two payment attempts that timed out after 800 ms each and a third that succeeded in 300 ms after 80 ms of backoff. Together that is 800 + 800 + 300 + 80 = 1,980 ms.",
+      "caption": "The logs for trace 4bf9 show two payment attempts that timed out after 800 ms each and a third that succeeded in 300 ms, with a 40 ms backoff before each retry. Together that is 800 + 40 + 800 + 40 + 300 = 1,980 ms.",
       "arch": { "active": ["checkout", "pay", ["checkout", "pay"]], "notes": { "checkout": "2 timeouts" } },
       "vars": { "attempt 1": "800 ms, timeout", "attempt 2": "800 ms, timeout", "attempt 3": "300 ms, ok" }
     },
@@ -148,7 +148,7 @@
 </script>
 </x-tracer>
 
-<h2>Cost problems and other nuances</h2>
+<h2>High-cardinality labels, log volume and trace sampling</h2>
 
 <h3>High-cardinality labels</h3>
 
@@ -156,7 +156,7 @@
 
 <h3>Log volume</h3>
 
-<p>Log cost grows with traffic, and most of the volume is successful requests nobody will read. Reduce it by turning off debug logs in production, by sampling the logs of successful requests while keeping every error,, and by keeping logs for a shorter time than metrics.</p>
+<p>Log cost grows with traffic, and most of the volume is successful requests nobody will read. Reduce it by turning off debug logs in production, sampling the logs of successful requests while keeping every error, and keeping logs for less time than metrics.</p>
 
 <h3>Trace sampling</h3>
 
@@ -173,7 +173,8 @@
 <li><strong>"Why not just use average latency?"</strong> An average hides the slow requests that users complain about, and a few very slow requests can leave it looking normal. Percentiles show the tail, and with many backend calls per page the tail affects far more users than its percentage suggests.</li>
 <li><strong>"What is an error budget, and what do you do with it?"</strong> It is the share of requests that the SLO allows to fail, for example 0.1% for a 99.9% target. The team keeps shipping while budget remains, and when it is nearly used up the team pauses risky releases and works on reliability.</li>
 <li><strong>"What would you page on?"</strong> A fast burn of the SLO error budget, because it means that users are affected and the budget will be gone soon. CPU, disk and similar causes go to dashboards, and a slow burn becomes a ticket, so that pages stay rare and are taken seriously.</li>
-<li><strong>"Your observability bill is growing quickly. What do you cut?"</strong> I would first look for metric labels with many distinct values, because they multiply the number of series. Then I would sample the logs of successful requests while keeping every error, shorten log retention and sample traces, keeping the slow and failed ones.</li>
+<li><strong>"Your observability bill is growing quickly. What do you cut?"</strong> I would first look for metric labels with many distinct values, because they multiply the number of series. Then I would sample successful-request logs, shorten log retention and sample traces, keeping the slow and failed ones.</li>
+<li><strong>"What is the difference between an SLO and an SLA?"</strong> An SLO is the internal reliability target that the team alerts on. An SLA is a contract with customers that has consequences, such as refunds, when it is missed, so it is set looser than the SLO.</li>
 </ul>
 
 <x-interview title="How would you know it is broken?" tone="strong">
@@ -181,7 +182,7 @@
 <x-you>The promise to users is that a notification arrives within 10 seconds. So my SLI is the share of notifications delivered within 10 seconds, and the SLO is 99.9% over 30 days. I would page when the error budget burns fast. Each service also has request rate, error rate and latency percentiles, and the queue has consumer lag, which usually rises before delivery times get worse.</x-you>
 <x-interviewer>The SLO alert fires. What do you do?</x-interviewer>
 <x-you>I would check the dashboards to see which stage has rising lag or latency, then open a few slow traces to find the span that takes the time, and then read the logs for those trace ids. I would also run a synthetic check that sends a test notification every minute, so that a total outage is noticed even when no real traffic arrives.</x-you>
-<x-coach>The answer measures what users experience, ties the alert to that measurement, and has a clear path from the alert to the cause.</x-coach>
+<x-coach>The answer measures what users experience and has a clear path from the alert to the cause.</x-coach>
 </x-interview>
 
 <x-quiz>

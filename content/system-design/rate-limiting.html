@@ -8,7 +8,7 @@
 -->
 <p>A rate limiter caps how many requests a client may make in a period of time and rejects the requests over the cap. It protects a service from being overloaded by one client, shares capacity fairly between clients, enforces the limits of a paid plan, and slows down attacks such as password guessing.</p>
 
-<p>Without a limit, one client with a retry bug or a runaway script can use most of the capacity of an API, and every other client sees slow responses or errors. The client does not have to be malicious for this to happen. The limiter adds a check to every request and needs state that all servers share.</p>
+<p>Without a limit, one client with a retry bug or a runaway script can use most of the capacity of an API, and every other client sees slow responses or errors. The limiter adds a check to every request and needs state that all servers share.</p>
 
 <h2>Where the limiter sits</h2>
 
@@ -114,7 +114,7 @@
 
 <p>Requests are added to a queue of fixed size, and the queue is drained at a fixed rate. If the queue is full when a request arrives, the request is rejected.</p>
 
-<p>A token bucket passes a burst through immediately, while a leaky bucket holds the burst in the queue and releases it at an even pace. The price is added latency for queued requests. Pick it when the next system needs a steady rate, such as a partner API that rejects anything over 50 calls a second. It is less common for protecting your own API, because queuing excess requests makes clients wait instead of failing fast.</p>
+<p>A token bucket passes a burst through immediately, while a leaky bucket holds the burst in the queue and releases it at an even pace. The price is added latency for queued requests. Pick it when the next system needs a steady rate, such as a partner API that rejects anything over 50 calls a second. It is less common for protecting your own API, because queued requests make clients wait instead of failing fast.</p>
 
 <h2>What to limit by</h2>
 
@@ -150,7 +150,7 @@
 
 <p>All nodes keep their counters in one shared in-memory store, such as Redis, and every request updates it. The count is exact, which makes this the default for quotas. It adds a network call to every request, and the store must handle the total request rate.</p>
 
-<p>The update must be atomic. If a node reads the counter, checks it, and writes it back as separate steps, two nodes can both read 99 and both write 100, and the client has made 101 requests. Use an atomic increment, or a short server-side script that refills the bucket and takes a token in a single step. A related problem is incrementing a counter and setting its expiry as two commands: if the process stops between them, the counter never expires and the client stays blocked.</p>
+<p>The update must be atomic. If a node reads the counter, checks it, and writes it back as separate steps, two nodes can both read 99 and both write 100, and the client has made 101 requests. Use an atomic increment, or a short server-side script that refills the bucket and takes a token in a single step. A related problem is incrementing a counter and setting its expiry as two commands: if the process stops between them, the counter never expires and the client stays blocked. Take timestamps from the store's own clock, because the clocks of the gateway nodes differ slightly and that skews the refill calculation.</p>
 
 <h3>Splitting the limit across nodes</h3>
 
@@ -160,15 +160,15 @@
 
 <p>Each node counts locally and sends its counts to the others, or to a shared store, about once a second. Requests are fast because they never wait for the network. The limit can be exceeded by whatever arrives between two synchronisations, and the overshoot grows with the number of nodes. It suits flood protection but not strict quotas.</p>
 
-<h2>Problems interviewers ask about</h2>
+<h2>Client responses, limiter failure and multiple regions</h2>
 
 <h3>What the client receives</h3>
 
-<p>A rejected request gets the status <code>429 Too Many Requests</code>. The response should include a <code>Retry-After</code> header with the number of seconds to wait, so the client does not have to guess. Clients should respond to a 429 by waiting for the <code>Retry-After</code> time and then retrying with exponential backoff and random jitter. Without jitter, all rejected clients retry at the same moment and cause the same overload again.</p>
+<p>A rejected request gets the status <code>429 Too Many Requests</code>. The response should include a <code>Retry-After</code> header with the number of seconds to wait, so the client does not have to guess. Many APIs also send headers with the limit, the remaining allowance and the reset time on every response, so clients can slow down before they are rejected. Clients should respond to a 429 by waiting for the <code>Retry-After</code> time and then retrying with exponential backoff and random jitter. Without jitter, all rejected clients retry at the same moment and cause the same overload again.</p>
 
 <h3>What happens when the limiter is down</h3>
 
-<p>If the counter store is unreachable, the limiter must choose between two behaviours. Failing open means allowing every request, so a limiter outage does not become an outage of the whole API, at the price of having no protection for a while. Failing closed means rejecting requests, which keeps protection but turns the limiter into a single point of failure. A general-purpose API should fail open, ideally falling back to a coarse local limit on each node. Login and other endpoints that attackers target should fail closed, or use a strict local limit. Set a short timeout on calls to the store either way.</p>
+<p>If the counter store is unreachable, the limiter must choose between two behaviours. Failing open means allowing every request, so a limiter outage does not become an outage of the whole API, at the price of having no protection for a while. Failing closed means rejecting requests, which keeps protection but turns the limiter into a single point of failure. A general-purpose API should fail open, ideally falling back to a coarse local limit on each node. Login and other endpoints that attackers target should fail closed, or use a strict local limit.</p>
 
 <h3>Rate limiting across regions</h3>
 

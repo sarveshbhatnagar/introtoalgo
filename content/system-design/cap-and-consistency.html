@@ -10,7 +10,7 @@
 
 <p>Without this distinction a system gets one setting for everything. If every read goes to the leader, distant users wait on every request. If every read goes to the nearest replica, a user can save a change and then see the old value, and two users can claim the same username.</p>
 
-<h2>Where the copies disagree</h2>
+<h2>Replication lag between leader and replicas</h2>
 
 <x-arch caption="The leader accepts writes and sends them to the replica asynchronously, so the replica can lag behind.">
 <script type="application/json">
@@ -47,7 +47,7 @@
 
 <h3>What it does not say</h3>
 
-<p>When the network is healthy you can have both consistency and availability. The theorem also does not label a database as CP or AP for good: the choice is made per operation, and many databases let you set it per request.</p>
+<p>When the network is healthy you can have both consistency and availability. The theorem is also not a rule that you pick any two of three properties, because partition tolerance is not something you can give up. It also does not label a database as CP or AP for good: the choice is made per operation, and many databases let you set it per request.</p>
 
 <h3>The trade-off when there is no partition</h3>
 
@@ -77,7 +77,7 @@
 
 <h3>Eventual consistency</h3>
 
-<p>If writes stop, all copies converge to the same value after some time, and before that a read can return anything, so a like count may show 42 and then 41. Any replica answers without talking to the others, which makes it the fastest model. It suits counters, feeds and search results.</p>
+<p>Eventual consistency means that if writes stop, all copies converge to the same value after some time. Before that a read can return anything, so a like count may show 42 and then 41. It is the fastest model, because any replica answers without talking to the others. It suits counters, feeds and search results.</p>
 
 <x-tracer title="Replica lag, then a partition">
 <script type="application/json">
@@ -142,9 +142,9 @@
 
 <p>Stores without a single leader, such as Dynamo-style databases, write each value to several replicas and use a quorum to decide when an operation counts. With <code>N</code> replicas, a write succeeds when <code>W</code> of them acknowledge it, and a read asks <code>R</code> of them and takes the newest value it receives. If <code>R + W &gt; N</code>, every read set shares at least one replica with every write set, so a read reaches at least one replica that has the latest acknowledged write. With N = 3, W = 2 and R = 2, 2 + 2 = 4 is greater than 3.</p>
 
-<p>A high W with a low R makes reads fast and writes slow, and the reverse makes writes fast. W = 1 and R = 1 is the fastest but gives up the overlap guarantee. With majority quorums, 3 replicas tolerate 1 failure and 5 tolerate 2.</p>
+<p>A high W with a low R makes reads fast and writes slow, and the reverse makes writes fast.</p>
 
-<p>A quorum is not the same as linearizability, and the interviewer may test this. Two concurrent writes can arrive at different replicas in different orders. A write that fails halfway can leave its value on some replicas and still be returned by a later read. The accurate claim is that quorum reads usually see the latest acknowledged write, not that quorums give strong consistency.</p>
+<p>A quorum is not the same as linearizability, and the interviewer may test this. Two concurrent writes can arrive at different replicas in different orders. A write that fails halfway can leave its value on some replicas and still be returned by a later read. A sloppy quorum, which accepts writes on other reachable nodes when some of the right replicas are down, weakens the guarantee further. The accurate claim is that quorum reads usually see the latest acknowledged write, not that quorums give strong consistency.</p>
 
 <h2>Conflict resolution</h2>
 
@@ -152,7 +152,7 @@
 
 <h3>Last write wins</h3>
 
-<p>Each write carries a timestamp, and the replica keeps the value with the latest one. It is simple, needs no extra metadata and always converges. The problem is that it silently discards the other write: if two users edit the same document field, one edit disappears with no error. Clocks on different machines also differ, so the write that is "last" may have happened first. Use it only where losing an update is acceptable, such as a "last seen" time.</p>
+<p>Each write carries a timestamp, and the replica keeps the value with the latest one. The problem is that it silently discards the other write: if two users edit the same document field, one edit disappears with no error. Clocks on different machines also differ, so the write that is "last" may have happened first. Use it only where losing an update is acceptable, such as a "last seen" time.</p>
 
 <h3>Version vectors</h3>
 
@@ -175,7 +175,7 @@
 </script>
 </x-tradeoffs>
 
-<h2>Problems that interviewers probe</h2>
+<h2>Failure modes and decisions interviewers ask about</h2>
 
 <h3>Choosing the consistency for each feature</h3>
 
@@ -187,11 +187,11 @@
 
 <h3>Writes lost during an asynchronous failover</h3>
 
-<p>With asynchronous replication, the leader acknowledges a write before the replicas have it. If the leader dies, the promoted replica is missing the writes from the last moments, even though users were told they succeeded. For payments, replicate synchronously to at least one replica before acknowledging and accept the latency. For likes, losing a few seconds of writes is acceptable.</p>
+<p>If the leader dies, the promoted replica is missing the writes from the last moments, even though users were told they succeeded. For payments, replicate synchronously to at least one replica before acknowledging and accept the latency. For likes, losing a few seconds of writes is acceptable.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring up consistency when you add replicas, a cache or a second region, or when two users can race for the same thing. Do not label the system "AP" or "CP"; state what each feature needs and why, for example: "Seat booking must be strongly consistent, because two people paying for one seat is the failure we cannot allow, while the seat map can be a few seconds stale."</p>
+<p>Bring up consistency when you add replicas, a cache or a second region, or when two users can race for the same thing. Do not label the whole system "AP" or "CP". State what each feature needs and why, for example: "Seat booking must be strongly consistent, because two people paying for one seat is the failure we cannot allow, while the seat map can be a few seconds stale."</p>
 
 <p>Questions to expect:</p>
 

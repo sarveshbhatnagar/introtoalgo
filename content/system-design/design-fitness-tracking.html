@@ -9,7 +9,7 @@
 -->
 <p>A fitness tracking app records runs and bike rides with the phone's GPS, shows the route and statistics such as distance, pace and climb, lets friends see each other's activities in a feed, and can share a runner's position live. It is a common interview question because the data is created on a phone that is often offline, so uploads that arrive late, twice or half finished must all be handled correctly.</p>
 
-<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading the answer.</p>
+<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
@@ -36,7 +36,7 @@
 <li><strong>Size of one activity:</strong> the phone records one point a second, so a 45-minute activity has 45 × 60 = 2,700 points. At about 20 bytes a point (time, latitude, longitude, altitude and accuracy) that is 54 KB raw.</li>
 <li><strong>Uploads:</strong> 10 million ÷ 86,400 seconds is about 116 uploads a second on average. Weekend mornings are busier, so assume a peak of 5 times the average, about 580 a second.</li>
 <li><strong>Feed writes:</strong> if an activity has 50 followers, then 10 million × 50 = 500 million feed entries a day, which is about 5,800 a second.</li>
-<li><strong>Live sharing:</strong> if 50,000 people share their position at peak and each sends an update every 15 seconds, that is about 3,300 writes a second, which is small.</li>
+<li><strong>Live sharing:</strong> if 50,000 people share their position at peak and each sends an update every 15 seconds, that is about 3,300 writes a second.</li>
 </ul>
 
 <x-estimate title="Trace storage for a year">
@@ -85,8 +85,6 @@ GET  /live/{live_id}                     latest position + short trail, for view
 
 <p>The decision worth arguing is who creates the activity id. If the phone creates it at the start of recording, the upload is a <code>PUT</code> to a name the phone already knows, and every retry lands on the same record. This is an <a href="/system-design/idempotency-and-retries.html">idempotency key</a> that exists before any network call is made.</p>
 
-<p>The API does not need resumable uploads. A 10-hour ride has 36,000 points at about 4 compressed bytes each, which is about 144 KB, so the phone can simply send the whole file again.</p>
-
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
 <p>Where do the GPS points live, and what goes in the database? Think about what each screen needs to read.</p>
@@ -121,7 +119,7 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 </pre>
 </x-code>
 
-<p>A trace is written once and always read whole, so it is stored as a file in <a href="/system-design/blob-storage.html">object storage</a>. Feeds, profiles and statistics pages read the summary row instead. At 10 million rows a day and about 2 KB each, that is 20 GB a day and about 7 TB a year. The table is <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>user_id</code>, because "show my activities" is the most common query. A relational or a wide-column database would both work, and the part that matters is the unique key on <code>activity_id</code>.</p>
+<p>A trace is written once and always read whole, so it is stored as a file in <a href="/system-design/blob-storage.html">object storage</a>. Feeds, profiles and statistics pages read the summary row instead. The table is <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>user_id</code>, because "show my activities" is the most common query. A relational or a wide-column database would both work, as long as <code>activity_id</code> is a unique key.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -134,7 +132,7 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 
 <h2>High-level design</h2>
 
-<p>The upload does the minimum needed to make the activity safe and then answers the phone. Workers that can be retried do everything else.</p>
+<p>The upload stores the file and the row and then answers the phone, and workers that can be retried do everything else.</p>
 
 <x-arch caption="The activity service stores the file and the row and then hands off to workers, which compute statistics, segment efforts and feed entries.">
 <script type="application/json">
@@ -246,21 +244,21 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 
 <h3>Recording offline and syncing safely</h3>
 
-<p>The problem is that the phone is the only place the activity exists until the server confirms it, and the network between the two is unreliable. The design has to survive a killed app, a lost connection, a lost reply and a retry. It rests on four rules, and an interviewer will usually ask you to defend each one.</p>
+<p>The problem is that the phone is the only place the activity exists until the server confirms it, and the network between the two is unreliable. The design has to survive a killed app, a lost connection, a lost reply and a retry. It rests on four rules.</p>
 
 <p>First, the phone writes locally before anything else. GPS works without a data connection, so points go into an append-only file on the phone, flushed every few seconds. If the operating system kills the app, it reopens the file and continues the same activity. Second, the phone creates the activity id when recording starts, as a random UUID. Third, uploads come from a local queue that retries with increasing delays, and the phone deletes its copy only after it receives a 200 or 201. Fourth, every server step can be repeated safely: the file key includes the file's hash, the row is inserted only if it is absent, and feed entries are keyed by follower and activity.</p>
 
-<p>The remaining question is when the phone sends the data. Streaming every point keeps the server current, but it fails where there is no signal and drains the battery. Uploading one file when the activity ends needs a single small request and is naturally idempotent, but a phone that is lost mid-run loses the run. Uploading chunks during the activity limits that loss to the last chunk, but the server must assemble late, out-of-order chunks and the activity is half finished for a while. One file at the end is the right choice for normal activities, and chunking is worth mentioning for very long events such as a 24-hour race.</p>
+<p>The remaining question is when the phone sends the data. Streaming every point keeps the server current, but it fails where there is no signal and drains the battery. Uploading one file when the activity ends needs a single small request and is naturally idempotent, but a phone that is lost mid-run loses the run. Uploading chunks during the activity limits that loss to the last chunk, but the server must assemble late, out-of-order chunks. One file at the end is the right choice for normal activities, and chunking is worth mentioning for very long events such as a 24-hour race.</p>
 
 <x-callout type="mistake" title="Letting the server assign the activity id">
-<p>If the server creates the id, a lost reply leaves the phone with two bad choices. It can retry and risk a duplicate, or it can give up and risk losing the run. Deduplicating by "same user and same start time" is fragile. Create the id on the phone before any network call.</p>
+<p>If the server creates the id, a lost reply leaves the phone with two bad choices: retry and risk a duplicate, or give up and risk losing the run. Deduplicating by "same user and same start time" is fragile, so create the id on the phone.</p>
 </x-callout>
 
 <h3>Storing GPS traces</h3>
 
 <p>The problem is choosing a store for about 27 billion points a day. Every reader asks for a whole trace, and nobody asks for "point 1,734 of activity a7f3", and that access pattern decides the answer.</p>
 
-<p>A row per point in a relational table would mean 10 million × 2,700 = 27 billion rows a day, about 312,500 inserts a second, and each row's overhead is larger than the 20-byte point. A time-series database compresses points well, but it is built for range reads across many series, while here every read is one whole activity. A compressed file per activity is about 11 KB, so a year is about 40 TB of cheap object storage, and one read returns everything the map needs. You cannot query inside the file, so searchable fields such as distance and duration go in the summary row.</p>
+<p>A row per point in a relational table would mean 10 million × 2,700 = 27 billion rows a day, about 312,500 inserts a second, and each row's overhead is larger than the 20-byte point. A time-series database compresses points well, but it is built for range reads across many series, while here every read is one whole activity. A compressed file per activity is about 11 KB, so a year is about 40 TB of cheap object storage, and one read returns everything the map needs.</p>
 
 <x-tradeoffs caption="Where the GPS points are stored">
 <script type="application/json">
@@ -270,19 +268,19 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
       "name": "One row per point",
       "good": "It is easy to query with SQL.",
       "bad": "It needs about 312,500 inserts a second, and each row's overhead is larger than the point.",
-      "pick": "Small apps, or an analytics copy, but not the main store."
+      "pick": "Use it for a small app or as an analytics copy, but not as the main store."
     },
     {
       "name": "Time-series database",
       "good": "It compresses well and answers time-range queries.",
       "bad": "It is built for range reads across many series, but each read here is one whole activity.",
-      "pick": "You need queries across many activities by time."
+      "pick": "Use it when you need to query across many activities by time."
     },
     {
       "name": "One compressed file per activity",
       "good": "Each file is about 11 KB, the year's data is about 40 TB of cheap storage, and one read gets everything.",
       "bad": "You cannot query inside the file, so searchable fields must go in the summary row.",
-      "pick": "Traces that are always read whole, which is the usual answer.",
+      "pick": "Use it when traces are always read whole, which is the case here.",
       "default": true
     }
   ]
@@ -290,7 +288,7 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 </script>
 </x-tradeoffs>
 
-<p>Delta encoding is what makes the file small. Consecutive points are only metres apart, so storing the difference from the previous point turns 4-byte coordinates into one or two bytes. Keep the original upload next to the cleaned version, so that better cleaning code can recompute the result later.</p>
+<p>Delta encoding is what makes the file small. Consecutive points are only metres apart, so storing the difference from the previous point turns 4-byte coordinates into one or two bytes.</p>
 
 <h3>Live location sharing</h3>
 
@@ -314,9 +312,9 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 </script>
 </x-arch>
 
-<p>The phone sends the last 15 seconds of points to the live service while it keeps writing its local file. The service overwrites one key that holds the latest 20 points, and the key expires 10 minutes after the last update. Viewers poll every 15 seconds. That is about 3,300 writes a second and a few times as many reads, which one in-memory store with a replica can handle. Each viewer needs an update only every 15 seconds and only a few people watch each runner, so polling is simpler than pushing over a persistent connection. The <a href="/system-design/realtime-communication.html">realtime communication</a> lesson compares the push options.</p>
+<p>The phone sends the last 15 seconds of points to the live service. The service overwrites one key that holds the latest 20 points, and the key expires 10 minutes after the last update. Viewers poll every 15 seconds. That is about 3,300 writes a second, which one in-memory store with a replica can handle. Only a few people watch each runner and each needs an update every 15 seconds, so polling is simpler than a persistent connection. The <a href="/system-design/realtime-communication.html">realtime communication</a> lesson compares the push options.</p>
 
-<p>A detail that interviewers like is to show how old the position is. If the runner loses signal, the viewer should see "last update 6 minutes ago" instead of a dot that looks current.</p>
+<p>The viewer should see how old the position is, for example "last update 6 minutes ago" when the runner has lost signal, instead of a dot that looks current.</p>
 
 <h3>The friends feed</h3>
 
@@ -330,7 +328,7 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the load there are 100 million activities a day and about 5,800 uploads a second at peak. The activity service is stateless, so it scales by adding servers. Object storage absorbs about 400 TB a year, and the activity table scales by adding partitions. The first component to strain is the feed fan-out, which becomes 5 billion entries a day, about 58,000 a second. You can lower the follower count above which activities are fetched on read, which cuts the number of writes, and you can let the fan-out lag by a few seconds at peak.</p>
+<p>At 10 times the load there are 100 million activities a day and about 5,800 uploads a second at peak. The activity service is stateless, so it scales by adding servers. Object storage absorbs about 400 TB a year, and the activity table scales by adding partitions. The first component to strain is the feed fan-out, which becomes about 58,000 entries a second. You can lower the follower count above which activities are fetched on read, and you can let the fan-out lag by a few seconds at peak.</p>
 
 <table>
 <thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -338,6 +336,7 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 <tr><td>The network</td><td>Recording is not affected, because it never needs the network.</td><td>The phone's upload queue retries when the connection returns.</td></tr>
 <tr><td>An activity server</td><td>Uploads that were in progress fail.</td><td>The phone retries the same <code>PUT</code>, and the result is still one activity.</td></tr>
 <tr><td>The event queue</td><td>Rows stay in <code>processing</code> and nothing reaches the feeds.</td><td>Uploads still succeed. A sweeper republishes rows stuck for more than 10 minutes, and idempotent workers make any duplicates harmless.</td></tr>
+<tr><td>The activity database</td><td>Uploads and activity pages fail until a replica takes over.</td><td>The phones keep their files and retry, so no activity is lost, and the replica is promoted automatically.</td></tr>
 <tr><td>A processing worker</td><td>The event it was handling is not acknowledged.</td><td>The queue delivers the event to another worker.</td></tr>
 <tr><td>The live store</td><td>Viewers lose the position until the next update.</td><td>Positions reappear within 15 seconds, because the phone keeps sending them.</td></tr>
 </tbody>
@@ -352,9 +351,9 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Streams GPS points into a table and builds the feed with a query over the people you follow.</td></tr>
-<tr><td>Mid-level</td><td>Records locally and uploads at the end, stores traces as files with summary rows, and reuses fan-out on write for the feed.</td></tr>
-<tr><td>Senior</td><td>Creates the id on the phone and makes every server step repeatable. Also keeps live sharing on a separate lossy path and handles late posts and visibility changes.</td></tr>
+<tr><td>Junior</td><td>The answer streams GPS points into a table and builds the feed with a query over the people you follow.</td></tr>
+<tr><td>Mid-level</td><td>The answer records locally and uploads at the end, stores traces as files with summary rows, and reuses fan-out on write for the feed.</td></tr>
+<tr><td>Senior</td><td>The answer creates the id on the phone, makes every server step repeatable, keeps live sharing on a separate lossy path, and handles late uploads and visibility changes.</td></tr>
 </tbody>
 </table>
 
@@ -371,7 +370,13 @@ live:{live_id}  -> last 20 points, expires 10 min after the last update
 <p>It does not matter for the statistics, because pace and ordering use each point's GPS time, which is accurate. The server sets <code>uploaded_at</code> itself, so a wrong phone clock cannot affect feed order.</p>
 
 <h3>How do you handle GPS noise?</h3>
-<p>A worker drops points with poor reported accuracy, rejects jumps that imply an impossible speed and smooths what remains. Distance is computed from the cleaned line, because every wiggle in the raw points adds distance and makes the run look longer than it was.</p>
+<p>A worker drops points with poor reported accuracy, rejects jumps that imply an impossible speed and smooths what remains. Distance is computed from the cleaned line, because noise in the raw points adds distance.</p>
+
+<h3>How do segment leaderboards work?</h3>
+<p>A segment is a fixed stretch of road that users compare times on. A worker checks whether the cleaned route passes through the start and end of each nearby segment, using a geographic index to find candidates, and writes one row to <code>segment_efforts</code> for every match. It updates <code>segment_bests</code> only if the new time beats the user's old best, and the leaderboard reads the first rows of that table by elapsed time.</p>
+
+<h3>How do you stop the app from revealing where someone lives?</h3>
+<p>The user can define a privacy zone around home or work. The server hides the part of the route inside the zone when it builds the route line and the map for everyone except the owner, and it never returns the hidden points to other users.</p>
 
 <x-checklist title="Self-review: fitness tracking">
 <script type="application/json">

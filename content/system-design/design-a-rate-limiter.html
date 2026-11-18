@@ -22,7 +22,6 @@
 <x-you>How many requests a day do we handle, and how many distinct clients are there?</x-you>
 <x-interviewer>About a billion requests a day, from around 10 million API keys and a similar number of IP addresses.</x-interviewer>
 <x-you>Then I will assume the check adds under 2 ms at p99, a limiter outage must not take the API down, and limits may be a few percent loose but never ten times loose. Billing and dashboards are out of scope.</x-you>
-<x-coach>These answers fix what the design is judged on: latency, behaviour during failures, and how exact the count must be.</x-coach>
 </x-interview>
 
 <ul>
@@ -115,7 +114,7 @@ counter            key = "rl:{rule_id}:{subject}"   e.g. "rl:key-free-plan:k_8f3
 
 <p>The counters are updated on almost every request and must answer in about half a millisecond. That calls for an in-memory key-value store, such as Redis, that runs small scripts atomically and expires keys. Losing a counter only gives one client a fresh, full bucket, so durability matters little.</p>
 
-<p>Twenty million buckets of about 100 bytes each come to 2 GB, which is small for an in-memory store, so memory does not limit the design. The TTL frees memory without changing any answer, because a bucket idle for capacity ÷ rate = 10 seconds is full again and a missing key is treated as full.</p>
+<p>Twenty million buckets of about 100 bytes each come to 2 GB, so memory does not limit the design. The TTL frees idle buckets without changing any answer, because a bucket idle for 10 seconds is full again and a missing key is treated as full.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
@@ -177,7 +176,7 @@ counter            key = "rl:{rule_id}:{subject}"   e.g. "rl:key-free-plan:k_8f3
     {
       "caption": "The gateway makes one atomic call to the shard that owns <code>rl:key-free-plan:k_8f3a</code>. The shard refills the bucket and takes one token in about 0.5 ms.",
       "arch": { "active": ["counters", ["gw", "counters"]], "dim": ["rules"], "notes": { "counters": "37 → 36" } },
-      "vars": { "tokens": 36, "allowed": 0, "rejected": 0 }
+      "vars": { "tokens": 36, "allowed": 1, "rejected": 0 }
     },
     {
       "caption": "A buggy client loop then sends 80 requests in 0.1 seconds. The bucket holds 36 tokens and refills 1 more in that time, so 37 of the 80 requests pass and the bucket reaches zero. Allowed requests are forwarded to the backend.",
@@ -212,7 +211,7 @@ counter            key = "rl:{rule_id}:{subject}"   e.g. "rl:key-free-plan:k_8f3
 
 <p>A <strong>token bucket</strong> gives each client a bucket that holds a fixed number of tokens and refills at a steady rate. Each request removes one token, and a request that finds the bucket empty is rejected. The state is two numbers per key, and it allows a burst as large as the bucket while holding the long-run rate at the refill rate. Its weakness is that a full bucket lets a whole burst through at once, which a fragile backend may not tolerate.</p>
 
-<p>A <strong>sliding window log</strong> stores the timestamp of every accepted request and counts those inside the last window. The count is exact, but a limit of 5,000 requests an hour needs up to 5,000 timestamps per client. It suits only small limits that must be exact.</p>
+<p>A <strong>sliding window log</strong> stores the timestamp of every accepted request and counts those inside the last window. The count is exact, but a limit of 5,000 requests an hour needs up to 5,000 timestamps per client.</p>
 
 <p>A <strong>fixed window counter</strong> keeps one integer per client per window and resets it when the window ends. It is the cheapest option, but a client can send the full limit at the end of one window and again at the start of the next, which is up to twice the limit in a short time.</p>
 
@@ -315,15 +314,15 @@ take(key, capacity, rate, cost):
 
 <p>A single request can match several rules at once, for example one for its IP address, one for its API key and one for the endpoint. The gateway allows the request only if every rule allows it, and returns the longest <code>Retry-After</code> among the rules that rejected it. It checks the IP rule first, so a flood is rejected before it costs a second store call.</p>
 
-<p>An IP address is a poor identity on its own, because an office or a mobile carrier can put thousands of users behind one address. Use the IP address for anonymous traffic and floods, and switch to the key or account as soon as it is known. For IPv6, limit by the /64 prefix, because one home connection usually gets a whole block of addresses. The login endpoint needs two limits: one per IP address, which stops one attacker trying many accounts, and one per target account, which stops many addresses trying one account.</p>
+<p>An IP address is a poor identity on its own, because an office or a mobile carrier can put thousands of users behind one address. Use the IP address for anonymous traffic and floods, and switch to the key or account as soon as it is known. The login endpoint needs two limits: one per IP address, which stops one attacker trying many accounts, and one per target account, which stops many addresses trying one account.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10 times the traffic, the peak is 360,000 requests a second and the store sees 720,000 operations a second. At about 50,000 operations per shard that needs 16 shards, and a key that moves to a new shard simply starts as a full bucket. The gateways hold only rules and the deny cache, so they scale by adding more of them.</p>
+<p>At 10 times the traffic, the peak is 360,000 requests a second and the store sees 720,000 operations a second. At about 50,000 operations per shard that needs 16 shards, and a key that moves to a new shard simply starts as a full bucket.</p>
 
 <p>The first thing that breaks is usually a hot key. One abusive client sending 50,000 requests a second puts every check on a single shard. A deny cache handles this: once a key has been rejected, the gateway remembers it for the 0.1 s until its next token arrives and rejects that key's requests from memory without calling the store.</p>
 
-<p>A large customer allowed 20,000 requests a second is a harder hot key, because the deny cache does not help when requests pass. Each gateway can instead take tokens from the store in batches of 50 and spend them locally, which makes 50 times fewer store calls at the cost of a few stranded tokens.</p>
+<p>A large customer allowed 20,000 requests a second is a harder hot key, because the deny cache does not help when requests pass. Each gateway can instead take tokens from the store in batches of 50 and spend them locally, which cuts the store calls by a factor of 50.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
@@ -338,14 +337,12 @@ take(key, capacity, rate, cost):
 
 <h2>What a strong answer sounds like</h2>
 
-<p>Most candidates can describe a token bucket, so the levels differ in how they handle many servers, races and failures.</p>
-
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
 <tr><td>Junior</td><td>Describes one algorithm in one process, and needs a hint that separate gateway counts multiply the limit.</td></tr>
 <tr><td>Mid</td><td>Uses a shared counter store with an atomic check, returns 429 with <code>Retry-After</code>, and estimates the load on the store.</td></tr>
-<tr><td>Senior</td><td>Chooses the algorithm and the failure behaviour for each rule, uses the store's clock, avoids retrying a timed-out take, handles hot keys,.</td></tr>
+<tr><td>Senior</td><td>Chooses the algorithm and the failure behaviour for each rule, uses the store's clock, avoids retrying a timed-out take, handles hot keys, and says what each endpoint does when the store is down.</td></tr>
 </tbody>
 </table>
 
@@ -365,6 +362,12 @@ take(key, capacity, rate, cost):
 <h3>Why not put the limit in the load balancer?</h3>
 <p>Many load balancers can limit requests per IP address, and that is a good first layer against floods. They do not know the API key, the plan or the endpoint rules, though, so they cannot enforce the per-customer limits. Use both.</p>
 
+<h3>How do you charge more for expensive requests?</h3>
+<p>Give each endpoint a cost, for example 1 token for a read and 10 for an export, and pass it as the <code>cost</code> argument to the atomic take. A request whose cost exceeds the tokens left is rejected, and <code>Retry-After</code> says how long until enough tokens have refilled.</p>
+
+<h3>How do you roll out a new or stricter rule safely?</h3>
+<p>Run the rule in shadow mode first, where the gateway evaluates it and records what it would have rejected but allows the request anyway. Once the logged rejections look right, for example that they hit only abusive clients, switch the rule to enforcing.</p>
+
 <x-checklist title="Self-review: rate limiter">
 <script type="application/json">
 {
@@ -377,7 +380,3 @@ take(key, capacity, rate, cost):
 }
 </script>
 </x-checklist>
-
-<h2>What to practise next</h2>
-
-<p>The counter store in this design is a small, specialised key-value store. <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a> builds a general one, with replication and quorums.</p>

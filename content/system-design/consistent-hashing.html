@@ -10,7 +10,7 @@
 
 <p>The simple alternative is <code>hash(key) % N</code>, where N is the number of servers. It works until N changes. With 4 servers going to 5, a key keeps its server only when its hash gives the same remainder for 4 and 5, which is true for about 20% of keys. The other 80% now point at a server that does not hold them. In a cache, those lookups all miss and fall through to the database, so adding a server to relieve load can overload the database instead.</p>
 
-<h2>Where it sits</h2>
+<h2>Where consistent hashing sits in a system</h2>
 
 <x-arch caption="Each app server holds the same ring and uses it to pick the cache node for a key, so no central router is involved.">
 <script type="application/json">
@@ -36,7 +36,7 @@
 
 <h2>The hash ring</h2>
 
-<p>The hash function maps both server names and keys to numbers in the same fixed range, and the range is treated as a circle, so the largest number is followed by zero. A key belongs to the first server found by walking clockwise from the key's position. Real rings use a range such as 0 to 2<sup>32</sup> &minus; 1. The examples here use 0 to 99 so that they can be followed by hand.</p>
+<p>The hash function maps both server names and keys to numbers in the same fixed range, and the range is treated as a circle, so the largest number is followed by zero. A key belongs to the first server found by walking clockwise from the key's position. Real rings use a range such as 0 to 2<sup>32</sup> &minus; 1, and the examples here use 0 to 99.</p>
 
 <x-figure caption="Each key belongs to the first server clockwise from it. Keys 5 and 90 belong to A, key 25 to B, and keys 52 and 68 to C.">
 <svg viewBox="0 0 400 270" aria-label="A ring of positions 0 to 99. Servers A at 10, B at 40 and C at 75 sit on the ring. Keys at 5, 25, 52, 68 and 90 each belong to the next server clockwise.">
@@ -161,11 +161,11 @@
 
 <ul>
 <li>The share of keys per server is much closer to equal. The random variation in a server's share shrinks roughly as 1/&radic;v for v points, which is about 10% at 100 points.</li>
-<li>When a server leaves, its many small ranges go to many different neighbours, so no single server takes the whole load. The same is true when a server joins: it takes a little from each of the others.</li>
+<li>When a server leaves, its many small ranges go to many different neighbours, so no single server takes the whole load.</li>
 <li>A server with twice the memory can be given twice as many points, and it will hold about twice as many keys.</li>
 </ul>
 
-<p>A lookup keeps all the points in a sorted array and uses <a href="/algorithms/binary-search.html">binary search</a> to find the first point at or after the key's hash, wrapping to the start of the array if there is none. The hash function must spread values evenly, otherwise points from names such as <code>"A#0"</code> and <code>"A#1"</code> can end up close together.</p>
+<p>A lookup keeps all the points in a sorted array and uses <a href="/algorithms/binary-search.html">binary search</a> to find the first point at or after the key's hash, wrapping to the start of the array if there is none. The hash function must spread values evenly.</p>
 
 <x-code title="A ring with virtual nodes">
 <pre lang="js">
@@ -241,7 +241,7 @@ class Ring:
 
 <h3>Fixed hash slots</h3>
 
-<p>With fixed slots, the key space is cut into a fixed number of slots, for example 16,384, using <code>hash(key) % slots</code>. A table assigns each slot to a server. Adding a server means moving a chosen set of slots to it, and removing a server means reassigning its slots. Because the number of slots never changes, a key always stays in the same slot, and only whole slots move. Some distributed caches and databases work this way. It gives full control over what moves and when. The cost is that the slot table must be stored, versioned and sent to every client, which needs a coordinator or a gossip protocol. This is closely related to the partitioning schemes in <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>.</p>
+<p>With fixed slots, the key space is cut into a fixed number of slots, for example 16,384, using <code>hash(key) % slots</code>. A table assigns each slot to a server. Adding a server means moving a chosen set of slots to it, and removing a server means reassigning its slots. Because the number of slots never changes, a key always stays in the same slot, and only whole slots move. Some distributed caches and databases work this way. It gives full control over what moves and when. The cost is that the slot table must be stored, versioned and sent to every client, which needs a coordinator or a gossip protocol.</p>
 
 <x-tradeoffs caption="Summary of the ways to map keys to servers">
 <script type="application/json">
@@ -257,7 +257,7 @@ class Ring:
       "name": "Ring with virtual nodes",
       "good": "A join or leave moves about 1/N of the keys, weights are easy, and each client computes placement alone.",
       "bad": "It needs many points per server, and every client must hold the same membership.",
-      "pick": "Caches and leaderless stores whose servers come and go. This is the usual answer.",
+      "pick": "Caches and leaderless stores whose servers come and go, which is the most common case.",
       "default": true
     },
     {
@@ -277,7 +277,7 @@ class Ring:
 </script>
 </x-tradeoffs>
 
-<h2>Problems and nuances</h2>
+<h2>Hot keys, membership changes and failures</h2>
 
 <h3>Consistent hashing does not guarantee balanced load</h3>
 
@@ -289,7 +289,7 @@ class Ring:
 
 <h3>A failed server and its return</h3>
 
-<p>When a cache node fails and is removed from the ring, its keys move to other nodes where they are missing, so those reads go to the database until the cache is filled again. This is about 1/N of the traffic, not all of it. If the node comes back with its old contents, some values may be out of date because writes during its absence went elsewhere. Start it empty.</p>
+<p>When a cache node fails and is removed from the ring, its keys move to other nodes where they are missing, so those reads go to the database until the cache is filled again. This is about 1/N of the traffic, not all of it. If the node comes back with its old contents, some values may be out of date because writes during its absence went elsewhere. It should therefore be started empty.</p>
 
 <h3>Moving data for stores that keep it</h3>
 
@@ -297,7 +297,7 @@ class Ring:
 
 <h2>In the interview</h2>
 
-<p>Bring up consistent hashing when keys are spread over servers that can be added, removed or replaced. Say that <code>hash mod N</code> would move most keys on every change, name the ring with virtual nodes, and add that hot keys still need a separate fix. If the cluster is small, or if data moves under your control, mention rendezvous hashing or fixed slots as the alternative and say why you would choose it.</p>
+<p>Bring up consistent hashing when keys are spread over servers that can be added, removed or replaced. Say that <code>hash mod N</code> would move most keys on every change, name the ring with virtual nodes, and add that hot keys still need a separate fix. For a small cluster, or when you control data movement, mention rendezvous hashing or fixed slots.</p>
 
 <p>Questions to expect:</p>
 
@@ -305,9 +305,9 @@ class Ring:
 <li><strong>"Why not use hash mod N?"</strong> When N changes, most keys get a new server. For a cache that means most lookups miss at once, and for a store it means most data would have to be copied. Consistent hashing moves only about 1/N of the keys.</li>
 <li><strong>"Why do you need virtual nodes?"</strong> With one point per server the ranges are random and can differ a lot in size, and a failed server hands its whole range to one neighbour. With around 100 points per server, the shares are close to equal and a failure spreads over many servers.</li>
 <li><strong>"What happens when a node is added?"</strong> It takes over ranges from several neighbours, about 1/(N+1) of the keys in total. In a cache those keys miss once and are reloaded. In a store the data for those ranges is streamed to the new node before it is used.</li>
-<li><strong>"How do you replicate with a ring?"</strong> Store each key on the next few distinct servers clockwise from its position, skipping points of servers already chosen.</li>
+<li><strong>"How do you replicate with a ring?"</strong> Store each key on the next few distinct servers clockwise from its position, skipping points that belong to servers already chosen. If a server fails, the next servers on the walk already hold its keys.</li>
 <li><strong>"Does it fix hot keys?"</strong> No. It balances the number of keys, not the traffic. A hot key needs a local cache in the app servers or several copies under different names.</li>
-<li><strong>"How do clients learn the ring?"</strong> From a configuration service or from gossip between servers. Clients can disagree for a short time after a change, which a cache tolerates as a few extra misses.</li>
+<li><strong>"How do clients learn the ring?"</strong> They get the list of servers from a configuration service or through gossip between servers, and each client builds the same ring from it. Clients can disagree for a short time after a change, which a cache tolerates as a few extra misses.</li>
 </ul>
 
 <x-interview title="Scaling a cache cluster" tone="strong">

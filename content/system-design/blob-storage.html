@@ -8,7 +8,7 @@
 -->
 <p>An object store is a service that keeps large, unstructured files, such as photos, videos, documents and backups, as objects under keys, and that scales to far more data than a database or a single disk can hold. The standard design keeps the file bytes in the object store and keeps only a small metadata row about each file, such as its owner, size and object key, in the database.</p>
 
-<p>If the bytes go into database rows instead, the database grows by every file that users upload. Each replica copies every byte, backups take longer and longer, and every upload and download passes through an application server that holds a connection open for as long as the transfer takes. Databases are built for small rows that are queried and updated, while files are large and are written once and read whole.</p>
+<p>If the bytes go into database rows instead, the database grows by every file that users upload. Each replica copies every byte, backups take longer, and every transfer holds an application server connection open. Databases are built for small rows that are queried and updated, while files are large and are written once and read whole.</p>
 
 <h2>Where blob storage sits</h2>
 
@@ -37,19 +37,17 @@
 
 <h2>Object, file and block storage</h2>
 
-<p>An interviewer may ask why you chose object storage over the other two kinds of storage.</p>
-
 <h3>Block storage</h3>
 
-<p>Block storage is a raw disk volume attached to one machine, which puts a file system or a database on top of it. It has the lowest latency and supports any read or write, but it attaches to one machine at a time and you provision its capacity yourself. Use it for the disk under a database, not for user uploads.</p>
+<p>Block storage is a raw disk volume attached to one machine, which puts a file system or a database on top of it. It has the lowest latency and supports any read or write, but it attaches to one machine at a time and you provision its capacity yourself. It is used for the disk under a database, not for user uploads.</p>
 
 <h3>File storage</h3>
 
-<p>File storage is a shared network file system where several servers see the same folders and can rename, append and partially rewrite files. Use it when existing software needs ordinary file operations on shared data. It is harder to scale and costs more per gigabyte than an object store.</p>
+<p>File storage is a shared network file system where several servers see the same folders and can rename, append and partially rewrite files. It suits existing software that needs ordinary file operations on shared data, but it is harder to scale and costs more per gigabyte than an object store.</p>
 
 <h3>Object storage</h3>
 
-<p>Object storage gives up renames, appends and partial writes in exchange for very large scale, a low cost per gigabyte, high durability and access over plain HTTP, which lets a CDN sit in front of it. It is the default for uploads, media, backups and exports. If an application changes one byte of a 1 GB object, it has to upload the whole object again.</p>
+<p>Object storage gives up renames, appends and partial writes in exchange for very large scale, a low cost per gigabyte, high durability and access over plain HTTP, which lets a CDN sit in front of it. It is the default for uploads, media, backups and exports.</p>
 
 <h2>Metadata in the database, bytes in the object store</h2>
 
@@ -66,7 +64,7 @@ created_at  TIMESTAMP
 </pre>
 </x-code>
 
-<p>The server generates the object key. If it used the name the user typed, two users who both upload <code>IMG_0001.jpg</code> would overwrite each other. The original filename is kept in a column of the row.</p>
+<p>The server generates the object key. If it used the name the user typed, two users who both upload <code>IMG_0001.jpg</code> would overwrite each other.</p>
 
 <h2>Uploads and downloads with pre-signed URLs</h2>
 
@@ -130,6 +128,10 @@ created_at  TIMESTAMP
 
 <p>For private files, the API checks that the user may see the file and returns a short-lived signed <code>GET</code> URL, either to the object store or to the CDN.</p>
 
+<h3>Limiting what a client can upload</h3>
+
+<p>Most stores let the signature fix the object key, the content type and a maximum size, and the store rejects a request that breaks them. A worker should still check the real size and type before it sets the row to <code>ready</code>.</p>
+
 <h2>Large files: multipart and resumable uploads</h2>
 
 <p>A single <code>PUT</code> is a poor fit for a multi-gigabyte file. Stores limit the size of one request, and if the connection drops at 90 percent the client has to start again from zero.</p>
@@ -138,7 +140,7 @@ created_at  TIMESTAMP
 
 <p>The client asks the store to start a multipart upload and receives an upload id. It splits the file into parts, uploads each part with its own request and pre-signed URL, in parallel if it wants, and finally sends a "complete" request that lists the parts. The store assembles them into one object, which does not exist until that call succeeds. A failed part is retried alone, so a failure costs one part instead of the whole file.</p>
 
-<p>The problem at scale is abandoned uploads. Parts that were uploaded but never completed are billed as storage, and nothing in your database points to them. A lifecycle rule that aborts incomplete multipart uploads after a few days fixes this.</p>
+<p>Parts of an upload that was never completed are billed as storage, and nothing in your database points to them. A lifecycle rule that aborts incomplete multipart uploads after a few days removes them.</p>
 
 <h3>Resumable uploads</h3>
 
@@ -152,13 +154,13 @@ created_at  TIMESTAMP
 
 <h3>Erasure coding</h3>
 
-<p>Erasure coding splits an object into data fragments and adds parity fragments computed from them. With 10 data and 4 parity fragments, any 10 of the 14 rebuild the object, so it survives the loss of any 4 fragments while using 1.4 times the raw space. The costs are that a read may touch many disks, rebuilding one fragment requires reading 10 others, and very small objects pay a high relative overhead. It suits large, rarely read objects, and many stores replicate small or hot data and erasure-code the rest.</p>
+<p>Erasure coding splits an object into data fragments and adds parity fragments computed from them. With 10 data and 4 parity fragments, any 10 of the 14 rebuild the object, so it survives the loss of any 4 fragments while using 1.4 times the raw space. The costs are that a read may touch many disks and rebuilding one fragment requires reading 10 others. It suits large, rarely read objects, and many stores replicate small or hot data and erasure-code the rest.</p>
 
-<p>Durability is about not losing data, and availability is about being able to read it now. For protection against losing a whole region, stores can also copy objects asynchronously to a second region.</p>
+<p>Durability means not losing data, which is different from availability, being able to read it now. To survive the loss of a whole region, stores can also copy objects asynchronously to a second region.</p>
 
 <h2>Serving downloads through a CDN</h2>
 
-<p>Reads from the object store take tens of milliseconds, and every read of a popular file goes to the same place. A <a href="/system-design/cdns.html">CDN</a> keeps copies near users, so most reads never reach the store. Use it for anything many users read, such as images and video segments.</p>
+<p>Every read of a popular file would otherwise go to the same object store. A <a href="/system-design/cdns.html">CDN</a> keeps copies near users, so most reads never reach the store.</p>
 
 <p>A CDN copy stays until its TTL runs out, so a changed or deleted object can still be served. The simplest fix is to give every version its own key, for example by including the content hash in the key. Files that only some users may read need signed CDN URLs that expire.</p>
 
@@ -166,7 +168,7 @@ created_at  TIMESTAMP
 
 <p>Object stores offer tiers that trade the cost of storing against the cost and delay of reading. The hot tier is the most expensive to store and cheap to read. Colder tiers cost less per gigabyte but charge for retrieval, and the coldest archive tiers can take minutes to hours before data is readable.</p>
 
-<p>A <strong>lifecycle rule</strong> moves or deletes objects automatically based on age or prefix. A typical set moves uploads to a colder tier after 30 days, deletes temporary exports after a week, and aborts unfinished multipart uploads. Do not put regularly read files in a cold tier, because retrieval fees and delays cost more than the storage saves.</p>
+<p>A <strong>lifecycle rule</strong> moves or deletes objects automatically based on age or prefix. A typical set moves uploads to a colder tier after 30 days and deletes temporary exports after a week. Regularly read files do not belong in a cold tier, because retrieval fees cost more than the storage saves.</p>
 
 <h2>Keeping metadata and bytes consistent</h2>
 
@@ -174,42 +176,46 @@ created_at  TIMESTAMP
 
 <h3>An upload that fails halfway</h3>
 
-<p>The row is created as <code>pending</code> before the upload starts and becomes <code>ready</code> only after the object is confirmed to exist. If the upload fails, users never see the file because only <code>ready</code> rows are shown. A cleanup job finds old <code>pending</code> rows, deletes them and aborts any unfinished multipart upload.</p>
+<p>The row is created as <code>pending</code> before the upload starts and becomes <code>ready</code> only after the object is confirmed to exist. If the upload fails, users never see the file because only <code>ready</code> rows are shown. A cleanup job deletes old <code>pending</code> rows and aborts unfinished multipart uploads.</p>
 
 <h3>An upload that succeeded but was never reported</h3>
 
-<p>If the "object created" event is lost, the row stays <code>pending</code> although the object exists. For each old <code>pending</code> row the cleanup job checks whether the object exists, and if it does it continues processing and marks the row <code>ready</code>.</p>
+<p>If the "object created" event is lost, the row stays <code>pending</code> although the object exists. The cleanup job checks each old <code>pending</code> row and, if the object is there, marks it <code>ready</code>.</p>
 
 <h3>Orphaned objects</h3>
 
-<p>An orphan is an object that no row points to, caused by a failed cleanup or a bug. It costs storage and nobody notices it. A periodic job compares the store's inventory with the database and deletes unreferenced objects older than a safety margin, so it does not delete an upload still in progress.</p>
+<p>An orphan is an object that no row points to, caused by a failed cleanup or a bug. It costs storage. A periodic job compares the store's inventory with the database and deletes unreferenced objects older than a safety margin, so that it skips uploads still in progress.</p>
 
 <h3>Deleting files</h3>
 
-<p>First mark the row <code>deleted</code>, so the file disappears from the product immediately. Then delete the object and expire its CDN copies in a background job that can retry, with the orphan check as the final backup. If the bucket has versioning, a delete only adds a marker and old versions keep taking space until a lifecycle rule removes them.</p>
+<p>First mark the row <code>deleted</code>, so the file disappears from the product immediately. Then delete the object and expire its CDN copies in a background job that can retry, with the orphan check as the final backup. With versioning enabled, a delete only adds a marker, and old versions keep taking space until a lifecycle rule removes them.</p>
 
 <h2>Content hashing and deduplication</h2>
 
 <p>A content hash such as SHA-256 is a fingerprint of a file's bytes, and two files with the same hash are the same file. It is used for integrity, because the store can reject an upload whose bytes do not match the hash the client sent, and for <strong>deduplication</strong>, where identical files are stored once and many rows point to the same object.</p>
 
-<p>To deduplicate, the client sends the hash and the API checks whether an object with that hash exists. If it does, no upload is needed and the API only creates a new row. A shared object may be deleted only when no row points to it, so the system needs a reference count. Also, if the answer "this file already exists" is visible across users, an attacker can test whether someone else uploaded a specific file, so deduplicate within one account.</p>
+<p>To deduplicate, the client sends the hash and the API checks whether an object with that hash exists. If it does, no upload is needed and the API only creates a new row. A shared object may be deleted only when no row points to it, so the system needs a reference count. If "this file already exists" were visible across users, an attacker could test whether someone else uploaded a specific file, so deduplicate within one account.</p>
 
 <h2>Keeping files private</h2>
 
-<p>The bucket is private, and the application decides who may read a file. When it approves a request it issues a pre-signed or signed CDN URL with a short expiry, because anyone holding the link can use it until then.</p>
+<p>The bucket is private, so the object store never serves a file to an anonymous request. The application decides who may read a file, and when it approves a request it issues a pre-signed or signed CDN URL.</p>
+
+<p>Anyone who holds such a URL can use it until it expires, and it cannot be revoked early, so the expiry should be short, usually minutes. The API issues a new URL each time an authorised user opens the file.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring in blob storage when the design involves images, video, documents or any file larger than a few hundred kilobytes. Say that bytes go in an object store and metadata in the database, that uploads and downloads go directly to the store with pre-signed URLs, and that a CDN serves popular reads.</p>
+<p>Use a single <code>PUT</code> for files up to a few tens of megabytes and multipart above that, because multipart adds requests and cleanup work that small files do not need. Use replication for small or frequently read objects and erasure coding for large, cold ones.</p>
+
+<p>Bring in blob storage when the design involves images, video, documents or any file larger than a few hundred kilobytes. Say that the bytes go in an object store, the metadata in the database, and that clients upload and download with pre-signed URLs.</p>
 
 <p>Questions to expect:</p>
 
 <ul>
 <li><strong>"How do you upload a 5 GB file?"</strong> Use a multipart upload with a pre-signed URL for each part. The client uploads parts in parallel, retries failed parts on their own and finishes with a complete request. The metadata row stays <code>pending</code> until the object exists.</li>
-<li><strong>"What happens when an upload fails halfway?"</strong> Nothing visible, because the row is <code>pending</code> and no complete object exists. The client can resume by asking the store which parts it has, and a cleanup job removes stale rows and aborts unfinished uploads.</li>
+<li><strong>"What happens when an upload fails halfway?"</strong> Nothing visible, because the row is <code>pending</code> and no complete object exists. The client can resume, and a cleanup job removes stale rows and aborts unfinished uploads.</li>
 <li><strong>"How do you keep files private?"</strong> The bucket is private. The API checks permission and returns a short-lived signed URL for that one object, and the store refuses requests without a valid signature.</li>
 <li><strong>"How does the store avoid losing data?"</strong> It keeps redundancy across failure domains, as full replicas or erasure-coded fragments. Replication is simpler and faster to read, and erasure coding needs much less space but costs more to repair.</li>
-<li><strong>"How do you delete a file?"</strong> Mark the row deleted, then delete the object, its derived files and CDN copies in a retried background job, with an orphan check as a safety net.</li>
+<li><strong>"How do you delete a file?"</strong> Mark the row deleted first, so the file disappears from the product at once. A background job then deletes the object, its derived files such as thumbnails, and the CDN copies, and it retries if a step fails. A periodic orphan check catches anything the job missed.</li>
 </ul>
 
 <x-interview title="Large file uploads" tone="strong">
@@ -235,8 +241,8 @@ created_at  TIMESTAMP
     {
       "question": "A client uploads a 2 GB file with a single PUT and the connection drops at 90 percent. What change fixes this?",
       "options": [
-        { "text": "A longer expiry on the pre-signed URL", "why": "The URL expiry is not the problem. The upload still has to restart from zero." },
         { "text": "Multipart upload, so only the failed part is retried", "correct": true, "why": "Each part is its own request, so a failure costs one part, and the client can resume with the remaining parts." },
+        { "text": "A longer expiry on the pre-signed URL", "why": "The URL expiry is not the problem. The upload still has to restart from zero." },
         { "text": "Sending the file through the API servers", "why": "This adds load on the servers and does not make the transfer resumable." }
       ]
     }
@@ -247,4 +253,4 @@ created_at  TIMESTAMP
 
 <h2>What to practise next</h2>
 
-<p>Read <a href="/system-design/cdns.html">CDNs</a> for how cached copies are placed and invalidated, and <a href="/system-design/design-object-storage.html">Design Object Storage</a> to design the store itself. <a href="/system-design/design-video-streaming.html">Design Video Streaming</a> and <a href="/system-design/design-file-sync.html">Design File Sync</a> use large uploads and a CDN together.</p>
+<p>Read <a href="/system-design/cdns.html">CDNs</a> for how cached copies are placed and invalidated, then <a href="/system-design/design-object-storage.html">Design Object Storage</a> and <a href="/system-design/design-video-streaming.html">Design Video Streaming</a>.</p>

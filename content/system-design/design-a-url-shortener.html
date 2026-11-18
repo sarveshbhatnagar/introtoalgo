@@ -25,7 +25,7 @@
 <x-coach>The last answer turns the interviewer's numbers into priorities: which path is hot, what "fast" means, which part may fail and which part must not.</x-coach>
 </x-interview>
 
-<p>Write the result down.</p>
+<p>Write the agreed requirements down.</p>
 
 <ul>
 <li><strong>Functional requirements:</strong> create a short link for a long URL with an optional custom alias and expiry date, redirect a short code to its long URL, and count the clicks on each link.</li>
@@ -57,22 +57,6 @@
 </script>
 </x-estimate>
 
-<x-estimate title="Average read rate">
-<script type="application/json">
-{
-  "question": "About how many redirects per second must the system serve on average?",
-  "givens": ["100 million new links a month", "100 reads for every write", "A month is about 2.6 million seconds"],
-  "unit": "count/s",
-  "answer": "4 thousand/s",
-  "accept": ["2 thousand/s", "8 thousand/s"],
-  "choices": ["400/s", "4 thousand/s", "40 thousand/s", "400 thousand/s"],
-  "steps": ["Reads per month: 100 million × 100 = 10 billion", "10 × 10<sup>9</sup> ÷ 2.6 × 10<sup>6</sup> s ≈ 3,900, which rounds to 4,000 a second"]
-}
-</script>
-</x-estimate>
-
-<p>If the hottest 10 million links receive most of the clicks, caching them takes 10<sup>7</sup> × 500 B = 5 GB, which fits on a single cache node.</p>
-
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
 <p>Write the two endpoints with their method, path, request body and response, including the error cases.</p>
@@ -100,8 +84,6 @@ GET /{code}
 
 <p>The redirect can use status 301 (moved permanently) or 302 (found). Browsers cache a 301, so repeat clicks from the same browser never reach your servers. That reduces load, but you cannot count those clicks and you cannot change the target later. A 302 is not cached, so every click comes through. The requirements include click counts, and the estimate shows that the extra traffic is small, so use 302.</p>
 
-<p>The create endpoint also needs a per-client <a href="/system-design/rate-limiting.html">rate limit</a>, or anyone can create millions of links.</p>
-
 <x-tryit variant="turn" minutes="2" title="Model the data">
 <x-task>
 <p>What does one record hold, how is it looked up, and which kind of database fits?</p>
@@ -126,6 +108,8 @@ clicks      BIGINT                     -- updated in batches, not on every click
 <p>The hot path looks up one row by primary key. It has no joins and no range scans, and a row never changes except for its click count. A key-value or wide-column store, such as DynamoDB or Cassandra, fits this pattern, and it partitions by key without extra work, which is what we need at 3 TB and beyond. A relational database with read replicas also works at this size, and it is a reasonable choice if the team already runs one.</p>
 
 <p>Custom aliases are stored in the same table as generated codes. Because <code>code</code> is the primary key, an "insert if absent" operation makes alias claims safe. If two users try to claim <code>spring-sale</code> at the same moment, only one insert succeeds and the other receives the 409 response.</p>
+
+<p>Expired links are not served, because the redirect service checks <code>expires_at</code>, but the rows still take up space. A background job deletes rows whose expiry time has passed, or the store's built-in time-to-live feature does it if it has one. A custom alias can also equal a code that the generator would produce later, such as an alias typed as <code>008sudj</code>. The generator therefore uses the same insert-if-absent operation and takes the next number when the insert fails.</p>
 
 <x-tryit variant="turn" minutes="3" title="High-level design">
 <x-task>
@@ -203,7 +187,7 @@ clicks      BIGINT                     -- updated in batches, not on every click
       "vars": { "code": "008sudj" }
     },
     {
-      "caption": "The server inserts the row. The store keeps three copies before it confirms the write, so the link survives the loss of a disk.",
+      "caption": "The server inserts the row. The store replicates the row to other nodes before it confirms the write, so the link survives the loss of a disk.",
       "arch": { "active": ["store", ["create", "store"]], "dim": ["redirect", "cache"], "notes": { "store": "insert 008sudj" } },
       "vars": { "code": "008sudj" }
     },
@@ -256,7 +240,7 @@ clicks      BIGINT                     -- updated in batches, not on every click
 
 <p><strong>Hashing the long URL.</strong> The server computes a hash of the URL and encodes the first 7 characters. The same URL always produces the same code, so duplicates are easy to detect. The problem is that a truncated hash collides, so every insert needs a check and a retry. If two users submit the same URL they also share one code, which means one user's deletion or expiry affects the other. This approach makes sense only when deduplication is a requirement.</p>
 
-<p><strong>Random codes with a retry.</strong> The server picks 7 random characters and inserts the row with "insert if absent". If the code already exists, it picks another. No servers need to coordinate, and the codes cannot be guessed. With 6 billion links stored out of 3.5 trillion possible codes, a new code collides with probability 6 × 10<sup>9</sup> ÷ 3.5 × 10<sup>12</sup> ≈ 0.2%, which is about one retry in every 500 creates. Choose it when codes must not be guessable.</p>
+<p><strong>Random codes with a retry.</strong> The server picks 7 random characters and inserts the row with "insert if absent". If the code already exists, it picks another. No servers need to coordinate, and the codes cannot be guessed. With 6 billion links stored out of 3.5 trillion possible codes, a new code collides with probability 6 × 10<sup>9</sup> ÷ 3.5 × 10<sup>12</sup> ≈ 0.2%, which is about one retry in every 600 creates. Choose it when codes must not be guessable.</p>
 
 <p><strong>Counter blocks encoded in base 62.</strong> A small allocator service hands each create server a block of 1,000 consecutive numbers. The server uses the numbers one at a time, converts each to base 62 and pads it to 7 characters. Codes never collide, and each server contacts the allocator only once for every 1,000 links. The costs are that the allocator must be highly available and that the codes are sequential, so anyone can step through them. If guessability worries the interviewer, scramble each number with a reversible function before encoding it.</p>
 
@@ -323,7 +307,7 @@ clicks      BIGINT                     -- updated in batches, not on every click
 <ul>
 <li><strong>Redirect servers</strong> hold no state, so you add more of them.</li>
 <li><strong>The cache</strong> becomes a cluster that splits keys with <a href="/system-design/consistent-hashing.html">consistent hashing</a>, so adding a node moves only a small share of the keys.</li>
-<li><strong>The store</strong> is partitioned by <code>code</code>. The load spreads evenly because the codes are spread evenly.</li>
+<li><strong>The store</strong> is partitioned by a hash of <code>code</code>, so that sequential codes from the same allocator block do not all land on one partition.</li>
 <li><strong>The allocator</strong> is barely affected. Blocks of 1,000 at 2,000 writes a second mean only 2 requests a second.</li>
 </ul>
 
@@ -370,7 +354,7 @@ clicks      BIGINT                     -- updated in batches, not on every click
 <p>By default each submission gets its own code. Returning the same code would need an index on the long URL, and it would let one user's expiry or deletion affect another user's link. If the interviewer wants deduplication, offer it per user, so that each user gets one code for each URL.</p>
 
 <h3>How do you stop abuse?</h3>
-<p>Rate limit creates per API key and per IP address, and check each new URL against a blocklist of known bad domains. Scan new URLs asynchronously as well, so that a link found to be malicious later can be disabled.</p>
+<p>Apply a <a href="/system-design/rate-limiting.html">rate limit</a> to creates per API key and per IP address, and check each new URL against a blocklist of known bad domains. Scan new URLs asynchronously as well, so that a link found to be malicious later can be disabled.</p>
 
 <h3>How do you delete a link quickly?</h3>
 <p>Mark the row as deleted in the store and delete its key from the cache. Because the redirect is a 302, browsers have not cached it, so the next click sees the change and gets a 404.</p>

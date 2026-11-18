@@ -42,10 +42,9 @@
 <li>If the machine is short of CPU, memory or disk, a bigger machine is the simplest fix, and many systems never need more.</li>
 <li>If the load is mostly reads, add read replicas. They scale reads without changing the data model, at the price of replication lag.</li>
 <li>If the same rows are read repeatedly, add a <a href="/system-design/caching.html">cache</a>.</li>
-<li>If old rows are rarely touched, move them to cheaper storage or partition the table on one machine.</li>
 </ul>
 
-<p>Shard when the data volume or the write rate exceeds what the largest practical machine can handle. In an interview, estimate the data size and write rate first and say which limit they exceed.</p>
+<p>Shard when the data volume or the write rate exceeds what the largest practical machine can handle.</p>
 
 <h2>Mapping keys to shards</h2>
 
@@ -55,17 +54,17 @@
 
 <p>Each shard owns a continuous range of key values, for example usernames A to F on shard 1 and G to M on shard 2. The ranges are stored in a small table that the router consults. Because neighbouring keys live together, a range query such as "all orders between two dates" touches one or two shards.</p>
 
-<p>Use it when range queries over the key are a main access pattern. The danger is uneven load: if the key grows over time, such as a timestamp, every new write falls in the newest range and one shard takes all the writes. </p>
+<p>Use it when range queries over the key are a main access pattern. The danger is uneven load: if the key grows over time, such as a timestamp, every new write falls in the newest range and one shard takes all the writes. Range-based stores usually split a range into two when it grows too large, which handles size but not a hot newest range.</p>
 
 <h3>Hash partitioning</h3>
 
 <p>The router applies a hash function to the key and uses the result to pick the shard. A good hash spreads keys evenly even when the keys are sequential. It is the default for lookups by key, such as user ids or order ids.</p>
 
-<p>The price is that key order is lost, so a range scan over a hashed key has to ask every shard. The other danger is the way the hash is turned into a shard number, covered under rebalancing below.</p>
+<p>The cost is that key order is lost, so a range scan over a hashed key has to ask every shard. The other danger is the way the hash is turned into a shard number, covered under rebalancing below.</p>
 
 <h3>Directory partitioning</h3>
 
-<p>A lookup service stores an explicit entry for each key or group of keys saying which shard holds it. Routers read the directory on every request, normally from a local cache. Because the directory is just data, you can place a key anywhere and move it by updating one entry.</p>
+<p>A lookup service stores an explicit entry for each key or group of keys saying which shard holds it. Routers read the directory on every request, normally from a local cache. A key can be placed anywhere and moved by updating one entry.</p>
 
 <p>Use it when placement must be controlled, for example in a multi-tenant product where a few large customers get a dedicated shard and small ones share the rest. If the directory is unavailable no request can be routed, so it must be replicated and cached in the routers.</p>
 
@@ -81,7 +80,7 @@
 
 <p>The key favours one access pattern and makes the others more expensive, so say which query it serves and which it hurts.</p>
 
-<h2>Problems and nuances</h2>
+<h2>Hot keys, cross-shard queries and secondary indexes</h2>
 
 <h3>Hot keys and skew</h3>
 

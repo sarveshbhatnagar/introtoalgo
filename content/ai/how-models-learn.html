@@ -1,40 +1,34 @@
 <!--
 {
   "title": "How Models Learn",
-  "description": "Measure how wrong a model is with a loss, then nudge its parameters downhill with gradient descent. Traced by hand on a one-parameter model.",
-  "minutes": 13,
+  "description": "How a loss function measures a model's error, how gradient descent adjusts parameters to reduce it, and what to watch for when you train or fine-tune.",
+  "minutes": 17,
   "tags": ["machine learning", "gradient descent", "loss"]
 }
 -->
-<p>You are on a hillside in thick fog, trying to reach the bottom of the valley. You can only feel the ground under your feet. So you feel which way it slopes down, step that way, and repeat. When the ground feels flat, you are at the bottom.</p>
+<p>A model learns by repeating three steps: it makes predictions, a <strong>loss</strong> function scores how wrong those predictions are, and an algorithm called <strong>gradient descent</strong> changes the model's parameters slightly so that the score improves. Almost all modern models, from a small regression to a large language model, are trained this way. Knowing the loop tells you why a run diverges, stalls or overfits, and which setting to change.</p>
 
-<p>That is how most modern models learn, neural networks included. The height is how wrong the model is. Your position is the values of its parameters. The step-downhill rule is called gradient descent.</p>
+<p>Without this loop, the only way to find good parameters would be to try candidate values and keep the best one. That is workable for a single number and impossible for a model with millions of parameters. Gradient descent avoids the search because it uses the loss to tell each parameter which direction to move.</p>
 
-<h2>A model with one dial</h2>
+<h2>A model with one parameter</h2>
 
-<p>In <a href="/ai/what-is-machine-learning.html">What Is Machine Learning</a> we tried every candidate value. That fails when a parameter can be any number, or there are thousands of them. You need to improve the parameters a little at a time.</p>
+<p>To see the loop clearly, use the smallest model that still learns. A courier app estimates trip time from distance with the formula <code>minutes = w × km</code>. The parameter <code>w</code> is the number of minutes per kilometre, and training has to find it. The two past trips are 1 km in 3 minutes and 3 km in 9 minutes, so the right answer is <code>w = 3</code>, and you can check whether the method finds it without being told.</p>
 
-<p>A courier app estimates trip time from distance with the model:</p>
+<h2>The loss measures how wrong the model is</h2>
 
-<p><code>minutes = w × km</code></p>
+<p>For each example, the error is the prediction minus the real answer. With <code>w = 0</code> the model predicts 0 minutes for both trips, so the errors are −3 and −9.</p>
 
-<p>The parameter <code>w</code> is minutes per km. Two past trips: 1 km took 3 minutes, 3 km took 9. The answer is clearly <code>w = 3</code>; watch a method find it without being told.</p>
-
-<h2>Step 1: measure how wrong the model is</h2>
-
-<p>For each example, the <strong>error</strong> is the prediction minus the real answer. With <code>w = 0</code>, the model predicts 0 for both trips, so the errors are −3 and −9.</p>
-
-<p>Square each error and take the average. That number is the <strong>loss</strong>, and this version is the <strong>mean squared error</strong>:</p>
+<p>The loss turns the errors into a single number. The most common choice for predicting numbers is the <strong>mean squared error</strong>, which squares each error and averages the results:</p>
 
 <p><code>loss = ((−3)² + (−9)²) / 2 = (9 + 81) / 2 = 45</code></p>
 
-<p>Squaring makes every error positive, so too-high and too-low guesses cannot cancel, and it punishes big errors more: 9 costs 81, nine times an error of 3. Training means finding the <code>w</code> with the lowest loss.</p>
+<p>Squaring makes every error positive, so a guess that is too high and a guess that is too low cannot cancel each other out. It also penalises large errors more heavily: an error of 9 costs 81, which is nine times the cost of an error of 3. Training means finding the value of <code>w</code> that gives the lowest loss.</p>
 
-<h2>Step 2: find which way is downhill</h2>
+<h2>The gradient says which way to move</h2>
 
-<p>Plot the loss for every <code>w</code> and you get a valley, with the bottom at <code>w = 3</code>, loss 0.</p>
+<p>If you plot the loss for every possible value of <code>w</code>, you get a curve shaped like a valley, with its lowest point at <code>w = 3</code> where the loss is 0.</p>
 
-<x-figure caption="Loss for every value of w. Gradient descent starts at w = 0 and takes smaller steps as the slope flattens.">
+<x-figure caption="The loss for every value of w. Gradient descent starts at w = 0 and takes smaller steps as the curve flattens near the bottom.">
 <svg viewBox="0 0 480 270" aria-label="A U-shaped curve of loss against w, lowest at w equals 3. Four dots on the left side of the curve at w equals 0, 1.5, 2.25 and 2.625, joined by arrows heading toward the bottom.">
   <defs><marker id="hml-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <line x1="50" y1="220" x2="440" y2="220" class="s-line"/>
@@ -61,23 +55,21 @@
 </svg>
 </x-figure>
 
-<p>The <strong>gradient</strong> is the slope of that curve at your current <code>w</code>: how much the loss changes when you nudge <code>w</code> up a tiny bit. If it is negative, raising <code>w</code> lowers the loss.</p>
+<p>The <strong>gradient</strong> is the slope of that curve at the current value of <code>w</code>. It tells you how much the loss changes if you increase <code>w</code> by a tiny amount. A negative gradient means that increasing <code>w</code> lowers the loss, and a positive gradient means that decreasing it does.</p>
 
-<p>School algebra gives the slope. Take one example with input <code>x</code>, answer <code>y</code> and error <code>e = w·x − y</code>. Nudge <code>w</code> up by a tiny <code>h</code>. The new error is <code>e + h·x</code>, and its square is:</p>
+<p>For this model and loss, calculus gives a simple formula. For one example with input <code>x</code> and error <code>e</code>, the squared error changes by about <code>2 × e × x</code> for each unit that <code>w</code> increases. Averaging over all the examples gives the gradient:</p>
 
-<p><code>(e + h·x)² = e² + 2·e·x·h + (h·x)²</code></p>
+<p><code>gradient = average of (2 × error × input)</code></p>
 
-<p>When <code>h</code> is tiny, the last term is negligible, so the squared error grows by about <code>2·e·x</code> per unit of <code>h</code>. Average that over all examples:</p>
+<p>Real frameworks compute the gradient automatically for any model, using an algorithm called backpropagation, so you never write this formula yourself. It is shown here so that the trace below can be checked by hand.</p>
 
-<p><code>gradient = average of 2 × error × input</code></p>
+<h2>Updating the parameter and repeating</h2>
 
-<h2>Step 3: take a step, and repeat</h2>
-
-<p>Move <code>w</code> a little against the gradient:</p>
+<p>Each training step moves the parameter a small distance against the gradient:</p>
 
 <p><code>w = w − learning rate × gradient</code></p>
 
-<p>The <strong>learning rate</strong> sets the step size. Here it is 0.05.</p>
+<p>The <strong>learning rate</strong> controls how large the step is. The person training the model chooses it, and it is not learned. Here it is 0.05. The trace below runs the loop five times from <code>w = 0</code>.</p>
 
 <x-tracer title="Gradient descent on minutes = w × km">
 <script type="application/json">
@@ -92,22 +84,20 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Start with a blind guess, <code>w = 0</code>. Errors are −3 and −9, so the loss is (9 + 81) / 2 = 45.", "line": 4, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0], "highlight": [0, 1] }, { "label": "error", "values": [-3, -9] } ], "vars": { "w": 0, "loss": 45 } },
-    { "caption": "Gradient: 2 × (−3) × 1 = −6 and 2 × (−9) × 3 = −54. Average −30, so raise <code>w</code>.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0] }, { "label": "error", "values": [-3, -9], "highlight": [0, 1] } ], "vars": { "w": 0, "loss": 45, "gradient": -30 } },
-    { "caption": "Step: <code>w = 0 − 0.05 × (−30) = 1.5</code>. The loss drops from 45 to 11.25.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5], "highlight": [0, 1] }, { "label": "error", "values": [-1.5, -4.5] } ], "vars": { "w": 1.5, "loss": 11.25 } },
-    { "caption": "Errors −1.5 and −4.5 give a gradient of (−3 + −27) / 2 = −15. Less steep.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5] }, { "label": "error", "values": [-1.5, -4.5], "highlight": [0, 1] } ], "vars": { "w": 1.5, "loss": 11.25, "gradient": -15 } },
-    { "caption": "<code>w = 1.5 − 0.05 × (−15) = 2.25</code>. Loss 2.8125.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.25, 6.75], "highlight": [0, 1] }, { "label": "error", "values": [-0.75, -2.25] } ], "vars": { "w": 2.25, "loss": 2.8125, "gradient used": -15 } },
-    { "caption": "Gradient −7.5, so <code>w = 2.25 + 0.375 = 2.625</code>. The gradient halves every round, and so does the step.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.625, 7.875], "highlight": [0, 1] }, { "label": "error", "values": [-0.375, -1.125] } ], "vars": { "w": 2.625, "loss": 0.703125, "gradient used": -7.5 } },
-    { "caption": "Gradient −3.75, so <code>w = 2.8125</code>. Loss about 0.18.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.8125, 8.4375], "highlight": [0, 1] }, { "label": "error", "values": [-0.1875, -0.5625] } ], "vars": { "w": 2.8125, "loss": 0.1758, "gradient used": -3.75 } },
-    { "caption": "Gradient −1.875 gives <code>w = 2.90625</code>. After 5 steps the loss has fallen from 45 to about 0.04. Nobody told the model the answer was 3.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9], "mark": [0, 1] }, { "label": "predicted", "values": [2.90625, 8.71875], "mark": [0, 1] }, { "label": "error", "values": [-0.09375, -0.28125] } ], "vars": { "w": 2.90625, "loss": 0.0439, "steps": 5 } }
+    { "caption": "The model starts with a blind guess of <code>w = 0</code>. The errors are −3 and −9, so the loss is (9 + 81) / 2 = 45.", "line": 4, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0], "highlight": [0, 1] }, { "label": "error", "values": [-3, -9] } ], "vars": { "w": 0, "loss": 45 } },
+    { "caption": "The two per-example gradients are 2 × (−3) × 1 = −6 and 2 × (−9) × 3 = −54, which average to −30. The gradient is negative, so <code>w</code> should increase.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [0, 0] }, { "label": "error", "values": [-3, -9], "highlight": [0, 1] } ], "vars": { "w": 0, "loss": 45, "gradient": -30 } },
+    { "caption": "The update is <code>w = 0 − 0.05 × (−30) = 1.5</code>, and the loss drops from 45 to 11.25.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5], "highlight": [0, 1] }, { "label": "error", "values": [-1.5, -4.5] } ], "vars": { "w": 1.5, "loss": 11.25 } },
+    { "caption": "The errors are now −1.5 and −4.5, which give a gradient of (−3 + −27) / 2 = −15. The slope is half as steep as before.", "line": 5, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [1.5, 4.5] }, { "label": "error", "values": [-1.5, -4.5], "highlight": [0, 1] } ], "vars": { "w": 1.5, "loss": 11.25, "gradient": -15 } },
+    { "caption": "The update is <code>w = 1.5 − 0.05 × (−15) = 2.25</code>, and the loss is 2.8125.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.25, 6.75], "highlight": [0, 1] }, { "label": "error", "values": [-0.75, -2.25] } ], "vars": { "w": 2.25, "loss": 2.8125, "gradient used": -15 } },
+    { "caption": "The gradient is −7.5, so <code>w = 2.25 + 0.375 = 2.625</code>. The gradient halves every round, and so does the size of the step.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.625, 7.875], "highlight": [0, 1] }, { "label": "error", "values": [-0.375, -1.125] } ], "vars": { "w": 2.625, "loss": 0.703125, "gradient used": -7.5 } },
+    { "caption": "The gradient is −3.75, so <code>w = 2.8125</code> and the loss is about 0.18.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9] }, { "label": "predicted", "values": [2.8125, 8.4375], "highlight": [0, 1] }, { "label": "error", "values": [-0.1875, -0.5625] } ], "vars": { "w": 2.8125, "loss": 0.1758, "gradient used": -3.75 } },
+    { "caption": "A gradient of −1.875 gives <code>w = 2.90625</code>. After five updates the loss has fallen from 45 to about 0.04, and the model found a value close to 3 without being told the answer.", "line": 6, "arrays": [ { "label": "km", "values": [1, 3] }, { "label": "minutes", "values": [3, 9], "mark": [0, 1] }, { "label": "predicted", "values": [2.90625, 8.71875], "mark": [0, 1] }, { "label": "error", "values": [-0.09375, -0.28125] } ], "vars": { "w": 2.90625, "loss": 0.0439, "steps": 5 } }
   ]
 }
 </script>
 </x-tracer>
 
-<p>The steps shrink by themselves because the gradient flattens near the bottom.</p>
-
-<h2>The code</h2>
+<p>The steps get smaller on their own because the slope flattens as <code>w</code> approaches the bottom of the valley.</p>
 
 <x-code>
 <pre lang="js">
@@ -158,85 +148,103 @@ for step in range(5):
 </pre>
 </x-code>
 
-<x-complexity>
-<script type="application/json">
-{ "rows": [ { "time": "O(n × p) per step", "space": "O(p)", "note": "Each step looks at all n examples for each of the p parameters. Real training repeats this thousands of times." } ] }
-</script>
-</x-complexity>
+<h2>The learning rate</h2>
 
-<h2>From one dial to millions</h2>
+<p>The learning rate is the setting that most often decides whether training works, because the gradient only says which direction is downhill and says nothing reliable about how far the bottom is.</p>
 
-<p>A real model has many parameters. For each one, ask "if I nudge just this, how does the loss change?" That list of slopes is the gradient, and every parameter steps downhill at once.</p>
+<h3>A learning rate that is too large</h3>
 
-<p>Two things change at scale:</p>
-<ul>
-<li><strong>Batches.</strong> Each step uses a small random batch, not all millions of examples. Noisier, but far cheaper.</li>
-<li><strong>Many dips.</strong> The loss surface has many low points, so gradient descent finds a good one, not a guaranteed best. That is usually enough.</li>
-</ul>
+<p>If the step is larger than the valley is wide, each update lands on the far side of the bottom, higher up the opposite slope than where it started. With a rate of 0.25 in this example, <code>w</code> jumps from 0 to 7.5, then to −3.75, then to 13.125, and the loss grows from 45 to 101.25 to about 228. With a rate of exactly 0.2, <code>w</code> bounces between 0 and 6 forever. The sign is a loss that rises or turns into <code>NaN</code>, and the fix is to lower the rate, usually by a factor of 3 to 10, and run again.</p>
 
-<x-callout type="key">
-<p>Learning is a loop: predict, measure the loss, find which way each parameter should move, and take a small step.</p>
+<h3>A learning rate that is too small</h3>
+
+<p>A small rate does not fail visibly. It only makes training slow. With a rate of 0.005, five steps move <code>w</code> only from 0 to about 0.68. The sign is a loss that decreases but barely changes from one step to the next. The fix is to raise the rate until the loss falls quickly but not erratically.</p>
+
+<h3>Rates that change during training</h3>
+
+<p>Large models are usually trained with a rate that changes over time. It starts small for a short warm-up, because the first gradients are unreliable, then it is held or raised, and it is lowered toward the end so that the parameters settle instead of bouncing around the minimum. Optimisers such as Adam and momentum variants also adjust the effective step for each parameter. They change how the step is calculated, but the loop of predict, score and update is the same.</p>
+
+<h2>Batches</h2>
+
+<p>The example computed the gradient from both trips. A real dataset can have millions of examples, and averaging over all of them for every update is too slow. <strong>Mini-batch gradient descent</strong> instead computes the gradient on a random subset, for example a few dozen or a few hundred examples, and updates the parameters after each subset. One pass over the whole dataset is called an <strong>epoch</strong>.</p>
+
+<p>A batch gives a noisy estimate of the true gradient, so the loss jumps around from step to step instead of falling smoothly. The batch size is a trade-off. Small batches update often and use little memory but give noisy steps, while large batches give smoother steps but need more memory and fewer, larger updates.</p>
+
+<h2>Choosing a loss</h2>
+
+<p>The loss defines what the model is trained to do, so it has to match the task. Mean squared error suits predicting a number such as a trip time. When the model chooses between categories or predicts the next token of text, the usual loss is <strong>cross-entropy</strong>. The model outputs a probability for each option, and the loss is low when it gave a high probability to the correct one and very high when it was confident and wrong. A language model is trained by minimising cross-entropy on the next token across a very large amount of text.</p>
+
+<p>A model optimises the loss you give it and nothing else. If the loss does not reflect what you want, such as a classifier trained on data where one class is rare, the model can score well on the loss and still be useless for the task.</p>
+
+<h2>Pitfalls</h2>
+
+<x-callout type="mistake" title="Training loss falls while the model gets worse on new data">
+<p>The loss is calculated on the training examples, so a model with enough parameters can reduce it by memorising them. This is overfitting. To detect it, keep some examples out of training and calculate the loss on them too, which is called the validation loss. If the training loss keeps falling while the validation loss starts to rise, the model has begun to memorise. Stop training at the point where the validation loss was lowest, add more data, or use a smaller model.</p>
 </x-callout>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="A learning rate that is too big">
-<p>With a rate of 0.25, <code>w</code> jumps from 0 to 7.5, over the valley, then to −3.75, then 13.125. The loss grows from 45 to 101.25 to about 228. If the loss goes up, lower the rate first.</p>
+<x-callout type="mistake" title="Inputs on very different scales">
+<p>The gradient for a parameter grows with the size of its input. If the trip distances in this example were given in metres, so 1000 and 3000 instead of 1 and 3, the gradient would be about a million times larger and a rate of 0.05 would diverge immediately. When one rate works badly for every setting you try, check whether the inputs have been scaled to similar ranges.</p>
 </x-callout>
 
-<x-callout type="mistake" title="A learning rate that is too small">
-<p>With a rate of 0.005, five steps only get <code>w</code> to about 0.68. The sign: a loss that barely moves.</p>
-</x-callout>
+<h2>What this changes in practice</h2>
 
-<x-callout type="mistake" title="Adding the gradient instead of subtracting it">
-<p>The gradient points uphill. <code>w + rate × gradient</code> climbs away from the answer. Always step against the slope.</p>
-</x-callout>
+<p>When you train or fine-tune a model, watch the training loss and the validation loss together on a plot, because the two curves tell you what to change. A training loss that rises or turns into <code>NaN</code> means the learning rate is too high. A training loss that falls very slowly means the rate is too low or the model has too little capacity. A validation loss that rises while the training loss falls means overfitting.</p>
 
-<h2>Try it yourself</h2>
+<p>Change one setting at a time, so you can tell which change caused the difference. For a classifier with <code>k</code> equally likely classes, the cross-entropy at the start of training should be close to the natural logarithm of <code>k</code>, which is about 0.69 for two classes. A starting loss far from that value usually points to a bug in the data or the loss calculation, not to a bad model.</p>
+
+<h3>Training, validation and test data</h3>
+
+<p>Choosing the learning rate, the number of training steps and the model size by looking at the validation loss means those choices are tuned to the validation examples. So you keep a third set, the test set, and use it once at the end to estimate how the model will do on new data. If you keep adjusting settings until the test result looks good, the test set stops being an honest estimate.</p>
+
+<h3>Fine-tuning</h3>
+
+<p>Fine-tuning continues training a model that was already trained on a large dataset, using your smaller dataset. The loop is the same, but it normally uses a much lower learning rate than the original training, because large steps can overwrite what the model already learned. A small dataset is easy to memorise, so watch the validation loss.</p>
 
 <x-tryit title="One step by hand">
 <x-task>
-<p>Same two trips, same learning rate 0.05, but start too high, at <code>w = 4</code>. Work out the errors, the loss, the gradient and the new <code>w</code>. Which way did it move, and why?</p>
+<p>Use the same two trips and the same learning rate of 0.05, but start too high, at <code>w = 4</code>. Work out the errors, the loss, the gradient and the new <code>w</code>. Which way does <code>w</code> move, and why?</p>
 </x-task>
 <x-answer>
-<ul>
-<li>Predictions: 4 × 1 = 4 and 4 × 3 = 12. Errors: 4 − 3 = 1 and 12 − 9 = 3.</li>
-<li>Loss: (1² + 3²) / 2 = (1 + 9) / 2 = 5.</li>
-<li>Gradient: (2 × 1 × 1 + 2 × 3 × 3) / 2 = (2 + 18) / 2 = 10.</li>
-<li>New <code>w</code>: 4 − 0.05 × 10 = 3.5. The loss there is (0.5² + 1.5²) / 2 = 1.25.</li>
-</ul>
-<p><code>w</code> went down. The errors were positive (guesses too long), so the gradient was positive: the loss rises if <code>w</code> rises. Stepping against it lowers <code>w</code>. One formula handles both sides of the valley.</p>
+<p>The predictions are 4 × 1 = 4 and 4 × 3 = 12, so the errors are 4 − 3 = 1 and 12 − 9 = 3. The loss is (1² + 3²) / 2 = (1 + 9) / 2 = 5.</p>
+<p>The gradient is (2 × 1 × 1 + 2 × 3 × 3) / 2 = (2 + 18) / 2 = 10. The new value is <code>w = 4 − 0.05 × 10 = 3.5</code>, and the loss at that point is (0.5² + 1.5²) / 2 = 1.25.</p>
+<p>The value of <code>w</code> went down. The errors were positive, because the predicted trips were too long, so the gradient was positive, which means the loss rises when <code>w</code> rises. Stepping against the gradient therefore lowers <code>w</code>.</p>
 </x-answer>
 </x-tryit>
-
-<h2>Check yourself</h2>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "At the current <code>w</code>, the gradient is +12. What does the next step do?",
+      "question": "At the current <code>w</code>, the gradient is +12. What does the next update do?",
       "options": [
-        { "text": "Increases <code>w</code>", "why": "A positive gradient means increasing <code>w</code> goes uphill." },
-        { "text": "Decreases <code>w</code>", "correct": true, "why": "Right. The update subtracts rate × gradient, so <code>w</code> goes down." },
-        { "text": "Leaves <code>w</code> unchanged", "why": "Only a gradient of 0 (flat ground) leaves <code>w</code> where it is." }
+        { "text": "It increases <code>w</code>.", "why": "A positive gradient means that increasing <code>w</code> goes uphill, so the update does the opposite." },
+        { "text": "It decreases <code>w</code>.", "correct": true, "why": "The update subtracts the learning rate times the gradient, so a positive gradient lowers <code>w</code>." },
+        { "text": "It leaves <code>w</code> unchanged.", "why": "Only a gradient of 0, where the curve is flat, leaves <code>w</code> where it is." }
       ]
     },
     {
       "question": "During training, the loss goes 40, 90, 210, 480. What is the most likely cause?",
       "options": [
-        { "text": "The learning rate is too big", "correct": true, "why": "Each step overshoots the bottom by more than the last. Lower the rate." },
-        { "text": "The learning rate is too small", "why": "A tiny rate makes the loss fall slowly, not grow." },
-        { "text": "The model has found the best <code>w</code>", "why": "Then the loss would be low and steady." }
+        { "text": "The learning rate is too large.", "correct": true, "why": "Each step overshoots the bottom by more than the previous one, so the loss grows. Lower the rate." },
+        { "text": "The learning rate is too small.", "why": "A very small rate makes the loss fall slowly. It does not make the loss grow." },
+        { "text": "The model has found the best <code>w</code>.", "why": "In that case the loss would be low and steady." }
       ]
     },
     {
-      "question": "Why does mean squared error square each error instead of just averaging them?",
+      "question": "The training loss keeps falling, but the validation loss has started to rise. What does this indicate?",
       "options": [
-        { "text": "Squaring makes the numbers smaller", "why": "For errors above 1, it makes them bigger." },
-        { "text": "So positive and negative errors cannot cancel, and big errors count extra", "correct": true, "why": "Errors of +5 and −5 would average to 0. Squared, they cost 25 each." },
-        { "text": "Because the model's output is always squared", "why": "The model is <code>w × km</code>; the squaring is only in how we score it." }
+        { "text": "The model is overfitting and starting to memorise the training examples.", "correct": true, "why": "It improves on data it has seen and gets worse on data it has not seen. Stop earlier, add data or use a smaller model." },
+        { "text": "The learning rate is too small.", "why": "A small rate would slow both curves. It would not make them move in opposite directions." },
+        { "text": "The loss function is calculated incorrectly.", "why": "A broken loss would usually affect both curves in the same way." }
+      ]
+    },
+    {
+      "question": "Why does mean squared error square each error instead of just averaging the errors?",
+      "options": [
+        { "text": "Squaring makes every number smaller.", "why": "For errors larger than 1, squaring makes the number bigger." },
+        { "text": "Positive and negative errors cannot cancel, and large errors count for more.", "correct": true, "why": "Errors of +5 and −5 would average to 0, but squared they cost 25 each." },
+        { "text": "The model's output is always squared.", "why": "The model is <code>w × km</code>. The squaring is only part of how the error is scored." }
       ]
     }
   ]
@@ -246,4 +254,4 @@ for step in range(5):
 
 <h2>What to practise next</h2>
 
-<p><a href="/ai/regression-and-classification.html">Regression and Classification</a> adds a second parameter for a better line, then turns the same idea into a model that picks a category, like spam or not spam.</p>
+<p><a href="/ai/regression-and-classification.html">Regression and Classification</a> adds a second parameter to get a better-fitting line, and then uses the same training loop for a model that chooses a category, such as spam or not spam.</p>

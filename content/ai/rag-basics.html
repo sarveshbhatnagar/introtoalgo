@@ -1,30 +1,22 @@
 <!--
 {
   "title": "RAG Basics",
-  "description": "Retrieval-augmented generation: find the passages that match a question, put them in the prompt, and get answers grounded in your own documents.",
-  "minutes": 12,
+  "description": "How retrieval-augmented generation finds relevant passages, puts them in the prompt, and how to choose between search methods and tune retrieval.",
+  "minutes": 15,
   "tags": ["context", "retrieval", "embeddings"]
 }
 -->
-<p>Two students sit an exam. One answers from memory of a textbook read a year ago. The other may bring three pages of notes, picked just before. On those topics the second wins easily, and can point to where each answer came from.</p>
+<p>Retrieval-augmented generation, or <strong>RAG</strong>, is a technique where the system searches your own documents for passages related to a question, adds those passages to the prompt, and asks the model to answer from them. It lets a model answer questions about material it was never trained on, such as your help pages, handbook or meeting notes, and it lets you cite where each answer came from.</p>
 
-<p>A model answering from training is the first student. Your help pages, handbook or meeting notes were never in its memory, and a real document collection is far bigger than any <a href="/ai/the-context-window.html">context window</a>. So be the second student: look up the few passages that matter, then answer from them.</p>
+<p>Without retrieval, the model answers from its training data and produces a confident, generic answer that may not match your documents. Sending the whole collection in every prompt is usually impossible, because a real document collection is far larger than the <a href="/ai/the-context-window.html">context window</a>.</p>
 
-<h2>Retrieve, augment, generate</h2>
+<h2>How RAG works</h2>
 
-<p>That is <strong>RAG</strong> (retrieval-augmented generation):</p>
+<p>A RAG system does three things for every question. It <strong>retrieves</strong> the passages most related to the question, it <strong>augments</strong> the prompt by adding those passages and telling the model to answer from them, and it <strong>generates</strong> the answer, ideally with a citation for each claim. The model itself is unchanged. RAG is a form of <a href="/ai/context-engineering.html">context engineering</a> in which the material in the prompt is selected automatically for each question.</p>
 
-<ol>
-<li><strong>Retrieve</strong> the passages most related to the question.</li>
-<li><strong>Augment</strong> the prompt with them, and say to answer from them.</li>
-<li><strong>Generate</strong> the answer, ideally citing the passages.</li>
-</ol>
+<p>The search usually matches meaning rather than exact words, using <a href="/ai/embeddings.html">embeddings</a>, because people rarely phrase a question in the words of the document. Someone asks "when do I get my money back?" and the answer sits under a heading called "Refund processing times".</p>
 
-<p>The model is unchanged. RAG is a <a href="/ai/context-engineering.html">context engineering</a> technique that selects material automatically for each question.</p>
-
-<p>The search usually matches meaning, not exact words, using <a href="/ai/embeddings.html">embeddings</a>, because people rarely use your documents' words. Someone asks "when do I get my money back?" and the answer sits under "Refund processing times".</p>
-
-<x-figure wide caption="Indexing runs once (and again when documents change). The query path runs on every question.">
+<x-figure wide caption="Indexing runs once, and again whenever the documents change. The query path runs for every question.">
 <svg viewBox="0 0 620 250" aria-label="Top row, labelled indexing, once: documents, then split into chunks, then embed each chunk, then store vectors. Bottom row, labelled every question: question, then embed, then compare with stored vectors and take the top k, then prompt with passages, then answer. An arrow goes from the store down to the compare step.">
   <defs><marker id="rag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <text x="10" y="22" class="t-sans t-bold">Indexing (once)</text>
@@ -50,13 +42,13 @@
 </svg>
 </x-figure>
 
-<p>Indexing is slow, so it happens ahead of time: each document is cut into passages called <strong>chunks</strong> (see <a href="/ai/chunking-and-retrieval.html">the next lesson</a>), each chunk becomes a vector, and the vectors are saved. At question time you only embed the question and compare.</p>
+<p>Indexing is slow, so it happens ahead of time. Each document is cut into passages called <strong>chunks</strong> (the <a href="/ai/chunking-and-retrieval.html">next lesson</a> covers how), each chunk is turned into a vector, and the vectors are stored. When a question arrives, the system only has to embed the question and compare it with the stored vectors.</p>
 
 <h2>Retrieval by hand</h2>
 
-<p>A bookshop's help centre has five chunks. Pretend embeddings have just three numbers: roughly "about money", "about shipping" and "about accounts". Real ones have hundreds or thousands, but the arithmetic is the same.</p>
+<p>The example below uses a bookshop help centre with five chunks. To keep the arithmetic readable, each embedding has only three numbers, which you can think of as "about money", "about shipping" and "about accounts". Real embeddings have hundreds or thousands of numbers, but the calculation is the same.</p>
 
-<p>"When will I get my money back?" embeds to <code>[5, 1, 0]</code>: mostly money, a little shipping. Its length is √26 ≈ 5.10. Score each chunk with cosine similarity (<a href="/ai/embeddings.html">Embeddings</a>) and keep the top 2.</p>
+<p>The question "When will I get my money back?" embeds to <code>[5, 1, 0]</code>, which has a length of &radic;26 &approx; 5.10. Each chunk is scored with cosine similarity (explained in <a href="/ai/embeddings.html">Embeddings</a>) and the two highest scores are kept.</p>
 
 <x-tracer title="Top 2 chunks for &quot;When will I get my money back?&quot;">
 <script type="application/json">
@@ -70,20 +62,20 @@
   ],
   "codeLang": "text",
   "steps": [
-    { "caption": "Refund times, <code>[4, 1, 0]</code>: dot = 20 + 1 + 0 = 21, length √17 ≈ 4.12. Cosine = 21 / (5.10 × 4.12) ≈ 1.00: nearly the same direction, with no shared words.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 0 }, "highlight": [0] }, { "label": "score", "values": [1.0, null, null, null, null], "highlight": [0] } ], "vars": { "q": "[5, 1, 0]", "dot": 21 } },
-    { "caption": "Returns rules, <code>[3, 2, 0]</code>: dot = 15 + 2 = 17, length √13 ≈ 3.61. Cosine ≈ 0.92: money and sending things back.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 1 }, "highlight": [1] }, { "label": "score", "values": [1.0, 0.92, null, null, null], "highlight": [1] } ], "vars": { "q": "[5, 1, 0]", "dot": 17 } },
-    { "caption": "Delivery times, <code>[0, 5, 1]</code>: dot = 0 + 5 + 0 = 5, length √26 ≈ 5.10. Cosine ≈ 0.19. Mostly shipping, so it points away from a money question, though both ask how long something takes.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 2 }, "highlight": [2] }, { "label": "score", "values": [1.0, 0.92, 0.19, null, null], "highlight": [2] } ], "vars": { "q": "[5, 1, 0]", "dot": 5 } },
-    { "caption": "Password reset, <code>[0, 0, 5]</code>: dot = 0. Cosine = 0. Unrelated.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 3 }, "highlight": [3] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, null], "highlight": [3] } ], "vars": { "q": "[5, 1, 0]", "dot": 0 } },
-    { "caption": "Gift cards are non-refundable, <code>[2, 0, 1]</code>: dot = 10, length √5 ≈ 2.24. Cosine ≈ 0.88. Close behind: also about money.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 4 }, "highlight": [4] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, 0.88], "highlight": [4] } ], "vars": { "q": "[5, 1, 0]", "dot": 10 } },
-    { "caption": "Sort and keep k = 2: refund times and returns rules go into the prompt. Gift cards came a close third: k is a judgement call.", "line": 5, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "gift card", "delivery", "password"], "mark": [0, 1], "dim": [3, 4] }, { "label": "score", "values": [1.0, 0.92, 0.88, 0.19, 0.0], "mark": [0, 1], "dim": [3, 4] } ], "vars": { "k": 2, "comparisons": 5 } }
+    { "caption": "Refund times, <code>[4, 1, 0]</code>: dot = 20 + 1 + 0 = 21, length √17 ≈ 4.12. Cosine = 21 / (5.10 × 4.12) ≈ 1.00: nearly the same direction, even though the question and the chunk share no words.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 0 }, "highlight": [0] }, { "label": "score", "values": [1.0, null, null, null, null], "highlight": [0] } ], "vars": { "q": "[5, 1, 0]", "dot": 21 } },
+    { "caption": "Returns rules, <code>[3, 2, 0]</code>: dot = 15 + 2 = 17, length √13 ≈ 3.61. Cosine ≈ 0.92: the chunk covers money and sending items back.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 1 }, "highlight": [1] }, { "label": "score", "values": [1.0, 0.92, null, null, null], "highlight": [1] } ], "vars": { "q": "[5, 1, 0]", "dot": 17 } },
+    { "caption": "Delivery times, <code>[0, 5, 1]</code>: dot = 0 + 5 + 0 = 5, length √26 ≈ 5.10. Cosine ≈ 0.19. The chunk is mostly about shipping, so it points away from a question about money.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 2 }, "highlight": [2] }, { "label": "score", "values": [1.0, 0.92, 0.19, null, null], "highlight": [2] } ], "vars": { "q": "[5, 1, 0]", "dot": 5 } },
+    { "caption": "Password reset, <code>[0, 0, 5]</code>: dot = 0. Cosine = 0. The chunk is unrelated to the question.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 3 }, "highlight": [3] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, null], "highlight": [3] } ], "vars": { "q": "[5, 1, 0]", "dot": 0 } },
+    { "caption": "Gift cards are non-refundable, <code>[2, 0, 1]</code>: dot = 10, length √5 ≈ 2.24. Cosine ≈ 0.88. This is close behind because it is also about money.", "line": 3, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "delivery", "password", "gift card"], "pointers": { "c": 4 }, "highlight": [4] }, { "label": "score", "values": [1.0, 0.92, 0.19, 0.0, 0.88], "highlight": [4] } ], "vars": { "q": "[5, 1, 0]", "dot": 10 } },
+    { "caption": "Sort and keep k = 2: refund times and returns rules go into the prompt. The gift card chunk came a close third, so the choice of k matters.", "line": 5, "arrays": [ { "label": "chunk", "values": ["refund", "returns", "gift card", "delivery", "password"], "mark": [0, 1], "dim": [3, 4] }, { "label": "score", "values": [1.0, 0.92, 0.88, 0.19, 0.0], "mark": [0, 1], "dim": [3, 4] } ], "vars": { "k": 2, "comparisons": 5 } }
   ]
 }
 </script>
 </x-tracer>
 
-<h2>The code</h2>
+<h2>Code for retrieval and prompt building</h2>
 
-<p>Retrieval and the prompt it builds, with the toy vectors from the trace standing in for a real embedding model.</p>
+<p>The code below does the same retrieval and builds the prompt, using the toy vectors from the trace in place of a real embedding model.</p>
 
 <x-code>
 <pre lang="js">
@@ -151,7 +143,7 @@ print(build_prompt("When will I get my money back?", best))
 </pre>
 </x-code>
 
-<p>The printed prompt, sent to a model:</p>
+<p>The prompt it prints, together with a plausible reply from a model, looks like this.</p>
 
 <x-prompt label="Augmented prompt" tone="good">
 <x-user>
@@ -168,55 +160,104 @@ Your refund reaches your card 5 to 7 days after the shop receives your return [1
 </x-model>
 </x-prompt>
 
-<p>The "say I don't know" line matters. Without it, when retrieval finds nothing useful, the model falls back on training and gives a confident, generic answer that looks just as grounded.</p>
+<p>The instruction to say "I don't know" is important. When retrieval finds nothing useful and that instruction is missing, the model falls back on its training data and gives an answer that sounds just as grounded as a correct one.</p>
+
+<h2>Choosing how to search</h2>
+
+<p>Retrieval does not have to use embeddings. There are three common choices, and each fails in its own way.</p>
+
+<h3>Embedding search</h3>
+
+<p>Embedding search compares the meaning of the question with the meaning of each chunk. It handles paraphrases well, so "money back" finds "refund". It is weaker on exact identifiers. A product code, an error number or a person's name has little meaning for an embedding model, so the chunk that contains that exact string may not rank near the top.</p>
+
+<h3>Keyword search</h3>
+
+<p>Keyword search scores chunks by how many of the question's words they contain, weighting rare words more heavily than common ones. It finds exact strings reliably and needs no embedding model. It fails when the question and the document use different words for the same thing, because "money back" shares no words with "refund".</p>
+
+<h3>Hybrid search</h3>
+
+<p>Hybrid search runs both methods and merges the two ranked lists. It is the usual choice when the documents contain a mix of ordinary prose and exact identifiers, such as a support knowledge base that mentions error codes. The two rankings use scores on different scales, so they are usually merged by rank rather than by score. A common rule is reciprocal rank fusion, which gives each chunk a value of 1 divided by (a constant plus its rank) in each list and adds the values. The cost is a second index to maintain.</p>
+
+<table>
+<thead><tr><th>Method</th><th>Finds</th><th>Misses</th></tr></thead>
+<tbody>
+<tr><td>Embedding search</td><td>Paraphrases and related wording</td><td>Exact codes, names and numbers</td></tr>
+<tr><td>Keyword search</td><td>Exact words and identifiers</td><td>Different wording for the same idea</td></tr>
+<tr><td>Hybrid search</td><td>Both kinds of match</td><td>Little, but it needs two indexes and a rule for merging their results</td></tr>
+</tbody>
+</table>
+
+<h2>Choosing how many passages to retrieve</h2>
+
+<p>The number of passages, called <strong>k</strong>, is a trade-off. If k is too small, the passage that holds the answer may rank just below the cutoff and never reach the model. If k is too large, the prompt fills with loosely related text, which costs tokens and gives the model more chances to latch onto the wrong passage. In the trace above, the gift card chunk scored 0.88, close behind the returns chunk at 0.92, and k = 2 left it out.</p>
+
+<p>A fixed k always returns something, even for a question the documents do not cover. Adding a minimum score fixes this: passages below the threshold are dropped, and if none remain, the system can reply that it found nothing instead of passing weak matches to the model. The right threshold depends on the embedding model, so find it by testing questions whose answers you know.</p>
+
+<h2>Improving the retrieved passages</h2>
+
+<p>When the right passage exists but does not reach the prompt, three changes are the usual fixes.</p>
+
+<p><strong>Reranking</strong> retrieves a generous number of candidates, such as 30, and then reorders them with a slower model that reads the question and each candidate together. Embedding search compares two vectors that were computed separately, so it is fast but approximate; a reranker sees both texts at once and is more accurate. You then keep only the top few for the prompt.</p>
+
+<p><strong>Query rewriting</strong> is needed when the user's message is not a good search query by itself. In a conversation, "and what about for gift cards?" has no meaning without the earlier turns, so the system first asks the model to rewrite it as a standalone question, such as "What is the refund policy for gift cards?", and searches with that.</p>
+
+<p><strong>Metadata filtering</strong> restricts the search to chunks whose stored attributes match, such as the product, the document version or the language. It is also how access control works: the filter must remove the chunks the current user is not allowed to read before they are retrieved, because anything that reaches the prompt can appear in the answer.</p>
+
+<h2>When RAG is the right tool</h2>
+
+<p>Use RAG when the material is too large to send whole, changes often, or is private. Updating the documents updates the answers, with no retraining.</p>
+
+<p>Skip RAG when the material is small. If the whole handbook fits comfortably in the prompt, send all of it, which removes the possibility of a retrieval miss.</p>
+
+<p>Do not use <a href="/ai/training-and-fine-tuning.html">fine-tuning</a> as a substitute for facts that change. Fine-tuning is good for teaching a style or a format, but it is a poor place to store facts you will need to correct next month, and a fine-tuned model cannot point to a source.</p>
 
 <x-complexity>
 <script type="application/json">
 {
   "rows": [
-    { "name": "Compare with every chunk", "time": "O(n·d + n log n)", "space": "O(n)", "note": "n chunks of d numbers, then a sort. Fine for thousands of chunks." },
-    { "name": "Approximate index", "time": "much less than O(n·d)", "space": "O(n·d)", "note": "Vector databases check only promising regions, trading a little accuracy for big speed-ups at millions of chunks." }
+    { "name": "Compare with every chunk", "time": "O(n·d + n log n)", "space": "O(n)", "note": "n chunks of d numbers each, followed by a sort. This is fast enough for thousands of chunks." },
+    { "name": "Approximate index", "time": "much less than O(n·d)", "space": "O(n·d)", "note": "Vector databases check only the promising regions, trading a little accuracy for a large speed-up at millions of chunks." }
   ]
 }
 </script>
 </x-complexity>
 
-<h2>When RAG is the right tool</h2>
-
-<ul>
-<li><strong>Use it</strong> when the material is too big to send whole, changes often, or is private. Updating the documents updates the answers, with no retraining.</li>
-<li><strong>Skip it</strong> when the material is small. If the whole handbook fits comfortably, send all of it and avoid retrieval mistakes.</li>
-<li><strong>Do not fine-tune instead</strong> for changing facts. <a href="/ai/training-and-fine-tuning.html">Fine-tuning</a> teaches style or format; it is a poor store for facts you will correct next month.</li>
-</ul>
-
-<x-callout type="key">
-<p>A RAG answer is only as good as what was retrieved. When answers are wrong, check the passages before touching the prompt.</p>
-</x-callout>
-
-<h2>Common mistakes</h2>
+<h2>Pitfalls</h2>
 
 <x-callout type="mistake" title="Blaming the model for a retrieval miss">
-<p>If the right passage never reached the prompt, no wording will help. Log what was retrieved, and test retrieval alone with questions whose correct passage you know.</p>
+<p>If the passage that holds the answer never reached the prompt, no change to the wording will help. Log which passages were retrieved for each question, and test retrieval on its own with questions whose correct passage you already know.</p>
 </x-callout>
 
 <x-callout type="mistake" title="Mixing embedding models">
-<p>Vectors from two embedding models are not comparable, like coordinates on two different maps. If you change models, re-embed every chunk.</p>
+<p>Vectors produced by two different embedding models cannot be compared, in the same way that coordinates from two different maps cannot be compared. If you switch models, re-embed every chunk, and make sure questions are embedded with the same model as the chunks.</p>
 </x-callout>
 
-<x-callout type="mistake" title="Trusting whatever comes back">
-<p>Retrieved text can be outdated, wrong, or written to steer the model. Keep stale documents out of the index, and treat passages as material, never as instructions.</p>
+<x-callout type="mistake" title="Trusting whatever is retrieved">
+<p>Retrieved text can be out of date, wrong, or written to steer the model, as in <a href="/ai/prompt-injection.html">prompt injection</a>. Keep stale documents out of the index, and tell the model in the prompt that the passages are reference material and not instructions.</p>
 </x-callout>
 
-<h2>Try it yourself</h2>
+<x-callout type="mistake" title="Stale index after documents change">
+<p>If a document is edited or deleted but its old chunks stay in the index, the system keeps answering from the old text. Re-index changed documents, and remove the chunks of deleted ones.</p>
+</x-callout>
+
+<x-callout type="mistake" title="Answers that cite nothing">
+<p>If the prompt does not require citations, a wrong answer and a right one look identical to the reader. Ask for a citation per claim, and check that each cited passage supports the claim.</p>
+</x-callout>
+
+<h2>What this changes in practice</h2>
+
+<p>When a RAG answer is wrong, look at the retrieved passages before you change the prompt. If the right passage is missing, the problem is in indexing or search. If it is present and the answer is still wrong, the problem is in the prompt or the model. Keeping these two cases apart saves a lot of wasted prompt editing.</p>
+
+<p>Build a small test set of real questions, each with the passage that should answer it, and measure how often that passage appears in the top k. Rerun the test whenever you change the chunk size, the embedding model or k. Record what each change does to the result, in the same way you would for the <a href="/ai/evals.html">evals</a> of a prompt.</p>
 
 <x-tryit title="Retrieval or generation">
 <x-task>
 <p>A staff assistant was asked "How many days of parental leave do we get?" It answered "Most companies offer 12 weeks." The retrieved passages were: [1] "Annual leave: 25 days per year, plus public holidays." [2] "Sick leave must be reported to your manager before 10am." Find the two separate failures and say what you would change.</p>
 </x-task>
 <x-answer>
-<p><strong>Problem 1: retrieval.</strong> Neither passage is about parental leave. Either the policy is not in the index, or it was chunked or embedded badly so a generic "leave" match beat it. Check the store, then search for it directly to see where it ranks.</p>
-<p><strong>Problem 2: generation.</strong> The model should have said the passages did not answer the question; instead it used general knowledge. Add an instruction such as: "If the sources do not answer the question, reply: I couldn't find this in the staff handbook." Requiring citations also helps, because an answer with no source stands out.</p>
-<p>Fixing only the prompt makes it honest but unhelpful. Fixing only retrieval leaves it free to invent answers next time. Fix both.</p>
+<p>The first failure is in retrieval. Neither passage is about parental leave. Either the policy is not in the index, or it was chunked or embedded badly so that a generic match on "leave" ranked above it. Check that the policy is in the store, then search for it directly to see where it ranks.</p>
+<p>The second failure is in generation. The model should have said that the passages did not answer the question, but it used general knowledge instead. Add an instruction such as "If the sources do not answer the question, reply: I couldn't find this in the staff handbook." Requiring citations also helps, because an answer with no source stands out.</p>
+<p>Fixing only the prompt makes the assistant honest but unhelpful. Fixing only retrieval leaves it free to invent an answer the next time a question is not covered. Both need fixing.</p>
 </x-answer>
 </x-tryit>
 
@@ -230,24 +271,24 @@ Your refund reaches your card 5 to 7 days after the shop receives your return [1
       "question": "Why does RAG usually search with embeddings rather than exact keywords?",
       "options": [
         { "text": "Embeddings are faster than any keyword search", "why": "Keyword search is often faster." },
-        { "text": "People phrase questions differently from the documents, and embeddings match meaning", "correct": true, "why": "\"Money back\" and \"refund\" share no words but point nearly the same way." },
-        { "text": "Models can only read embeddings", "why": "Chunks reach the model as ordinary text. Embeddings only find them." }
+        { "text": "People phrase questions differently from the documents, and embeddings match meaning", "correct": true, "why": "\"Money back\" and \"refund\" share no words, but their embeddings point in nearly the same direction." },
+        { "text": "Models can only read embeddings, not text", "why": "Chunks reach the model as ordinary text. Embeddings only find them." }
       ]
     },
     {
       "question": "Your company's policies change monthly. What keeps a staff assistant's answers current most easily?",
       "options": [
-        { "text": "Fine-tune the model on the policies every month", "why": "Slow and costly, and trained-in facts are hard to correct and cannot be cited." },
-        { "text": "RAG over the policy documents, re-indexing when they change", "correct": true, "why": "Update the documents and the next question retrieves the new text." },
-        { "text": "Write the policies into the model's instructions once", "why": "Fine if short, but they still need updating, and large policy sets will not fit." }
+        { "text": "Fine-tune the model on the policies every month", "why": "Fine-tuning is slow and costly, and facts trained into a model are hard to correct and cannot be cited." },
+        { "text": "RAG over the policy documents, re-indexing when they change", "correct": true, "why": "When you update the documents, the next question retrieves the new text." },
+        { "text": "Write the policies into the model's instructions once", "why": "This works for a short policy, but you still have to update it by hand, and a large set of policies will not fit." }
       ]
     },
     {
       "question": "In the trace, the gift-card chunk scored 0.88 but was left out. What would happen with k = 3?",
       "options": [
-        { "text": "It would be included as the third passage", "correct": true, "why": "It was third. A larger k gives more to work with, at the cost of tokens and distraction." },
+        { "text": "It would be included as the third passage", "correct": true, "why": "It ranked third. A larger k gives the model more to work with, at the cost of extra tokens and more distracting text." },
         { "text": "Nothing changes, because 0.88 is too low", "why": "Top-k has no score cutoff unless you add one." },
-        { "text": "The delivery chunk would be included", "why": "Delivery scored 0.19, fourth place. It would need k = 4." }
+        { "text": "The delivery chunk would be included", "why": "The delivery chunk scored 0.19 and ranked fourth, so it would need k = 4." }
       ]
     }
   ]
