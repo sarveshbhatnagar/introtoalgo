@@ -1,77 +1,62 @@
 <!--
 {
   "title": "Design File Sync",
-  "description": "Design a cloud file sync service: chunking and content hashes for dedup and delta sync, a consistent metadata journal, conflicts and device notifications.",
-  "minutes": 29,
+  "description": "How a file sync service uploads only changed chunks, keeps file lists consistent, resolves edit conflicts and notifies devices.",
+  "minutes": 24,
   "kind": "design",
   "tags": ["case study", "file sync", "chunking", "consistency", "conflicts"]
 }
 -->
-<p>You save a spreadsheet on your laptop, and by the time you pick up your phone the new version is there. Edit the same file in two places while offline, and nothing is silently lost: you get both versions and decide.</p>
+<p>A file sync service keeps a folder identical on all of a user's devices and on the devices of the people the folder is shared with. When a file is saved on one device, the new version appears on the others, and files can be edited offline and synced later.</p>
 
-<p>This question mixes two systems. One moves lots of bytes and must never send them twice. The other tracks small metadata records and must be strictly correct, because a wrong file list destroys someone's work. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The question is hard because it combines two systems. One moves large amounts of file data and should never send the same bytes twice. The other stores small metadata records, such as the list of files and their versions, and has to be strictly correct, because a wrong file list can destroy a user's work. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a file sync service, like a shared folder that follows you across devices.</x-interviewer>
-<x-you>A folder on each device, synced through the cloud. Do we need sharing, version history, and offline editing?</x-you>
-<x-interviewer>Shared folders yes, offline editing yes. Keep 30 days of versions.</x-interviewer>
-<x-you>How many users, how much data each, and how often do files change?</x-you>
-<x-interviewer>10 million users, about 2 GB each on average, around 3 devices per user. Say 3 million people change something on a given day.</x-interviewer>
-<x-you>Then my priorities: never lose or silently overwrite a file, never upload bytes the server has, show changes elsewhere within seconds, and give every device a folder's changes in the same order. Real-time co-editing is a different product; I'll leave it out.</x-you>
-<x-coach>"Never silently overwrite" sets up the conflict deep dive early. Ruling out co-editing keeps the scope honest.</x-coach>
+<x-you>Each device has a local folder that is synced through the cloud. Do we need shared folders, version history and offline editing?</x-you>
+<x-interviewer>Shared folders yes, offline editing yes, and keep 30 days of versions.</x-interviewer>
+<x-you>How many users are there, how much data does each one store, and how often do files change?</x-you>
+<x-interviewer>10 million users with about 2 GB and 3 devices each. About 3 million change something on a given day.</x-interviewer>
+<x-you>Then my priorities are to never lose or silently overwrite a file, never upload bytes the server already has, show changes on other devices within seconds, and keep each folder's changes in one order. I will leave real-time co-editing out, because it is a different product.</x-you>
+<x-coach>Saying "never silently overwrite" early sets up the conflict discussion later. Ruling out co-editing keeps the scope honest.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> upload, download, update, delete and move files; sync to a user's other devices; share folders; keep 30 days of versions; work offline.</li>
-<li><strong>Non-functional:</strong> no acknowledged change is ever lost; every device sees a folder's changes in one order (strong consistency per folder); online devices see changes within about 5 seconds; upload only what changed.</li>
-<li><strong>Out of scope:</strong> real-time co-editing, search inside files, previews.</li>
+<li><strong>Functional requirements:</strong> users can upload, update, delete and move files, changes sync to their other devices, folders can be shared, 30 days of versions are kept, and devices can work offline.</li>
+<li><strong>Non-functional requirements:</strong> no acknowledged change is ever lost. Every device sees the changes to a folder in the same order, which is strong consistency per folder. Online devices see changes within about 5 seconds, and only changed parts of a file are uploaded.</li>
+<li><strong>Out of scope:</strong> real-time co-editing, search inside files and previews.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Stored data:</strong> 10 million users × 2 GB = 2 × 10<sup>16</sup> B = 20 PB before dedup and redundancy.</li>
-<li><strong>Changes:</strong> 3 million active users × 20 saves = 60 million changes a day. 60 × 10<sup>6</sup> ÷ 86,400 ≈ 700 a second; a 3x working-hours peak is about 2,100 a second.</li>
-<li><strong>Upload bandwidth:</strong> at 1 MB per change, 60 million × 1 MB = 60 TB a day, about 700 MB/s.</li>
-<li><strong>Connected devices:</strong> 10 million users × 3 devices = 30 million. If 30% are online at once, 9 million wait to hear about changes.</li>
+<li><strong>Stored data:</strong> 10 million users × 2 GB = 2 × 10<sup>16</sup> B, which is 20 PB before deduplication and redundancy.</li>
+<li><strong>Changes:</strong> assume 3 million active users make 20 saves each, which is 60 million changes a day. Dividing by 86,400 seconds gives about 700 changes a second, and a 3x peak during working hours gives about 2,100 a second.</li>
+<li><strong>Connected devices:</strong> 10 million users × 3 devices = 30 million devices, and if 30% are online, 9 million are waiting to hear about changes.</li>
 </ul>
 
 <x-estimate title="Size of the chunk index">
 <script type="application/json">
 {
-  "question": "The server keeps one index row (hash, location, reference count) per 4 MB chunk. How big is that index?",
+  "question": "The server keeps one index row (hash, location, reference count) for each 4 MB chunk. How big is that index?",
   "givens": ["20 PB of stored data", "4 MB per chunk", "About 100 bytes per index row"],
   "unit": "bytes",
   "answer": "500 GB",
   "accept": ["150 GB", "1.5 TB"],
   "steps": ["2 × 10<sup>16</sup> B ÷ 4 × 10<sup>6</sup> B = 5 × 10<sup>9</sup> chunks", "5 × 10<sup>9</sup> × 100 B = 5 × 10<sup>11</sup> B = 500 GB"],
-  "note": "Fits a sharded database. Smaller chunks find more duplicates but grow this index in proportion."
-}
-</script>
-</x-estimate>
-
-<x-estimate title="Bytes saved by delta sync">
-<script type="application/json">
-{
-  "question": "A user changes a few cells in a 200 MB file. With 4 MB chunks, how many bytes are uploaded?",
-  "givens": ["The file is 200 MB", "The edit falls inside one 4 MB chunk", "Unchanged chunks are already on the server"],
-  "unit": "bytes",
-  "answer": "4 MB",
-  "accept": ["2 MB", "20 MB"],
-  "choices": ["400 KB", "4 MB", "40 MB", "200 MB"],
-  "steps": ["200 MB ÷ 4 MB = 50 chunks", "Only 1 chunk's hash changed: 1 × 4 MB = 4 MB uploaded, 50 times less than 200 MB"]
+  "note": "The index fits in a sharded database. Smaller chunks find more duplicates but make the index grow in proportion."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="3" title="Define the API">
 <x-task>
-<p>Write the calls to save a changed file without re-uploading what the server has, and how another device learns of the change.</p>
+<p>Write the calls that save a changed file without re-uploading data the server already has, and describe how another device learns about the change.</p>
 </x-task>
 <x-answer>
-<p>The client sends the chunk hashes; the server answers with the ones it is missing. The client uploads those, then commits, naming the version it started from. Other devices hold a long poll that says "this folder changed", then ask for changes since their last cursor.</p>
+<p>The client sends the hashes of the file's chunks, and the server replies with the ones it is missing. The client uploads those and then commits, naming the version it started from. Other devices hold a long poll that says which folder changed, and then ask for changes after their cursor.</p>
 </x-answer>
 </x-tryit>
 
@@ -96,16 +81,16 @@ GET  /v1/notify?cursors=N:1041,M:88       long poll, up to 60 s
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>chunks before metadata</strong>. A commit succeeds only if every chunk it names is stored, so a file record never points at missing bytes. The cost is an extra round trip on a <code>412</code>; metadata first would send other devices after bytes that have not arrived.</p>
+<p>The main API decision is that a client uploads chunks before it commits the metadata. A commit succeeds only if every chunk it names is already stored, so a file record never points at bytes that do not exist. If metadata were written first, other devices would be told about a version and would try to download chunks that had not arrived yet. The cost is one extra round trip when the server answers <code>412</code>.</p>
 
-<p>Both writes are safe to retry. A chunk named by its hash is stored once. The commit carries a client-made <code>commit_id</code>, so a retry after a lost reply gets back the applied commit, not a false <code>409</code> against its own edit.</p>
+<p>Both write calls are safe to retry. A chunk is named by its hash, so uploading it twice stores it once. The commit carries a client-chosen <code>commit_id</code>, so if a reply is lost, the retry returns the commit already applied instead of a <code>409</code> against the client's own edit.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records for folders, files, versions and chunks. How does a device ask "what changed since I last looked"?</p>
+<p>Sketch the records for folders, files, versions and chunks. How does a device ask what has changed since it last looked?</p>
 </x-task>
 <x-answer>
-<p>A version is a list of chunk hashes. Each namespace (a shared folder or user root) has a numbered journal of changes. A device keeps a cursor, the last number it applied, and asks for entries after it.</p>
+<p>A version is a list of chunk hashes. Each namespace, meaning a shared folder or a user's root folder, has a numbered journal of changes. A device remembers a cursor, which is the number of the last journal entry it applied, and asks for the entries after it.</p>
 </x-answer>
 </x-tryit>
 
@@ -126,20 +111,20 @@ chunks:      sha256 PK, blob_key, size, ref_count
 </pre>
 </x-code>
 
-<p>A commit checks the base revision, writes a new revision, bumps the file's latest revision and appends a journal entry, all or nothing. That needs a <strong>relational database, sharded by namespace</strong>, so every change to one folder lands on one shard in one order. Chunk bytes go to <a href="/system-design/blob-storage.html">object storage</a> keyed by hash; the chunk index is a key-value lookup sharded by hash.</p>
+<p>A commit has to check the base revision, write a new revision, update the file's latest revision and append a journal entry, and these four steps either all happen or none do. That requires a relational database sharded by namespace, so that every change to one folder lands on one shard and is applied in one order. Chunk bytes go to <a href="/system-design/blob-storage.html">object storage</a>, and the chunk index is a key-value lookup sharded by hash.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Draw how a save on one device reaches another, with separate byte and metadata paths.</p>
+<p>Draw how a save on one device reaches another device, with separate paths for file bytes and for metadata.</p>
 </x-task>
 <x-answer>
-<p>Three services: block (chunks), metadata (commits and the journal), notification (long polls). Notifications only say where to look, so losing one loses no data.</p>
+<p>Use three services: a block service for chunks, a metadata service for commits and the journal, and a notification service for long polls. A notification only says where to look for changes, so losing one loses no data.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="Bytes go through the block service to object storage; file lists go through the metadata service. Notifications only say where to look.">
+<x-arch caption="File bytes go through the block service to object storage, and file lists go through the metadata service. Notifications only say where to look.">
 <script type="application/json">
 {
   "nodes": [
@@ -189,52 +174,47 @@ chunks:      sha256 PK, blob_key, size, ref_count
   },
   "steps": [
     {
-      "caption": "The laptop saves <code>budget.xlsx</code> (200 MB) and hashes its 50 chunks. Only one hash differs from revision 7.",
+      "caption": "The laptop saves the 200 MB <code>budget.xlsx</code> and hashes its 50 chunks. Only one differs from revision 7.",
       "arch": { "active": ["dev"], "dim": ["notify", "events"], "notes": { "dev": "1 of 50 changed" } },
       "vars": { "base rev": 7 }
     },
     {
-      "caption": "It tries to commit revision 8 with all 50 hashes. One is missing from the chunk index: <code>412</code>.",
+      "caption": "The laptop commits revision 8 with all 50 hashes. One is not in the chunk index, so the server answers <code>412</code>.",
       "arch": { "active": ["meta", "mdb", ["dev", "meta"], ["meta", "mdb"]], "dim": ["notify", "events", "block", "blob"], "notes": { "meta": "412: 1 missing" } },
       "vars": { "base rev": 7 }
     },
     {
-      "caption": "The laptop uploads that one chunk: 4 MB instead of 200 MB. The block service checks the bytes match the hash.",
+      "caption": "The laptop uploads the missing chunk, which is 4 MB instead of 200 MB,.",
       "arch": { "active": ["block", "blob", ["dev", "block"], ["block", "blob"]], "dim": ["notify", "events"], "notes": { "blob": "+4 MB" } },
       "vars": { "base rev": 7, "uploaded": "4 MB" }
     },
     {
-      "caption": "It retries. In one transaction: the file is still at revision 7, so revision 8 and journal entry 1042 are written.",
+      "caption": "The laptop retries. The file is still at revision 7, so one transaction writes revision 8 and journal entry 1042.",
       "arch": { "active": ["meta", "mdb", ["dev", "meta"], ["meta", "mdb"]], "mark": ["mdb"], "dim": ["notify", "events"], "notes": { "mdb": "rev 8, seq 1042" } },
       "vars": { "rev": 8, "journal seq": 1042 }
     },
     {
-      "caption": "A feed reading the journal queues a change event. Because events come from the journal, a crash after a commit cannot skip one.",
+      "caption": "A feed reads the journal and queues a change event. Events come from the journal, so a crash cannot skip one.",
       "arch": { "active": ["events", ["mdb", "events"]], "dim": ["block", "blob"] },
       "vars": { "rev": 8, "journal seq": 1042 }
     },
     {
-      "caption": "The phone's long poll (cursor 1041) gets the answer \"this folder changed\". No file data.",
+      "caption": "The phone's long poll, which carries cursor 1041, is answered with a message that this folder changed, and no file data.",
       "arch": { "active": ["notify", ["events", "notify"], ["notify", "dev"]], "dim": ["block", "blob"], "notes": { "dev": "phone: changed" } },
       "vars": { "phone cursor": 1041 }
     },
     {
-      "caption": "The phone asks for changes after 1041: <code>budget.xlsx</code> at revision 8, with 50 hashes.",
-      "arch": { "active": ["meta", "mdb", ["dev", "meta"], ["meta", "mdb"]], "dim": ["notify", "events", "block", "blob"] },
-      "vars": { "phone cursor": 1042 }
-    },
-    {
-      "caption": "It holds 49 of those chunks, so it downloads one and rebuilds the file.",
+      "caption": "The phone asks for the changes after 1041, receives revision 8 with its 50 hashes, downloads the one chunk it lacks and rebuilds the file.",
       "arch": { "active": ["block", "blob", ["dev", "block"], ["block", "blob"]], "mark": ["dev"], "dim": ["notify", "events"] },
       "vars": { "phone cursor": 1042, "downloaded": "4 MB" }
     },
     {
-      "caption": "Meanwhile the desktop edited the same file offline from revision 7. Its commit says base 7, but the file is at 8: <code>409</code>. Nothing is overwritten.",
+      "caption": "Meanwhile the desktop edited the same file offline, starting from revision 7. Its commit names base revision 7, but the file is at revision 8, so the server answers <code>409</code>.",
       "arch": { "active": ["meta", ["dev", "meta"]], "fail": [["dev", "meta"]], "dim": ["notify", "events", "block", "blob"], "notes": { "meta": "409: now rev 8" } },
       "vars": { "rev": 8 }
     },
     {
-      "caption": "If the notification service is down, devices poll for changes every minute. Slower, but the journal and cursors miss nothing.",
+      "caption": "If the notification service is down, devices fall back to asking for changes every minute. Changes arrive later, but none is missed.",
       "arch": { "fail": ["notify"], "active": ["meta", ["dev", "meta"]], "dim": ["events", "block", "blob"], "notes": { "dev": "poll each 60 s" } },
       "vars": { "phone cursor": 1042 }
     }
@@ -247,7 +227,13 @@ chunks:      sha256 PK, blob_key, size, ref_count
 
 <h3>Chunking and content hashing</h3>
 
-<p>Name every chunk by a cryptographic hash of its bytes, such as SHA-256. Same hash means same bytes, for every practical purpose, so each distinct chunk is stored once. That gives three wins: <strong>delta sync</strong> (upload only chunks whose hash changed), <strong>deduplication</strong> (a chunk shared by two files or versions is stored once), and <strong>safe retries</strong> (re-sending a chunk changes nothing).</p>
+<p>Uploading a whole file every time it changes wastes bandwidth, so the client splits each file into chunks and names every chunk by a cryptographic hash of its bytes, such as SHA-256. Two chunks with the same hash have the same bytes for every practical purpose, so the server stores each distinct chunk once. This gives delta sync, because only chunks whose hash changed are uploaded. It gives deduplication, because a chunk shared by two files or two versions is stored once. It also makes retries safe, because uploading a chunk a second time changes nothing.</p>
+
+<p>The remaining question is where to cut the file. With <strong>whole-file hashing</strong> there is one hash per file. A one-byte change to a 200 MB file uploads all 200 MB, so it is only acceptable for small files.</p>
+
+<p>With <strong>fixed-size chunks</strong>, for example 4 MB, the file is cut at every 4 MB offset. An edit that changes bytes in place alters one chunk, so a small edit uploads only 4 MB of a 200 MB file. The weakness is an insertion. If a paragraph is inserted near the start of a document, every byte after it moves by the same amount, every later chunk boundary lands on different bytes, and every later chunk gets a new hash, so almost the whole file is uploaded again.</p>
+
+<p>With <strong>content-defined chunking</strong> the client slides a small window, say 48 bytes, over the file and computes a rolling hash of the bytes in it. It cuts the file wherever the low 22 bits of that hash are zero, which happens on average once every 2<sup>22</sup> ≈ 4.2 million bytes, so chunks average about 4 MB. A cut depends only on nearby bytes, so an insertion changes only the chunks around it and later boundaries stay where they were. The cost is that chunk sizes vary, so it needs a minimum and a maximum size.</p>
 
 <x-tradeoffs caption="How to cut a file into chunks">
 <script type="application/json">
@@ -255,147 +241,114 @@ chunks:      sha256 PK, blob_key, size, ref_count
   "options": [
     {
       "name": "Whole file",
-      "good": "Simplest; one hash per file.",
-      "bad": "A one-byte change re-uploads the whole 200 MB file.",
-      "pick": "Small files only, under one chunk anyway."
+      "good": "It is the simplest approach, with one hash per file.",
+      "bad": "A one-byte change uploads the entire 200 MB file again.",
+      "pick": "Use it only for files smaller than one chunk."
     },
     {
       "name": "Fixed 4 MB chunks",
-      "good": "Easy to compute and explain. Edits in place change one chunk.",
-      "bad": "Inserting bytes near the start shifts every later boundary, so every later chunk gets a new hash.",
-      "pick": "Files edited in place, like disk images. A good first answer.",
+      "good": "It is easy to compute, and an edit in place changes only one chunk.",
+      "bad": "An insertion near the start shifts every later boundary, so every later chunk gets a new hash.",
+      "pick": "Use it for files that are edited in place, such as disk images. It is a good first answer.",
       "default": true
     },
     {
       "name": "Content-defined chunks",
       "good": "Boundaries follow the content, so an insertion changes only the chunks around it.",
-      "bad": "Chunk sizes vary; needs a rolling hash and a minimum and maximum size.",
-      "pick": "Documents with text inserted in the middle. The next step up."
+      "bad": "Chunk sizes vary, and it needs a rolling hash with a minimum and a maximum chunk size.",
+      "pick": "Use it for documents where text is inserted in the middle. It is the next step up from fixed chunks."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>Content-defined chunking computes a cheap rolling hash over a small sliding window, say 48 bytes, and cuts wherever the low 22 bits are all zero: on average once every 2<sup>22</sup> ≈ 4.2 million bytes, so chunks average about 4 MB. The cut depends only on nearby bytes, so an inserted paragraph moves only the boundaries near it.</p>
-
-<p>Worth raising: deduplicating <em>across</em> users leaks information, since an instant upload reveals someone else has that exact file. I would start per user and say what cross-user dedup would save and cost.</p>
+<p>Interviewers often ask about deduplicating across users. It saves more space, but the server's reply to an upload then reveals whether anyone else has that exact file, so a safe answer is to deduplicate within one user's files.</p>
 
 <h3>The metadata service and consistency</h3>
 
-<p>Bytes can be eventually consistent: a chunk exists or not, and never changes. File lists cannot. A device that applied "rename A to B" before "create A" would end up with the wrong folder. So each change gets the next journal sequence number in the same transaction that changes the file record, and devices apply entries in order.</p>
+<p>Chunks can be eventually consistent, because a chunk either exists or does not and never changes. The file list cannot be. If a device applied "rename A to B" before "create A", it would end up with the wrong folder contents. For this reason each change receives the next journal sequence number in the same transaction that changes the file record, and every device applies the journal entries in sequence order.</p>
 
-<p>The guarantee: within one namespace, every device sees the same changes in the same order, and never sees revision 8 without its chunks. Changes across namespaces are <em>not</em> ordered, and need not be, so normal saves never need cross-shard transactions. The cost: a huge shared folder lands on one shard, so give it a dedicated shard or split it.</p>
+<p>Within one namespace, every device then sees the same changes in the same order, and never sees a revision whose chunks are not stored. Changes in different namespaces are not ordered relative to each other, so a normal save never needs a transaction across shards. The cost is that one very large shared folder lives on a single shard and needs a dedicated one.</p>
 
-<p>On failover, promote only a replica with every committed transaction (a synchronous replica, or a consensus-based database). With an asynchronous one, a commit the phone already applied could vanish. See <a href="/system-design/replication.html">replication</a>.</p>
+<p>Failover needs care. If the metadata primary fails, promote only a replica that has every committed transaction, which means a synchronous replica or a database that uses consensus. An asynchronous replica that is behind could lose a commit a phone has already applied. See <a href="/system-design/replication.html">replication</a>.</p>
 
 <h3>Conflicts</h3>
 
-<p>Two devices edit the same file while one is offline. Something has to give.</p>
+<p>A conflict happens when two devices change the same file from the same starting revision, usually because one of them was offline. The server detects it with optimistic concurrency. Every commit names the <code>base_rev</code> it started from, and the server accepts the commit only if that is still the latest revision. The device that commits second receives <code>409</code>, and the system then has to decide what to do with its version.</p>
 
-<x-tradeoffs caption="What to do when two edits collide">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Last writer wins",
-      "good": "No user interaction; always one version.",
-      "bad": "Silently throws away an edit.",
-      "pick": "Never for user files."
-    },
-    {
-      "name": "Conflicted copy",
-      "good": "Nothing is lost. The second version is saved as <code>budget (Desktop's conflicted copy).xlsx</code>.",
-      "bad": "The user has to merge by hand.",
-      "pick": "Any file type the server cannot parse. My default.",
-      "default": true
-    },
-    {
-      "name": "Automatic merge",
-      "good": "No duplicates when edits touch different parts.",
-      "bad": "Only for formats you can parse; a wrong merge corrupts a file.",
-      "pick": "Formats like plain text, with a tested merge."
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p><strong>Last writer wins</strong> keeps whichever version arrived last and discards the other. It needs no user interaction, but it silently destroys someone's work, depending only on whose upload finished first. <strong>Conflicted copy</strong> keeps both. The losing device uploads its version under a new name, such as <code>budget (Desktop's conflicted copy).xlsx</code>, and both files appear on every device, so the user can merge them by hand. It is the usual default for files the server cannot parse. <strong>Automatic merge</strong> combines the two edits when they touch different parts of the file. It works only for formats the server can parse, such as plain text, and a faulty merge corrupts the file.</p>
 
-<p>The mechanism is optimistic concurrency: every commit names its <code>base_rev</code>, and the server accepts it only if that is still the latest. The loser gets <code>409</code> and uploads its version under a conflicted-copy name; both appear on every device. Deletes conflict too: if one device deletes a file another just edited, keep the edit.</p>
+<p>Deletes can conflict too. If one device deletes a file that another device edited, the usual rule is to keep the edit.</p>
 
 <h3>Notifying other devices</h3>
 
-<p>Polling every 5 seconds from 9 million online devices would be 9 million ÷ 5 = 1.8 million requests a second, nearly all "nothing new". Instead each device holds one long poll (or a WebSocket) listing its namespaces and cursors. The service answers when one of them changes, or after 60 seconds: 9 million ÷ 60 = 150,000 empty answers a second.</p>
+<p>A device has to find out quickly that another device changed a folder. With plain polling, 9 million online devices asking every 5 seconds would send 9 million ÷ 5 = 1.8 million requests a second, almost all of them answered with nothing new.</p>
 
-<p>The notification says only "namespace N changed": a hint, not the truth. A lost one does no harm, because the next poll carries the device's cursors and the service answers at once if one is behind. So this path can be fast and best-effort while the journal stays strict. <a href="/system-design/realtime-communication.html">Realtime communication</a> compares long polling and WebSockets.</p>
+<p>Long polling avoids this trade-off. Each device keeps one request open that lists its namespaces and cursors, and the notification service answers it as soon as one of those namespaces changes, or after 60 seconds if nothing does. With 9 million devices that is about 9 million ÷ 60 = 150,000 empty answers a second, and changes still arrive within seconds. A WebSocket per device works similarly, as <a href="/system-design/realtime-communication.html">realtime communication</a> explains.</p>
 
-<x-callout type="mistake" title="Sending file contents in the notification">
-<p>Pushing the data to every device makes delivery a correctness problem: a dropped message is a missed change, and an offline device has nothing to replay. Notify; let the device pull from its cursor.</p>
-</x-callout>
+<p>The notification only says that namespace N changed. It never carries file data, because a dropped data message would be a missed change and an offline device would have nothing to replay. If a hint is lost, nothing is harmed, because the device's next poll sends its cursors and the service answers immediately if any of them is behind. For this reason the notification path can be fast and best-effort, while the journal stays strict.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (200 PB, about 21,000 commits a second at peak, 90 million online devices):</p>
+<p>At 10x the scale there are 200 PB of data, about 21,000 commits a second at peak and 90 million online devices.</p>
 <ul>
-<li>The chunk store just grows; object storage adds capacity.</li>
-<li>The metadata database adds shards, and the hottest namespaces get their own.</li>
-<li>The notification service adds connection servers.</li>
-<li>Storage is the main bill: use erasure coding instead of three full copies, and expire versions past 30 days by decrementing chunk reference counts.</li>
+<li>The chunk store grows by adding object storage nodes, and the metadata database adds shards, with the busiest namespaces getting shards of their own.</li>
+<li>The notification service adds connection servers, because each one holds a share of the open long polls.</li>
+<li>Storage is the largest cost. Use erasure coding instead of three full copies, and when a version is older than 30 days, delete it and decrement its chunks' reference counts so they can be collected.</li>
 </ul>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A block service server</td><td>Uploads and downloads to it fail.</td><td>Clients retry on another; uploads are idempotent by hash.</td></tr>
-<tr><td>A metadata shard primary</td><td>Commits for its namespaces fail.</td><td>Fail over to a synchronous replica; retries reuse the <code>commit_id</code>, so it applies once.</td></tr>
-<tr><td>The notification service</td><td>Changes reach other devices late.</td><td>Devices fall back to polling every minute; nothing is lost.</td></tr>
-<tr><td>The change-event queue</td><td>Notifications stop.</td><td>Same fallback; the journal is untouched.</td></tr>
-<tr><td>A device mid-upload</td><td>Some chunks are stored with no file pointing at them.</td><td>Garbage collection removes unreferenced chunks after a grace period. A commit marks each chunk it names as in use, so collection never deletes one a new commit is about to use.</td></tr>
+<tr><td>A block service server</td><td>Uploads and downloads that were using it fail.</td><td>Clients retry on another server, which is safe because uploads are identical when repeated with the same hash.</td></tr>
+<tr><td>A metadata shard primary</td><td>Commits for the namespaces on that shard fail until failover finishes.</td><td>Fail over to a synchronous replica. Retried commits reuse their <code>commit_id</code>, so each one is applied once.</td></tr>
+<tr><td>The notification service</td><td>Devices hear about changes late.</td><td>Devices fall back to polling every minute, and no change is lost because the journal is unaffected.</td></tr>
+<tr><td>A device in the middle of an upload</td><td>Some chunks are stored but no file refers to them yet.</td><td>Garbage collection deletes unreferenced chunks after a grace period. The grace period stops it from deleting a chunk that a commit is about to use.</td></tr>
 </tbody>
 </table>
 
 <h2>What a strong answer sounds like</h2>
 
+<p>Interviewers mostly probe three points: avoiding re-uploads, strict ordering of metadata, and two devices editing one file.</p>
+
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Uploads whole files to object storage, keeps a table of paths, and polls.</td></tr>
-<tr><td>Mid</td><td>Hashed chunks for delta sync, metadata separate from bytes, push notifications.</td></tr>
-<tr><td>Senior</td><td>Commits only after chunks exist, keeps an ordered journal per namespace with device cursors, handles conflicts with base revisions and conflicted copies, treats notifications as hints, and knows why fixed chunks fail on insertions.</td></tr>
+<tr><td>Junior</td><td>The answer uploads whole files and polls.</td></tr>
+<tr><td>Mid-level</td><td>The answer uses hashed chunks for delta sync and keeps metadata separate from file bytes.</td></tr>
+<tr><td>Senior</td><td>The answer commits metadata only after the chunks exist, keeps an ordered journal per namespace with a cursor on each device, resolves conflicts with base revisions and conflicted copies, treats notifications as hints, and explains why fixed-size chunks fail on insertions.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Defending the conflict design" tone="strong">
 <x-interviewer>Why not just keep whichever version arrived last?</x-interviewer>
-<x-you>That silently destroys someone's work, decided by whose upload finished first. Every commit names its base revision; if that is no longer the latest, the server returns 409 and the client saves a conflicted copy. Merging by hand is annoying, but nothing is lost, and conflicts need two devices editing one file at once, which is rare.</x-you>
-<x-coach>It names its own cost, manual merging, and argues why it is acceptable.</x-coach>
+<x-you>That would silently destroy someone's work, and which edit survives would depend only on whose upload finished first. Instead every commit names its base revision. If that revision is no longer the latest, the server returns 409 and the client saves its version as a conflicted copy. Merging by hand is annoying, but nothing is lost, and a conflict needs two devices to edit the same file at the same time, which is rare.</x-you>
+<x-coach>The answer states the cost of its choice, which is manual merging, and explains why that cost is acceptable.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How do you restore a file to last week's version?</h3>
-<p>Commit a new revision with last week's chunk list. No bytes move; the chunks are still stored.</p>
+<p>The server commits a new revision whose chunk list is the one from last week. No file data moves, because those chunks are still stored, and other devices pick it up like any other change.</p>
 
 <h3>How do you sync a folder with 100,000 files to a new device?</h3>
-<p>Start from a snapshot of the file list plus its cursor, then download chunks in parallel, smallest or newest files first.</p>
-
-<h3>How do you handle a 50 GB file?</h3>
-<p>The same way: 50 GB ÷ 4 MB = 12,500 chunks, uploaded in parallel and resumable chunk by chunk. The revision holds 12,500 hashes, about 400 KB.</p>
+<p>The new device requests a snapshot of the file list with the journal cursor at which it was taken, instead of replaying every journal entry. It then downloads chunks in parallel, starting with the newest or smallest files. It then follows the journal from that cursor, so changes made during the download are not missed.</p>
 
 <h3>How does sharing work?</h3>
-<p>A shared folder is its own namespace with a members table. Members' devices add it and its cursor to their long poll.</p>
+<p>A shared folder is its own namespace with its own journal and a members table. Members' devices add it to their long poll.</p>
 
 <h3>Can you encrypt files so the server cannot read them?</h3>
-<p>Yes, by encrypting on the device. The cost: identical files from different users no longer match, so cross-user dedup is gone, and chunk names must be keyed hashes so they do not reveal content.</p>
+<p>Yes, by encrypting the chunks on the device before upload. The cost is that identical files from different users no longer produce identical chunks, so cross-user deduplication stops working. Chunk names must also be keyed hashes, or anyone holding a file could confirm that it is stored.</p>
 
 <x-checklist title="Self-review: file sync">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked about sharing, versions and offline edits", "I got users, data per user and change rate", "I said no edit may be silently overwritten"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated storage and the chunk index size", "I showed the bytes delta sync saves", "My commit names its base revision and requires chunks first"] },
-    { "title": "Design and depth", "items": ["I named chunks by content hash: dedup, delta sync, safe retries", "I explained why fixed-size chunks fail on insertions", "I kept an ordered journal per namespace with device cursors", "I used conflicted copies, not last writer wins", "Notifications are hints; devices pull changes"] },
-    { "title": "Failure", "items": ["I said what grows at 10x and how namespace sharding handles it", "I covered the notification service and a metadata primary dying"] }
+    { "title": "Before drawing", "items": ["I asked about sharing, versions and offline edits", "I got the number of users, the data per user and the change rate", "I said that no edit may be silently overwritten"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated storage and the size of the chunk index", "I showed how many bytes delta sync saves", "My commit names its base revision and requires the chunks to exist first"] },
+    { "title": "Design and depth", "items": ["I named chunks by content hash and explained deduplication, delta sync and safe retries", "I explained why fixed-size chunks fail on insertions", "I kept an ordered journal per namespace with a cursor on each device", "I used conflicted copies instead of last writer wins", "I treated notifications as hints and had devices pull changes"] },
+    { "title": "Failure", "items": ["I said what grows at 10x and how sharding by namespace handles it", "I covered the notification service and a metadata primary failing"] }
   ]
 }
 </script>

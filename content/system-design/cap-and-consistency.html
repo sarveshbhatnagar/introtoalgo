@@ -1,26 +1,85 @@
 <!--
 {
   "title": "CAP and Consistency",
-  "description": "What CAP really says, what replica lag looks like to users, and how to state the consistency each feature needs in an interview.",
-  "minutes": 14,
+  "description": "What CAP says, the consistency guarantees users can see, quorums, conflict resolution, and how to state the consistency each feature needs.",
+  "minutes": 18,
   "tags": ["consistency", "replication", "distributed systems"]
 }
 -->
-<p>A profile service keeps its database leader in an East data center and a read replica in the West. A West user changes her bio, refreshes 200 ms later, and sees the old bio: the replica is one second behind. The save button looks broken.</p>
+<p>When data is stored on more than one machine, the copies can disagree for a short time, and a consistency model states what a read is allowed to return after a write. The CAP theorem describes the choice you face when the network between the copies fails: you either refuse some requests or answer with data that may be out of date.</p>
 
-<p>Then the link between data centers drops for 90 seconds. The West can refuse writes until it returns, or accept them and risk two versions of a row. That choice is CAP.</p>
+<p>Without this distinction a system gets one setting for everything. If every read goes to the leader, distant users wait on every request. If every read goes to the nearest replica, a user can save a change and then see the old value, and two users can claim the same username.</p>
 
-<h2>The idea</h2>
+<h2>Where the copies disagree</h2>
 
-<p>Once data lives on several machines, <a href="/system-design/replication.html">copies</a> can disagree. A <strong>consistency model</strong> promises what a read can return after a write. Stronger promises are easier to build on but cost latency or availability; weaker ones are fast but serve stale data.</p>
+<x-arch caption="The leader accepts writes and sends them to the replica asynchronously, so the replica can lag behind.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "east", "label": "Users in East", "kind": "client", "col": 0, "row": 0 },
+    { "id": "west", "label": "Users in West", "kind": "client", "col": 0, "row": 2 },
+    { "id": "appE", "label": "App East", "kind": "service", "col": 1, "row": 0 },
+    { "id": "appW", "label": "App West", "kind": "service", "col": 1, "row": 2 },
+    { "id": "leader", "label": "Leader database", "kind": "database", "col": 2, "row": 0 },
+    { "id": "replica", "label": "Replica database", "kind": "database", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "east", "to": "appE" },
+    { "from": "west", "to": "appW" },
+    { "from": "appE", "to": "leader", "label": "reads, writes" },
+    { "from": "appW", "to": "replica", "label": "reads" },
+    { "from": "appW", "to": "leader", "label": "writes", "route": "hvh" },
+    { "from": "leader", "to": "replica", "label": "replication", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
 
-<p><strong>CAP</strong> says: when the network splits the replicas into groups that cannot talk (a <strong>partition</strong>), each group must either refuse some requests or answer without the latest writes. C means <em>linearizable</em>: every read sees the latest completed write, as if there were one copy. A means every request to a working node gets an answer. With a healthy network you get both.</p>
+<p>Most systems start like this: one leader takes all writes, and <a href="/system-design/replication.html">replicas</a> serve reads. Replication is usually asynchronous, so the leader acknowledges a write before the replicas have it, and the replicas lag by milliseconds or, under load, by seconds. Every guarantee below is a statement about what a reader may see during that gap.</p>
 
-<p><strong>PACELC</strong> adds the rest: if Partition, choose Availability or Consistency; Else, Latency or Consistency. A strongly consistent write waits for other replicas: around 100 ms across continents, on every write. That everyday cost usually matters more than the rare partition.</p>
+<h2>What the CAP theorem says</h2>
 
-<h2>Lag, then a partition</h2>
+<h3>The statement</h3>
 
-<x-tracer title="Replica lag and a partition">
+<p>The theorem is about three properties. <strong>Consistency</strong> here means linearizability: every read returns the result of the latest completed write, as if there were a single copy of the data. <strong>Availability</strong> means every request sent to a node that is working receives a non-error response. <strong>Partition tolerance</strong> means the system keeps operating when the network splits the nodes into groups that cannot talk to each other.</p>
+
+<p>Networks do fail, so partition tolerance is not optional, and while a partition lasts each operation has to pick one of two behaviours. A <strong>CP</strong> operation refuses the request, or waits, on the side that cannot confirm it has the latest data. An <strong>AP</strong> operation answers from whatever the node has, which may be stale, and accepts that writes made on the two sides of the split may conflict later.</p>
+
+<h3>What it does not say</h3>
+
+<p>When the network is healthy you can have both consistency and availability. The theorem also does not label a database as CP or AP for good: the choice is made per operation, and many databases let you set it per request.</p>
+
+<h3>The trade-off when there is no partition</h3>
+
+<p>Partitions are rare, but the trade-off between latency and consistency applies to every request. This is the second half of the PACELC rule: if there is a partition, choose availability or consistency, and else, choose latency or consistency. A strongly consistent write waits for other replicas, and across continents each write pays a round trip of around 100 ms. A write acknowledged after updating only the local copy is faster and weaker.</p>
+
+<h2>Consistency models as users see them</h2>
+
+<p>Each model is described by what a user notices when it is missing.</p>
+
+<h3>Strong consistency (linearizability)</h3>
+
+<p>Once a write has been acknowledged, every later read from any client sees it. The system behaves as if there were one copy that is updated instantly. This is what makes a conditional write safe: if two people try to book seat 14C with "book only if free", exactly one of them succeeds. It is built by sending operations through a single leader or by requiring a majority of replicas to agree on each one.</p>
+
+<p>The cost is latency, because a request waits for the leader or a majority, and availability, because the side of a partition that cannot reach them must refuse requests. It is therefore used for a small set of data such as balances, inventory and unique names.</p>
+
+<h3>Read-your-writes consistency</h3>
+
+<p>A user always sees their own changes, even if other users still see the old data for a moment. Without it, a user saves a new bio, the page reloads, and the old bio appears because the read went to a replica that has not received the write yet.</p>
+
+<p>There are two common ways to provide it. One is to send a user's reads to the leader for a few seconds after that user writes. The other is to remember the log position of the user's last write and read only from a replica that has reached it.</p>
+
+<h3>Monotonic reads</h3>
+
+<p>A user who has seen a value never sees an older one afterwards. Without this guarantee, a user refreshes a page, sees a comment, refreshes again and the comment is gone, because the second request was served by a replica that is further behind than the first.</p>
+
+<p>The usual fix is to route each user to the same replica, for example by hashing the user id.</p>
+
+<h3>Eventual consistency</h3>
+
+<p>If writes stop, all copies converge to the same value after some time, and before that a read can return anything, so a like count may show 42 and then 41. Any replica answers without talking to the others, which makes it the fastest model. It suits counters, feeds and search results.</p>
+
+<x-tracer title="Replica lag, then a partition">
 <script type="application/json">
 {
   "arch": {
@@ -43,131 +102,113 @@
   },
   "steps": [
     {
-      "caption": "Ana saves a new bio. Writes go to the leader, so App West sends it across regions: about 70 ms.",
+      "caption": "Ana saves a new bio. Writes always go to the leader, so App West sends the write across regions.",
       "arch": { "active": ["ana", "appW", "leader", ["ana", "appW"], ["appW", "leader"]], "dim": ["ben", "appE"], "notes": { "leader": "bio v2" } },
       "vars": { "leader": "v2", "replica": "v1" }
     },
     {
-      "caption": "The leader commits and says yes. Replication is asynchronous; the save does not wait for the West.",
+      "caption": "The leader commits and acknowledges. Replication is asynchronous, so the acknowledgement does not wait for the West replica.",
       "arch": { "active": [["leader", "appW"], ["appW", "ana"]], "mark": ["leader"], "dim": ["ben", "appE"] },
       "vars": { "leader": "v2", "replica": "v1" }
     },
     {
-      "caption": "Ana refreshes 200 ms later. The replica is about 1 s behind: old bio. Read-your-writes fails.",
+      "caption": "Ana refreshes the page before replication arrives. The replica still holds the old bio, so read-your-writes is broken.",
       "arch": { "active": ["replica", ["appW", "replica"]], "fail": ["ana"], "dim": ["ben", "appE"], "notes": { "replica": "still v1" } },
       "vars": { "leader": "v2", "replica": "v1" }
     },
     {
-      "caption": "The fix: for a few seconds after a user writes, send their reads to the leader. Ana sees v2; others read the replica.",
+      "caption": "To fix this, the app reads from the leader for a few seconds after Ana writes. She now sees v2, and other users keep reading the replica.",
       "arch": { "active": ["leader", ["appW", "leader"]], "mark": ["ana"], "dim": ["ben", "appE"] },
       "vars": { "leader": "v2", "replica": "v1" }
     },
     {
-      "caption": "Replication catches up. Both copies hold v2: eventual consistency.",
+      "caption": "Replication catches up and both copies hold v2. This convergence is what eventual consistency promises.",
       "arch": { "active": [["leader", "replica"]], "mark": ["leader", "replica"] },
       "vars": { "leader": "v2", "replica": "v2" }
     },
     {
-      "caption": "The link between regions fails. West reads still work; nothing new arrives.",
-      "arch": { "fail": [["leader", "replica"], ["appW", "leader"]], "active": ["replica", ["appW", "replica"]], "notes": { "replica": "frozen at v2" } },
-      "vars": { "leader": "v2", "replica": "v2" }
-    },
-    {
-      "caption": "Ben, in the East, renames himself. The West will not see it until the link is back.",
-      "arch": { "active": ["ben", "leader", ["ben", "appE"], ["appE", "leader"]], "fail": [["leader", "replica"]], "notes": { "leader": "Ben v3" } },
-      "vars": { "leader": "v3", "replica": "v2" }
-    },
-    {
-      "caption": "Ana's next write cannot reach the leader. Refuse it (C) or store it and merge later (A). This design refuses.",
+      "caption": "Now the link between the regions fails and Ana's next write cannot reach the leader. The system can refuse it (consistency) or store it locally and merge later (availability). This design refuses.",
       "arch": { "active": ["ana", "appW", ["ana", "appW"]], "fail": [["appW", "leader"], ["leader", "replica"]], "notes": { "appW": "503, retry later" } },
-      "vars": { "leader": "v3", "replica": "v2" }
+      "vars": { "leader": "v2", "replica": "v2" }
     }
   ]
 }
 </script>
 </x-tracer>
 
-<p>West reads chose availability; writes chose consistency. CAP is decided per operation, not per database.</p>
 
-<h2>Four promises, as users see them</h2>
 
-<ul>
-<li><strong>Strong (linearizable).</strong> Once a write returns, every read sees it. With a conditional write ("book 14C only if free"), two people cannot both get it.</li>
-<li><strong>Eventual.</strong> Copies converge once writes stop. Until then a like count may read 42, then 41.</li>
-<li><strong>Causal.</strong> Dependent writes are seen in order: a reply never appears before its comment.</li>
-<li><strong>Read-your-writes.</strong> Users always see their own changes, even if others see them later.</li>
-</ul>
+<h2>Quorums</h2>
 
-<x-tradeoffs caption="Which promise for which feature">
+<p>Stores without a single leader, such as Dynamo-style databases, write each value to several replicas and use a quorum to decide when an operation counts. With <code>N</code> replicas, a write succeeds when <code>W</code> of them acknowledge it, and a read asks <code>R</code> of them and takes the newest value it receives. If <code>R + W &gt; N</code>, every read set shares at least one replica with every write set, so a read reaches at least one replica that has the latest acknowledged write. With N = 3, W = 2 and R = 2, 2 + 2 = 4 is greater than 3.</p>
+
+<p>A high W with a low R makes reads fast and writes slow, and the reverse makes writes fast. W = 1 and R = 1 is the fastest but gives up the overlap guarantee. With majority quorums, 3 replicas tolerate 1 failure and 5 tolerate 2.</p>
+
+<p>A quorum is not the same as linearizability, and the interviewer may test this. Two concurrent writes can arrive at different replicas in different orders. A write that fails halfway can leave its value on some replicas and still be returned by a later read. The accurate claim is that quorum reads usually see the latest acknowledged write, not that quorums give strong consistency.</p>
+
+<h2>Conflict resolution</h2>
+
+<p>Conflicts occur when two replicas accept writes to the same item without seeing each other, for example on both sides of a partition. A system that accepts such writes has to decide what the final value is, and there are three common approaches.</p>
+
+<h3>Last write wins</h3>
+
+<p>Each write carries a timestamp, and the replica keeps the value with the latest one. It is simple, needs no extra metadata and always converges. The problem is that it silently discards the other write: if two users edit the same document field, one edit disappears with no error. Clocks on different machines also differ, so the write that is "last" may have happened first. Use it only where losing an update is acceptable, such as a "last seen" time.</p>
+
+<h3>Version vectors</h3>
+
+<p>A version vector stores one counter per replica together with the value. When a replica updates an item it increments its own counter. When two versions meet, the system compares the vectors: if every counter in one is at least as large as in the other, the first version is newer and replaces the second. If neither dominates, the writes were concurrent, and the system keeps both values as siblings instead of choosing one. The metadata grows with the number of writers, and the siblings still have to be resolved.</p>
+
+<h3>Merging</h3>
+
+<p>The siblings can be resolved by application code that knows the data. A shopping cart can be merged by taking the union of the items from both versions, which loses no additions but may bring back a removed item. A counter type designed for merging, called a CRDT, always converges to the sum of the increments made on every replica. Merging needs a rule for each kind of data, and data such as a balance that may never go below zero cannot be merged safely and needs strong consistency.</p>
+
+<x-tradeoffs caption="Summary of the consistency models">
 <script type="application/json">
 {
   "options": [
-    { "name": "Strong", "good": "No stale reads; uniqueness rules hold.", "bad": "Writes wait for a leader or majority; the minority side of a partition refuses.", "pick": "Money, inventory, bookings, uniqueness." },
-    { "name": "Read-your-writes", "good": "Fixes the most visible staleness cheaply.", "bad": "Others can still see old data.", "pick": "Profiles, settings, posts." },
-    { "name": "Causal", "good": "Conversations make sense without global coordination.", "bad": "Needs dependency tracking; few stores offer it.", "pick": "Comments, chat, shared edits." },
-    { "name": "Eventual", "good": "Fastest; replicas answer locally.", "bad": "Stale, briefly contradictory reads.", "pick": "Counts, feeds, recommendations, search.", "default": true }
+    { "name": "Strong", "good": "A read never returns stale data, and uniqueness rules hold.", "bad": "Writes wait for a leader or a majority, and the minority side of a partition refuses requests.", "pick": "Money, inventory, bookings and unique names." },
+    { "name": "Read-your-writes", "good": "It fixes the most visible form of staleness at a low cost.", "bad": "Other users can still see old data.", "pick": "Profiles, settings and a user's own posts." },
+    { "name": "Monotonic reads", "good": "Users never see data move backwards between requests.", "bad": "It needs sticky routing, which breaks when a replica fails.", "pick": "Any page the user refreshes often." },
+    { "name": "Eventual", "good": "It is the fastest model, and replicas answer locally.", "bad": "Reads can be stale and briefly contradict each other.", "pick": "Counts, feeds, recommendations and search.", "default": true }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<h3>What a quorum does and does not give you</h3>
+<h2>Problems that interviewers probe</h2>
 
-<p>Leaderless stores write to <code>W</code> of <code>N</code> replicas and read from <code>R</code>. If <code>R + W &gt; N</code>, every read set overlaps every write set, so a read reaches a replica with the latest acknowledged write. With N = 3, W = 2, R = 2: 2 + 2 = 4 &gt; 3.</p>
+<h3>Choosing the consistency for each feature</h3>
 
-<p>That is not linearizability. Concurrent writes can land in different orders on different replicas, a half-failed write may show on one, and some stores fall back to "any W nodes" during failures. Say "quorum reads see the latest acknowledged write in the normal case", not "quorums make it strongly consistent".</p>
+<p>A feature needs strong consistency when a stale read lets two users break a rule between them, such as claiming a seat, registering a unique username or withdrawing from a balance that may not go below zero. It can use eventual consistency, usually with read-your-writes, when being briefly behind has no lasting effect, as with view counts, feed order and search results.</p>
 
-<h2>Numbers worth remembering</h2>
+<h3>Split brain after a failover</h3>
 
-<ul>
-<li>Replica lag in one region: usually milliseconds, seconds or minutes under load. Design for "unbounded but usually small".</li>
-<li>Round trip: about 0.5 ms within a data center, tens of ms between regions on one continent, around 100 ms between continents.</li>
-<li>N replicas with majority quorums tolerate (N − 1) ÷ 2 failures, rounded down: 3 tolerate 1; 5 tolerate 2.</li>
-</ul>
+<p>If the West region promotes its replica to leader because it cannot reach the East leader, the East leader may still be alive, and now two leaders accept writes. The data diverges and has to be reconciled by hand. Promotion should require a majority vote with voters in at least three sites; <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a> covers how.</p>
 
-<x-estimate title="What async failover can lose">
-<script type="application/json">
-{
-  "question": "The leader dies and a replica is promoted. With asynchronous replication, how many acknowledged writes can be lost?",
-  "givens": ["200 writes a second at peak", "The replica is 2 seconds behind when the leader dies"],
-  "unit": "count",
-  "answer": "400",
-  "accept": ["150", "1,200"],
-  "steps": ["The replica is missing the last 2 seconds of writes", "200 × 2 = 400 writes users were told had succeeded"],
-  "note": "For payments, replicate synchronously to at least one replica and pay the latency."
-}
-</script>
-</x-estimate>
+<h3>Writes lost during an asynchronous failover</h3>
+
+<p>With asynchronous replication, the leader acknowledges a write before the replicas have it. If the leader dies, the promoted replica is missing the writes from the last moments, even though users were told they succeeded. For payments, replicate synchronously to at least one replica before acknowledging and accept the latency. For likes, losing a few seconds of writes is acceptable.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring consistency up when you add replicas, caches or a second region, or when two users can race for one thing. Skip "this is an AP system"; state the need per feature, with the reason: "Seat booking must be strongly consistent: two people paying for one seat is the failure we cannot have. The seat map can lag."</p>
+<p>Bring up consistency when you add replicas, a cache or a second region, or when two users can race for the same thing. Do not label the system "AP" or "CP"; state what each feature needs and why, for example: "Seat booking must be strongly consistent, because two people paying for one seat is the failure we cannot allow, while the seat map can be a few seconds stale."</p>
 
-<x-interview title="Consistency per feature">
-<x-interviewer>Your design has a leader and replicas in two regions. Is it consistent?</x-interviewer>
-<x-you>Per feature. Usernames and payments go to the leader: strongly consistent. Feeds and like counts read local replicas and can lag a second unnoticed. After a user posts, their reads go to the leader for 10 seconds.</x-you>
-<x-coach>It splits the system by feature and names a mechanism for each promise.</x-coach>
-<x-interviewer>And if the regions lose contact?</x-interviewer>
-<x-you>Reads keep working in both regions. Writes in the region without the leader get a retryable error until the link returns. Right for payments; likes I could queue and apply later.</x-you>
-</x-interview>
-
-<p>Follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"Is your database CP or AP?"</strong> Usually it is set per operation. Say which refuse during a partition and which serve stale.</li>
-<li><strong>"Why not promote the West replica when the link drops?"</strong> That makes two leaders: split brain. Promotion needs a majority vote, so put a tiebreaker in a third site (see <a href="/system-design/consensus-and-leader-election.html">consensus</a>).</li>
-<li><strong>"How else do you get read-your-writes?"</strong> Remember the log position of the user's last write; read only from a replica that has reached it.</li>
+<li><strong>"Is your database CP or AP?"</strong> The answer depends on the operation, and many databases let you configure it for each request. Say which operations refuse during a partition, such as payments, and which serve stale data, such as the feed.</li>
+<li><strong>"How do you make sure users see their own writes?"</strong> Read from the leader for a few seconds after the user writes, or remember the position of the user's last write and read only from a replica that has reached it.</li>
+<li><strong>"If W + R &gt; N, is the store linearizable?"</strong> No. Reads will usually see the latest acknowledged write, but concurrent writes, partial failures and sloppy quorums can still return stale or conflicting data.</li>
+<li><strong>"Two replicas accepted different writes to the same record. What now?"</strong> Last write wins is simple but drops one write and depends on clocks. Version vectors detect that the writes were concurrent, and the application then merges them. Data that cannot be merged should go through a single leader instead.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Pick two of three">
-<p>You cannot give up partition tolerance; networks fail anyway. The real choice, only during a partition, is refuse or serve stale data.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Strong consistency everywhere">
-<p>Sending every read to the leader wastes replicas and adds cross-region latency. Start from eventual plus read-your-writes. Spend strong consistency only where a stale read breaks a rule across users: one winner, never below zero.</p>
-</x-callout>
+<x-interview title="Consistency per feature" tone="strong">
+<x-interviewer>Your design has a leader and replicas in two regions. Is it consistent?</x-interviewer>
+<x-you>It depends on the feature. Usernames and payments go to the leader, so they are strongly consistent. The feed and like counts read from local replicas, and a second of lag does not matter there. After a user posts, I send that user's reads to the leader for ten seconds so they see their own post.</x-you>
+<x-coach>The answer splits the system by feature and names a mechanism for each guarantee.</x-coach>
+<x-interviewer>What happens if the two regions lose contact?</x-interviewer>
+<x-you>Reads keep working in both regions. Writes in the region without the leader return a retryable error until the link comes back, which is the right behaviour for payments. For likes I could queue the writes locally and apply them afterwards.</x-you>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
@@ -176,17 +217,17 @@
     {
       "question": "A leaderless store has N = 5 replicas and W = 2. What is the smallest R that makes every read overlap the latest acknowledged write?",
       "options": [
-        { "text": "R = 2", "why": "2 + 2 = 4, not more than 5. A read can miss both replicas that took the write." },
-        { "text": "R = 3", "why": "2 + 3 = 5, not more than 5. Two writes and three reads can hit five different replicas." },
-        { "text": "R = 4", "correct": true, "why": "2 + 4 = 6 &gt; 5, so any 4 replicas include one of the 2 that took the write." }
+        { "text": "R = 2", "why": "2 + 2 = 4, which is not greater than 5, so a read can miss both replicas that took the write." },
+        { "text": "R = 3", "why": "2 + 3 = 5, which is not greater than 5, so the read set and the write set can still be five different replicas." },
+        { "text": "R = 4", "correct": true, "why": "2 + 4 = 6, which is greater than 5, so any 4 replicas include at least one of the 2 that took the write." }
       ]
     },
     {
-      "question": "Which feature most needs strong consistency?",
+      "question": "Two replicas each accepted a write to the same record during a partition. Version vectors show that neither version is newer than the other. What does the system know?",
       "options": [
-        { "text": "The view count on a video", "why": "A count a few seconds behind harms nobody." },
-        { "text": "Claiming a unique username", "correct": true, "why": "A stale read would let two users both claim the same name." },
-        { "text": "The order of posts in a home feed", "why": "Nobody can tell if a post appears a second late." }
+        { "text": "The write with the later timestamp is correct", "why": "Version vectors do not use timestamps, and picking by timestamp is last write wins, which discards one write." },
+        { "text": "The writes were concurrent, so both are kept as siblings to be merged", "correct": true, "why": "Neither version has seen the other, so neither can replace it. The application has to merge them or choose one." },
+        { "text": "One replica is broken and should be removed", "why": "Concurrent writes during a partition are normal and do not mean a replica is faulty." }
       ]
     }
   ]
@@ -196,4 +237,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Next: concurrent writers on one database in <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>, then consistency chosen per feature in <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>.</p>
+<p>Read <a href="/system-design/transactions-and-isolation.html">Transactions and Isolation</a> for concurrent writers on a single database, then <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a> to see consistency chosen for each feature.</p>

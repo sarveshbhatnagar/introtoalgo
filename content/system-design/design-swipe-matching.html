@@ -1,64 +1,77 @@
 <!--
 {
   "title": "Design Swipe Matching",
-  "description": "Design a swipe-to-match dating app: recording swipes at 70,000 a second, detecting a mutual match exactly once, and building candidate stacks.",
-  "minutes": 23,
+  "description": "How to design a swipe-based dating app: storing swipes at high volume, detecting a mutual match exactly once, and building candidate stacks.",
+  "minutes": 26,
   "kind": "design",
   "tags": ["case study", "high write rate", "race conditions", "geospatial", "bloom filter"]
 }
 -->
-<p>A dating app shows one face at a time. Swipe right if interested, left if not. When two people swipe right on each other, the app says "It's a match". Think Tinder.</p>
+<p>A swipe-based dating app shows one profile at a time. The user swipes right to say they are interested or left to pass, and when two people have swiped right on each other, both are told that they have matched. Interviewers ask for it because every swipe is a write, two people can swipe on each other at almost the same moment, and a user must never be shown the same profile twice.</p>
 
-<p>Each piece looks trivial. At tens of thousands of swipes a second, though, inserts need a write-optimised store, the match lookup races when two people swipe together, and the stack must never repeat someone. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading on.</p>
+<p>The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading the answer.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design the core of a swipe-based dating app.</x-interviewer>
-<x-you>So: a profile with preferences, a stack of nearby people who fit, swipe left or right, match when both swipe right. Is chat in scope?</x-you>
-<x-interviewer>No, stop at the match. 20 million daily users, about 100 swipes each a day.</x-interviewer>
-<x-you>Must the second swiper see the match instantly?</x-you>
-<x-interviewer>Yes, the product is built around that moment. The other person gets a push.</x-interviewer>
-<x-you>Then: never miss or double-announce a match, show it within 200 ms, never repeat a profile. A stack a few minutes stale is fine.</x-you>
-<x-coach>"Never miss, never duplicate" is the hard part. Saying it early shows where you will spend your time.</x-coach>
+<x-you>I understand it as profiles with preferences, a stack of nearby people who fit them, a swipe on each one, and a match when both swipe right. Is chat in scope?</x-you>
+<x-interviewer>No, you can stop at the match. Assume 20 million daily users who each make about 100 swipes a day.</x-interviewer>
+<x-you>Does the second person to swipe have to see the match immediately?</x-you>
+<x-interviewer>Yes, the product is built around that moment. The first person gets a push notification.</x-interviewer>
+<x-you>Then a match must never be missed or announced twice, it must appear within 200 ms, and no profile may be shown twice. A stack that is a few minutes old is acceptable.</x-you>
+<x-coach>Naming the "never missed, never duplicated" requirement early shows the interviewer where you will spend your time.</x-coach>
 </x-interview>
 
+<h3>Functional requirements</h3>
 <ul>
-<li><strong>Functional:</strong> a profile with photos and preferences (age range, genders, maximum distance); a stack of candidates who fit me and whom I fit; swipe left or right; match on two right swipes; list matches.</li>
-<li><strong>Non-functional:</strong> swipe in under 200 ms; exactly one match per mutual right swipe; no profile shown twice; stacks may be minutes stale; right swipes durable, left swipes may be lost.</li>
-<li><strong>Out of scope:</strong> chat (see <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>), payments, photo moderation, the ranking model.</li>
+<li>A user has a profile with photos and preferences: an age range, the genders they want to see, and a maximum distance.</li>
+<li>The app serves a stack of candidates who fit my preferences and whose preferences I fit.</li>
+<li>Two right swipes create a match, and a user can list their matches.</li>
 </ul>
+
+<h3>Non-functional requirements</h3>
+<ul>
+<li>A swipe, including the match answer, completes in under 200 ms.</li>
+<li>Each pair of mutual right swipes produces exactly one match, and no profile is shown to the same user twice.</li>
+<li>Right swipes must be durable. Losing a left swipe is acceptable, because the worst outcome is that someone is shown again.</li>
+</ul>
+
+<h3>Out of scope</h3>
+<p>Chat (see <a href="/system-design/design-a-chat-app.html">Design a Chat App</a>), payments, photo moderation and the ranking model are out of scope.</p>
 
 <h2>Estimate the scale</h2>
 
+<h3>Swipe rate</h3>
+<p>20 million users making 100 swipes each is 2 billion swipes a day. Dividing by about 86,400 seconds gives roughly 23,000 swipes a second on average, and an evening peak of about 3 times the average gives about 70,000 a second. Every swipe is a write. If 30% of swipes are right swipes, the peak is about 21,000 right swipes a second, and only those can create a match.</p>
+
+<h3>Storage and memory</h3>
 <ul>
-<li><strong>Swipes:</strong> 20 million × 100 = 2 billion a day ÷ 86,400 ≈ 23,000 a second; with a 3x evening peak, about 70,000. Every swipe is a write, which rules out a single relational primary.</li>
-<li><strong>Right swipes:</strong> if 30% are right, about 21,000 a second at peak. Only these can match.</li>
-<li><strong>Swipe history:</strong> about 50 bytes a swipe: 2 × 10<sup>9</sup> × 50 B = 100 GB a day, about 36.5 TB a year.</li>
-<li><strong>Profiles:</strong> 100 million accounts × 2 KB = 200 GB, plus photos in blob storage behind a CDN.</li>
-<li><strong>Stacks:</strong> 200 ids of 8 bytes per daily user: 20 × 10<sup>6</sup> × 1.6 KB = 32 GB of cache. Their profile cards add 20 × 10<sup>6</sup> × 2 KB = 40 GB.</li>
+<li>Swipe history at about 50 bytes per swipe is 2 × 10<sup>9</sup> × 50 B = 100 GB a day, or about 36.5 TB a year.</li>
+<li>Profiles for 100 million accounts at 2 KB each take 200 GB.</li>
+<li>A cached stack holds 200 candidate ids of 8 bytes each, which is 1.6 KB per user, so 20 million daily users need 32 GB.</li>
 </ul>
 
 <x-estimate title="Memory for &quot;already seen&quot; filters">
 <script type="application/json">
 {
-  "question": "Each daily user has swiped on 10,000 profiles. A Bloom filter with 1% false positives needs about 9.6 bits per item. How much memory do all daily users' filters take?",
-  "givens": ["20 million daily users", "10,000 swiped profiles per user", "About 9.6 bits per item for 1% false positives"],
+  "question": "Each daily user has swiped on 10,000 profiles. A Bloom filter with a 1% false-positive rate needs about 9.6 bits per item. How much memory do all the daily users' filters take together?",
+  "givens": ["20 million daily users", "10,000 swiped profiles per user", "About 9.6 bits per item for a 1% false-positive rate"],
   "unit": "bytes",
   "answer": "240 GB",
   "accept": ["80 GB", "800 GB"],
-  "steps": ["One filter: 10,000 × 9.6 bits = 96,000 bits = 12 KB", "All users: 20 × 10<sup>6</sup> × 12 KB = 240 GB", "An exact set of 8-byte ids: 10,000 × 8 B = 80 KB each, at least 1.6 TB in total"],
-  "note": "About 7 times smaller than the exact set, at the price of hiding 1 in 100 unseen profiles."
+  "steps": ["One filter: 10,000 × 9.6 bits = 96,000 bits = 12 KB", "All users: 20 × 10<sup>6</sup> × 12 KB = 240 GB", "An exact set of 8-byte ids would be 10,000 × 8 B = 80 KB per user, so 1.6 TB in total"],
+  "note": "The filter is about 7 times smaller than an exact set, at the cost of wrongly treating 1 in 100 unseen profiles as seen."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the stack and swipe endpoints. How does the second swiper learn of the match at once, and what if the phone retries?</p>
+<p>Write the endpoints for loading a stack and for swiping. How does the second swiper learn about the match immediately, and what happens if the phone retries a swipe?</p>
 </x-task>
 <x-answer>
-<p><code>GET /stack</code> returns the next profiles; <code>POST /swipes</code> answers whether it made a match, in the same response. Swipes are keyed by (swiper, target), so a retry changes nothing.</p>
+<p>A <code>GET /stack</code> call returns the next profiles, and <code>POST /swipes</code> returns whether the swipe produced a match in the same response. Swipes are identified by the pair (swiper, target), so a retry returns the same result and changes nothing.</p>
 </x-answer>
 </x-tryit>
 
@@ -83,16 +96,16 @@ GET  /matches?cursor=...
 </pre>
 </x-code>
 
-<p>The decision worth arguing is what the stack leaves <em>out</em>: whether each candidate already liked you. Sending it saves a round trip, but anyone reading the traffic could list who liked them. Keep it on the server; 200 ms is fast enough.</p>
+<p>The API decision worth arguing is what the stack response leaves out. It could flag candidates who have already liked you, but then anyone inspecting the app's traffic could list everyone who liked them. The server keeps that to itself and checks it at swipe time.</p>
 
-<p>The swipe is idempotent by (swiper, target): a repeat or a retry returns the same result (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
+<p>The swipe call is idempotent for each (swiper, target) pair, so a retry returns the same answer and creates no second match (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch profiles, swipes and likes. Which key answers "do they like each other?" in one atomic step?</p>
+<p>Sketch the records for profiles, swipe history and likes. Which key lets you answer "do these two people like each other?" with one atomic step?</p>
 </x-task>
 <x-answer>
-<p>Swipe history keyed by swiper, for "who have I seen". Likes keyed by the <em>pair</em>, smaller id first, one flag per direction, so both likes live in one row that one atomic update can check.</p>
+<p>Swipe history is keyed by swiper, which answers "who has this user already seen?". Likes are keyed by the pair of users, with the smaller id first and one flag for each direction. Both likes then live in a single row, and one atomic update can check them together.</p>
 </x-answer>
 </x-tryit>
 
@@ -118,22 +131,20 @@ pair_likes                     -- sharded relational, key = the pair
 </pre>
 </x-code>
 
-<p>The <strong>swipe history</strong> is append-only, write-heavy and read by swiper: a <strong>wide-column store</strong> such as Cassandra takes 70,000 writes a second across a cluster. The <strong>pair row</strong> needs an atomic read-modify-write on one key: sharded relational rows, or a key-value store with conditional updates. It grows by up to 600 million rows a day (30% of 2 billion swipes), about 9 TB a year at 40 bytes a row, so shard by a hash of the pair. Profiles are relational; their change stream feeds profile cards in the cache and a <strong>search index</strong> with a geo field for stack building.</p>
+<p>The swipe history is append-only and read by swiper, which suits a wide-column store such as Cassandra. The pair row needs an atomic read-modify-write on a single key, so it lives in sharded relational tables or in a key-value store with conditional updates. It grows by up to 600 million rows a day (30% of 2 billion swipes), which is about 9 TB a year at 40 bytes a row, so the table is sharded by a hash of the pair. Profiles are relational, and their change stream updates the cached profile cards and a search index with a geo field.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch serving a stack, refilling it, and recording a swipe that may match.</p>
+<p>Sketch how the system serves a stack, how it refills the stack, and how it records a swipe that may produce a match.</p>
 </x-task>
 <x-answer>
-<p>A stack service reading precomputed stacks from cache; a builder querying the geo index and dropping seen profiles; a swipe service that appends to history and updates the pair row.</p>
+<p>A stack service reads precomputed stacks from a cache. A stack builder queries the geo index and drops profiles the user has already seen. A swipe service appends to the swipe history and updates the pair row.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Opening the app is a cache read. Swipes go to the history for "seen" and the pair row for "matched".</p>
-
-<x-arch caption="Stacks are precomputed into a cache. One atomic update on the pair row decides a match; its change stream drives the push.">
+<x-arch caption="Stacks are precomputed into a cache, and one atomic update on the pair row decides a match and triggers the push.">
 <script type="application/json">
 {
   "nodes": [
@@ -199,13 +210,8 @@ pair_likes                     -- sharded relational, key = the pair
   },
   "steps": [
     {
-      "caption": "Ana opens the app. The stack service pops the next 20 ids from her stack and their profile cards: two cache reads, no query.",
+      "caption": "Ana opens the app, and the stack service takes the next 20 ids and their profile cards from the cache, with no database query. When fewer than 50 remain, it queues a refill that Ana does not wait for.",
       "arch": { "active": ["phone", "stack", "cache", ["phone", "gw"], ["gw", "stack"], ["stack", "cache"]], "dim": ["swipe", "pairs", "history", "builder", "geo", "notify"] },
-      "vars": { "stack left": 45 }
-    },
-    {
-      "caption": "45 are left, under the refill mark of 50, so it queues a refill. Ana does not wait.",
-      "arch": { "active": ["stack", "builder"], "dim": ["swipe", "pairs", "history", "geo", "notify"], "notes": { "builder": "refill Ana" } },
       "vars": { "stack left": 45 }
     },
     {
@@ -214,32 +220,32 @@ pair_likes                     -- sharded relational, key = the pair
       "vars": { "candidates": "1,000" }
     },
     {
-      "caption": "It drops the 360 in her seen filter, ranks the other 640 and appends the best 200.",
+      "caption": "The builder drops the 360 in her seen filter, ranks the other 640 and appends the best 200 to her stack.",
       "arch": { "active": ["builder", "cache", ["builder", "cache"]], "dim": ["swipe", "pairs", "history", "stack", "phone", "gw", "notify"], "notes": { "cache": "+200" } },
       "vars": { "candidates": "1,000", "already seen": 360, "stack left": 245 }
     },
     {
-      "caption": "Ana swipes right on Ben. The swipe service appends (Ana, Ben, right) to her history and adds Ben to her seen filter.",
+      "caption": "Ana swipes right on Ben. The swipe service appends (Ana, Ben, right) to her swipe history and adds Ben to her seen filter.",
       "arch": { "active": ["swipe", "history", "cache", ["phone", "gw"], ["gw", "swipe"], ["swipe", "history"], ["swipe", "cache"]], "dim": ["stack", "builder", "geo", "notify"] },
       "vars": { "Ana likes Ben": "recorded" }
     },
     {
-      "caption": "One atomic upsert sets Ana's flag on the (Ana, Ben) row and returns it. Ben's flag is false: no match.",
+      "caption": "One atomic upsert sets Ana's flag on the (Ana, Ben) row. Ben's flag is still false, so Ana's response says there is no match.",
       "arch": { "active": ["pairs", ["swipe", "pairs"], ["swipe", "gw"], ["gw", "phone"]], "dim": ["stack", "builder", "geo", "notify"], "notes": { "pairs": "Ana ✓ Ben ✗" } },
       "vars": { "Ana → Ben": true, "Ben → Ana": false, "matched": false }
     },
     {
-      "caption": "Ben swipes right 3 ms later, on another server. His update hits the same row; had Ana's still been running, he would wait for its lock. Either way he sees her flag.",
+      "caption": "Ben swipes right 3 ms later on another server. His update targets the same row, so it waits for any running update and then sees Ana's flag.",
       "arch": { "active": ["swipe", "pairs", ["swipe", "pairs"]], "dim": ["stack", "builder", "geo", "notify"], "notes": { "pairs": "Ana ✓ Ben ✓" } },
       "vars": { "Ana → Ben": true, "Ben → Ana": true, "matched": "now" }
     },
     {
-      "caption": "The same statement sets <code>matched_at</code>, so Ben sees \"It's a match\". The notifier reads the change stream and pushes to Ana, keyed by pair so a redelivery sends no second push.",
+      "caption": "The same statement sets <code>matched_at</code>, so Ben's response says it is a match. The notifier reads the change stream and pushes to Ana, keyed by pair so a redelivered event sends no second push.",
       "arch": { "active": ["notify", ["swipe", "gw"], ["gw", "phone"], ["pairs", "notify"], ["notify", "phone"]], "mark": ["pairs", "phone"], "dim": ["stack", "builder", "geo"] },
       "vars": { "matches created": 1 }
     },
     {
-      "caption": "A cache node dies with 1 in 10 stacks and filters. For those users the builder rebuilds the filter from history, then builds a stack on demand.",
+      "caption": "A cache node dies, taking the stacks and filters of 1 in 10 users. The builder rebuilds their filters from swipe history and then builds stacks on demand.",
       "arch": { "fail": ["cache"], "active": ["builder", "history", "geo", ["builder", "history"], ["builder", "geo"]], "dim": ["swipe", "pairs", "phone", "gw", "notify"], "notes": { "cache": "1 of 10 down" } }
     }
   ]
@@ -249,15 +255,29 @@ pair_likes                     -- sharded relational, key = the pair
 
 <h2>Deep dives</h2>
 
-<h3>Recording 70,000 swipes a second</h3>
+<h3>Storing 70,000 swipes a second</h3>
 
-<p>Each swipe is a tiny append; the only read is "all swipes by this user", to rebuild a seen filter. Partition by <code>swiper_id</code> and cluster by <code>target_id</code>, so a repeated swipe overwrites one cell. A log-structured store (see <a href="/system-design/indexing.html">indexing</a>) appends each write to memory and a commit log, so it takes this rate on modest hardware.</p>
+<p>Each swipe is a small append, and the only read is "all swipes by this user", which rebuilds a seen filter. A single relational primary cannot absorb 70,000 writes a second.</p>
 
-<p>Left swipes, 70% of volume, only feed the seen filter: one replica's acknowledgement is enough. Right swipes use a quorum. A partition grows by 36,500 swipes a year, under 2 MB.</p>
+<p>One option is to shard a relational database by swiper id, but that means rebalancing many shards for data that is never updated or joined. The other is a log-structured store such as a wide-column database (see <a href="/system-design/indexing.html">indexing</a>), which appends each write to memory and a commit log and flushes to disk in large sequential batches.</p>
+
+<p>I choose the wide-column store, partitioned by <code>swiper_id</code> and clustered by <code>target_id</code>, so a repeated swipe overwrites one cell and a user's history is one partition of about 36,500 swipes a year, under 2 MB. Left swipes are 70% of the volume and only feed the seen filter, so one replica's acknowledgement is enough for them. Right swipes use a quorum write so none is lost.</p>
 
 <h3>Detecting a match exactly once</h3>
 
-<p>Ana and Ben swipe right 3 ms apart. The obvious method writes "Ana likes Ben" under Ana's key, then reads "does Ben like Ana?" under Ben's. On lagging replicas both reads can miss: no match, ever. If both see it, both announce one.</p>
+<p>Ana and Ben may swipe right 3 ms apart on different servers, and the system must announce exactly one match.</p>
+
+<h3>Option 1: write my swipe, then read theirs</h3>
+
+<p>Each server writes "Ana likes Ben" under Ana's key, then reads whether Ben's key says he likes Ana. On an eventually consistent store both reads can run before either write has reached the replica they read, so neither server sees the other's like and the match is never created. With quorum reads and writes (R + W greater than N, no sloppy quorums) at least one request sees the other's like, but both can, so both would announce the match unless creation is idempotent.</p>
+
+<h3>Option 2: one row for the pair with an atomic update</h3>
+
+<p>Both directions are stored in one row keyed by the pair, and each swipe is an atomic update that sets its own flag. The database runs updates on one row one after the other, so the second update always sees the first one's flag and sets <code>matched_at</code> in the same statement. The cost is a second write for every right swipe.</p>
+
+<h3>Option 3: a stream partitioned by pair</h3>
+
+<p>Each right swipe is published to a stream partitioned by the pair key, and one consumer per partition processes both likes in order, with no locks. The weakness is that this is asynchronous, so the second swiper learns about the match later, by push, which breaks the 200 ms requirement.</p>
 
 <x-tradeoffs caption="Ways to detect a mutual right swipe">
 <script type="application/json">
@@ -265,31 +285,32 @@ pair_likes                     -- sharded relational, key = the pair
   "options": [
     {
       "name": "Write mine, read theirs",
-      "good": "No extra table. With quorum reads and writes (R + W &gt; N, no sloppy quorum), at least one request sees the other's like.",
-      "bad": "Both may see it and announce twice unless match creation is idempotent. Replica reads break it.",
-      "pick": "You already have a strongly consistent store keyed by swiper and accept dedup."
+      "good": "It needs no extra table.",
+      "bad": "Replica reads can miss the match, and quorum reads can announce it twice.",
+      "pick": "You already have a strongly consistent store and can accept deduplication work."
     },
     {
       "name": "One pair row, atomic update",
-      "good": "Both directions in one row. Row updates are serialized, so exactly one request sees both flags and records the match in the same statement.",
-      "bad": "A second write per right swipe, to a store with atomic single-row updates.",
-      "pick": "The second swiper must see the match instantly. The usual answer.",
+      "good": "Exactly one request sees both flags and records the match.",
+      "bad": "It adds a second write for each right swipe.",
+      "pick": "The second swiper must see the match instantly, as here.",
       "default": true
     },
     {
       "name": "Stream partitioned by pair",
-      "good": "One consumer per pair partition sees both likes in order. No locks.",
-      "bad": "Asynchronous: the second swiper learns of the match later, by push.",
-      "pick": "Instant feedback is not required, or the pair store is overloaded."
+      "good": "One consumer sees both likes in order, with no locks.",
+      "bad": "The second swiper hears about the match later, by push.",
+      "pick": "Instant feedback is not required."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
+<p>The pair row is the right choice because the match must appear in the swipe response. The statement below is what Ben's server runs when he swipes right on Ana (Ana is user 12 and Ben is user 91). Ana's statement is the mirror image.</p>
+
 <x-code single title="Ben likes Ana: set my flag, match if theirs is set">
 <pre lang="sql">
--- Ana is user 12, Ben is user 91: low_id = 12, high_id = 91
 INSERT INTO pair_likes (low_id, high_id, low_likes_high, high_likes_low)
      VALUES (12, 91, false, true)
 ON CONFLICT (low_id, high_id) DO UPDATE
@@ -301,66 +322,50 @@ RETURNING matched_at;    -- not null: tell Ben "It's a match"
 </pre>
 </x-code>
 
-<p>Why it is exact: updates on the row run in turn, only the second sees both flags, and detecting and storing the match is one write. A retry finds <code>matched_at</code> already set and returns the same answer; the pair key is the match id, so a redelivered event makes no second match.</p>
-
-<x-callout type="mistake" title="Detecting the match, then saving it in a second step">
-<p>If the server detects "both liked" and crashes before writing the match, nobody ever sees it: both likes are stored and no future swipe checks again. Record the match in the same atomic write or transaction that detects it.</p>
-</x-callout>
+<p>Only the second swipe can see both flags, and detecting and storing the match are one write. If they were two steps, a crash between them would lose the match, because no later swipe rechecks those likes. A retry finds <code>matched_at</code> already set and returns the same answer, and the pair key doubles as the match id, so a redelivered event cannot create a second match.</p>
 
 <h3>Building the stack</h3>
 
-<p>A good candidate is nearby, fits my filters, has me inside theirs, is unseen and recently active. That barely changes in an hour, so precompute it.</p>
+<p>A good candidate is nearby, fits my filters, has me inside theirs, is unseen and is recently active. The query could run when the user opens the app, which gives fresh data but makes the user wait for a geo query and a seen check on every open. The alternative is to precompute the stack in the background and cache it, so that opening the app is a cache read. I choose the second, because the requirements allow a stack a few minutes old.</p>
 
-<p>The builder runs one <a href="/system-design/search-systems.html">search index</a> query: a geo filter around me (cells and neighbours, as in <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a>), plus age, gender, the other person's age range and genders, and active in 30 days. It drops seen profiles, checks each candidate's own distance limit, ranks, and caches 200 ids. The stack service serves 20 at a time and refills below 50, so a heavy swiper never waits.</p>
+<p>The builder runs one query against the <a href="/system-design/search-systems.html">search index</a>, with a geo filter built from cells and neighbouring cells as in <a href="/system-design/design-ride-sharing.html">Design Ride Sharing</a>, plus filters on age, gender, the other person's preferences, and activity in the last 30 days. It drops profiles I have seen, ranks the rest, and caches 200 ids. The stack service serves 20 at a time and requests a refill when fewer than 50 remain, so a fast swiper never waits.</p>
 
-<p>The cost is staleness: a stacked profile may be deleted since, so each batch of 20 is checked against deletions and my seen filter. Rebuild the stack when the user moves a few kilometres.</p>
+<p>The cost of precomputing is staleness. A stacked profile may have been deleted since, so the stack service checks each batch of 20 against deletions before returning it.</p>
 
 <h3>Never showing a profile twice</h3>
 
-<p>The builder must drop everyone I swiped on from 1,000 candidates. The history is exact but a large read per refill.</p>
+<p>The builder must remove everyone I have already swiped on from about 1,000 candidates.</p>
 
-<x-tradeoffs caption="Ways to remember who I've seen">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Read the swipe history",
-      "good": "Exact, and nothing extra to store.",
-      "bad": "A batched read of up to 1,000 keys on every refill.",
-      "pick": "Swipe histories are short, or refills are rare."
-    },
-    {
-      "name": "Exact set in the cache",
-      "good": "Exact and fast: one in-memory lookup per candidate.",
-      "bad": "At least 80 KB per user with 10,000 swipes, at least 1.6 TB for 20 million users.",
-      "pick": "Memory is cheap next to a wrongly hidden profile."
-    },
-    {
-      "name": "Bloom filter in the cache",
-      "good": "12 KB per user at 1% false positives, 240 GB total. No false negatives, so a seen profile is never shown.",
-      "bad": "About 1 in 100 unseen profiles is hidden for good; items cannot be removed, so expiring left swipes means a rebuild.",
-      "pick": "\"Never show twice\" matters and losing 1% of candidates is acceptable. My pick.",
-      "default": true
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<h3>Option 1: read the swipe history</h3>
 
-<p>A <a href="/system-design/design-a-web-crawler.html">Bloom filter</a> answers "definitely not seen" or "probably seen", so its error is the safe way round. In a small town the cost is real: 1% of 1,000 candidates is 10 people never shown, so offer the exact set to users with a small pool. When a user outgrows the filter's sized count, rebuild a larger one from history; an overfull filter's false-positive rate climbs fast.</p>
+<p>The builder looks up each candidate in the user's swipe history. The answer is exact and nothing extra is stored, but every refill needs a batched read of up to 1,000 keys.</p>
+
+<h3>Option 2: keep an exact set in the cache</h3>
+
+<p>The cache holds every id the user has swiped on, so each lookup is one in-memory operation. At 10,000 swipes of 8 bytes each, that is 80 KB per user and 1.6 TB for 20 million users, which is a lot of cache memory for this one purpose.</p>
+
+<h3>Option 3: keep a Bloom filter in the cache</h3>
+
+<p>A Bloom filter (see <a href="/system-design/design-a-web-crawler.html">Design a Web Crawler</a>) answers either "definitely not seen" or "probably seen", so it never lets a repeat through. At a 1% false-positive rate it needs 12 KB per user, 240 GB in total. The cost is that about 1 in 100 unseen profiles is wrongly treated as seen and never shown, and a filter cannot remove items.</p>
+
+<p>I choose the Bloom filter because a profile must never be shown twice, and it can only err in the safe direction. In a small town 1% of 1,000 candidates is 10 people who are never shown, so users with a small candidate pool should use the exact set instead. When a user outgrows the size the filter was built for, rebuild a larger one from the history, because an overfull filter's false-positive rate rises quickly.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, 700,000 swipes a second, the history cluster adds nodes; partitions are per user. The pair store adds shards for 210,000 right swipes a second; pair keys hash evenly, and a popular profile's likes spread over many pair rows, so no row is hot. The geo index sees only refill load.</p>
+<h3>What breaks first at 10 times the load</h3>
+
+<p>At 10 times the load there are 700,000 swipes a second. The swipe history scales by adding nodes, because each user's partition is independent. The pair store adds shards for 210,000 right swipes a second, and a popular profile's likes are spread over many pair rows, so no row is hot.</p>
+
+<h3>What happens when each component fails</h3>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A cache node</td><td>Its users lose their stacks and seen filters.</td><td>Build stacks on demand; rebuild filters from history first, never serve without one.</td></tr>
-<tr><td>A pair-store shard primary</td><td>Its right swipes fail until failover.</td><td>Synchronous replica, so no acknowledged like is lost; the app retries the idempotent swipe.</td></tr>
-<tr><td>A swipe-history node</td><td>Its replicas take its writes.</td><td>Replication factor 3; quorum writes survive one node down.</td></tr>
-<tr><td>The stack builder</td><td>Stacks drain without refills.</td><td>Refills start with 50 left, so users keep swiping while it restarts; an empty stack is built on demand.</td></tr>
-<tr><td>The match notifier</td><td>No push to the first swiper; the match is stored.</td><td>Pushes resume from the stream's position; the match list already shows it.</td></tr>
+<tr><td>A cache node</td><td>Its users lose their stacks and seen filters.</td><td>Rebuild the filter from history, then build stacks on demand.</td></tr>
+<tr><td>A pair-store shard primary</td><td>Right swipes on that shard fail until failover.</td><td>A synchronous replica keeps acknowledged likes, and the app retries.</td></tr>
+<tr><td>A swipe-history node</td><td>Its replicas take over its writes.</td><td>With replication factor 3, quorum writes still succeed.</td></tr>
+<tr><td>The stack builder</td><td>Stacks drain because they are not refilled.</td><td>Refills start at 50 left, so users keep swiping during a restart.</td></tr>
+<tr><td>The match notifier</td><td>The first swiper gets no push, but the match is already stored.</td><td>It resumes from its stream position, and the match list already shows the match.</td></tr>
 </tbody>
 </table>
 
@@ -369,35 +374,32 @@ RETURNING matched_at;    -- not null: tell Ben "It's a match"
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Checks one swipes table for the reverse swipe; misses the race until prompted.</td></tr>
-<tr><td>Mid</td><td>Estimates the write rate, picks a write-optimised store, precomputes stacks from a geo index.</td></tr>
-<tr><td>Senior</td><td>Shows why write-then-read can miss or duplicate a match, decides it with one atomic write on a pair key, keeps "who liked me" off the client, and weighs the Bloom filter's 1% loss against its memory saving.</td></tr>
+<tr><td>Junior</td><td>Checks one swipes table for the reverse swipe and misses the race until prompted.</td></tr>
+<tr><td>Mid-level</td><td>Estimates the write rate, picks a write-optimised store, and precomputes stacks.</td></tr>
+<tr><td>Senior</td><td>Shows how write-then-read can miss or duplicate a match, decides it with one atomic write on a pair key, and weighs the Bloom filter's 1% loss against its memory saving.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="The simultaneous swipe" tone="strong">
 <x-interviewer>Two people swipe right on each other in the same millisecond. What happens?</x-interviewer>
-<x-you>Both likes go to one row keyed by the pair. Updates on it are serialized, so only the second request sees both flags; it sets <code>matched_at</code> in the same statement and tells its user. Exactly one match, stored before anyone hears of it.</x-you>
+<x-you>Both likes go to one row keyed by the pair, and updates to that row run one after the other. Only the second request sees both flags, so it sets <code>matched_at</code> in the same statement and tells its user. That gives exactly one match, stored before anyone hears of it.</x-you>
 <x-interviewer>Why not just read the other person's swipe?</x-interviewer>
-<x-you>Replica reads could both miss it; strong reads could both see it and announce twice. The pair row gives exactly one, for a second write per right swipe.</x-you>
+<x-you>Replica reads can both miss the other's swipe, and strongly consistent reads can both see it and announce twice. The pair row gives exactly one match, at the price of one extra write for each right swipe.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you add a "see who liked you" feature?</h3>
-<p>It means pair rows where their flag is set and mine is not, which needs an index by user: keep a per-user "liked by" list fed by the pair rows' change stream. Serve it from the server, only to entitled users.</p>
+<p>The data is the set of pair rows where their flag is set and mine is not. Querying that needs an index by user, so I would keep a per-user "liked by" list fed from the pair rows' change stream. The server returns it only to entitled users and never puts it in the stack.</p>
 
 <h3>A user travels to another city. What changes?</h3>
-<p>The location update moves their geo index document and discards their stack; the next refill uses the new place. The seen filter stays.</p>
-
-<h3>How do you stop a few very popular profiles from appearing in every stack?</h3>
-<p>In ranking: the builder counts impressions per profile and down-ranks those far above their share.</p>
+<p>The location update moves the user's document in the geo index and discards their cached stack, so the next refill is built for the new place. The seen filter is kept.</p>
 
 <h3>A user unmatches. Can they appear again?</h3>
-<p>No. The swipe stays in history and the seen filter, and the pair row keeps both flags plus an <code>unmatched_at</code> time, so a retry cannot recreate the match.</p>
+<p>No. The swipe stays in the history and the seen filter, so neither person is shown to the other again. The pair row keeps both flags and gains an <code>unmatched_at</code> time, so a retried swipe cannot recreate the match.</p>
 
 <h3>How would you shard the geo index?</h3>
-<p>By region, with maximum distance capped at, say, 100 km so a query stays in one region. Big cities get more replicas; a profile near a border goes in both regions.</p>
+<p>Shard it by region and cap the maximum distance at about 100 km, so a query stays in one region. Big cities get more replicas, and a profile near a border is stored in both regions.</p>
 
 <x-checklist title="Self-review: swipe matching">
 <script type="application/json">

@@ -1,43 +1,34 @@
 <!--
 {
   "title": "Design a Price Tracker",
-  "description": "Track prices on a huge shopping site: spend a limited crawl budget where people care, trust crowd reports carefully, chart history and alert once per drop.",
-  "minutes": 26,
+  "description": "How a price tracker chooses which product pages to fetch, verifies crowd-reported prices, stores price history and sends each alert once.",
+  "minutes": 28,
   "kind": "design",
   "tags": ["case study", "crawling", "time series", "crowdsourcing", "alerts"]
 }
 -->
-<p>You want a pair of headphones, but not at $79.99. You paste the link into a price tracker, set "tell me under $65", and forget it. Three weeks later your phone buzzes: $64.99. The tracker shows every price that product has had for two years.</p>
+<p>A price tracker lets a user paste a link to a product, set a target price, and receive a notification when the price drops to that target. It also shows a chart of every price the product has had. The service has no price feed from the shop, so it has to read prices from the shop's product pages.</p>
 
-<p>The hard part is a <strong>budget</strong>: the site has 500 million product pages and you may fetch only a few hundred a second. You must choose what to look at, borrow observations from users, and never send a false alert. Think Keepa, tracking one large store. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>; try each "Your turn" box before reading on.</p>
+<p>The difficulty is that the shop has about 500 million product pages and allows only a few hundred fetches a second. The design has to decide which pages to fetch and when, decide how far to trust prices reported by users, and make sure that a false price never produces an alert and that a real drop produces exactly one. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a price tracker for a large e-commerce site.</x-interviewer>
-<x-you>Where do prices come from: an official API, or product pages? How fast may we fetch?</x-you>
-<x-interviewer>No price API. You fetch pages, and you must stay under 500 requests a second.</x-interviewer>
-<x-you>How many products exist, and how many do our users track?</x-you>
-<x-interviewer>About 500 million products. 10 million users have 50 million alerts on about 20 million distinct products. A browser extension with 2 million installs can report the prices users see.</x-interviewer>
-<x-you>Then I can't watch everything often. I'll spend fetches where alerts are close to firing and use the extension to fill gaps. Priorities: never alert on a price that wasn't real, send each drop once, keep full history. How fast must an alert follow a drop?</x-you>
-<x-interviewer>Within a couple of hours for popular products is fine.</x-interviewer>
-<x-coach>The candidate found the real constraint, the fetch budget, before drawing. "A false alert is worse than a late one" drives the crowdsourcing design.</x-coach>
+<x-you>Where do the prices come from, an official API or the product pages, and how fast are we allowed to fetch?</x-you>
+<x-interviewer>There is no price API. You fetch the pages, and you must stay under 500 requests a second.</x-interviewer>
+<x-you>How many products exist, and how many of them do our users track?</x-you>
+<x-interviewer>There are about 500 million products. 10 million users have 50 million alerts on about 20 million distinct products. A browser extension with 2 million installs can report the prices its users see.</x-interviewer>
+<x-you>Then we cannot watch every product often. I will spend fetches on the products whose alerts are close to firing and use the extension to fill the gaps. I will treat a false alert as worse than a late one. How quickly must an alert follow a price drop?</x-you>
+<x-interviewer>Within a couple of hours is fine for popular products.</x-interviewer>
+<x-coach>The candidate found the real constraint, the fetch budget, before drawing, and stated the priority that drives the crowdsourcing design.</x-coach>
 </x-interview>
 
-<ul>
-<li><strong>Functional:</strong> track a product by link; alert at a target price or percentage drop; show a price-history chart; notify once when the price reaches the target; accept extension reports.</li>
-<li><strong>Non-functional:</strong> under 500 fetches a second; popular products checked every 2 hours, all tracked ones daily; no alert on an unverified price; one alert per drop; chart under 200 ms.</li>
-<li><strong>Out of scope:</strong> other stores, price predictions, product search, user accounts.</li>
-</ul>
+<p>The requirements are to track a product from its link, to alert at a target price or percentage drop, to show a price-history chart, and to accept extension reports. The service must stay under 500 fetches a second, check popular products every 2 hours and every tracked product daily, never alert on an unverified price, send one alert per drop, and load a chart in under 200 ms. Other shops, price prediction, search and accounts are out of scope.</p>
 
 <h2>Estimate the scale</h2>
 
-<ul>
-<li><strong>Fetch budget:</strong> 500 × 86,400 seconds = 43.2 million fetches a day.</li>
-<li><strong>Observations:</strong> 43.2 million fetches plus about 30 million extension reports ≈ 73 million a day.</li>
-<li><strong>Price changes:</strong> if 1 observation in 10 shows a new price, about 7.3 million a day, 85 a second. A small alert pipeline.</li>
-<li><strong>Alerts:</strong> 50 million × about 100 B = 5 GB. One database.</li>
-</ul>
+<p>The fetch budget is 500 fetches a second × 86,400 seconds, which is 43.2 million fetches a day. Add about 30 million extension reports and the system receives roughly 73 million price observations a day. If one observation in ten shows a new price, that is about 7.3 million price changes a day, or 85 a second, which is a small load for the alert pipeline. The 50 million alerts at about 100 bytes each take 5 GB.</p>
 
 <x-estimate title="How long to see every page once">
 <script type="application/json">
@@ -48,31 +39,17 @@
   "answer": "12 days",
   "accept": ["4 days", "40 days"],
   "steps": ["500 × 86,400 = 43.2 million fetches a day", "500,000,000 ÷ 43,200,000 ≈ 11.6 days, about 12"],
-  "note": "A product checked every 12 days misses most sales. Spreading the budget evenly fails; priority is the design."
-}
-</script>
-</x-estimate>
-
-<x-estimate title="A year of price history">
-<script type="application/json">
-{
-  "question": "Each observation is about 32 bytes. How much history does a year add if you store only price changes?",
-  "givens": ["About 73 million observations a day", "About 32 bytes each", "1 in 10 observations is a price change"],
-  "unit": "bytes",
-  "answer": "85 GB",
-  "accept": ["30 GB", "300 GB"],
-  "steps": ["Every observation: 73,200,000 × 32 B ≈ 2.3 GB a day, ≈ 855 GB a year", "Changes only: 855 GB ÷ 10 ≈ 85 GB a year"],
-  "note": "Storing everything fits on a few machines; storing changes fits on one and makes charts faster."
+  "note": "A product checked only every 12 days would miss most sales, so spreading the budget evenly fails and the fetches have to be prioritised."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls for creating an alert, reading a chart and the extension's report. What should the report call tell the extension?</p>
+<p>Write the calls for creating an alert, reading a price chart and receiving a report from the extension. What should the report call tell the extension?</p>
 </x-task>
 <x-answer>
-<p>Alerts and history are plain REST calls. The report call returns 202 and nothing else.</p>
+<p>Alerts and history are plain REST calls. The report call returns 202 and nothing else, so the extension never learns whether a report was accepted.</p>
 </x-answer>
 </x-tryit>
 
@@ -101,16 +78,16 @@ POST /observations                  from the extension, signed install token
 </pre>
 </x-code>
 
-<p>The 202 is deliberate. Reports are checked later against other reports and fetches; telling a cheater which fake prices passed would help them tune the next one.</p>
+<p>The observation endpoint always returns 202 because a report is checked later. If the response said which reports passed, someone submitting fake prices could use it to tune the next attempt.</p>
 
-<p>A percentage alert becomes an absolute target at creation (15% below $79.99 is $67.99), so the matcher only compares prices.</p>
+<p>A percentage alert is converted into an absolute target when it is created. For example, 15% below $79.99 is $67.99, so the matcher only ever compares one price with one target.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the price history and alert records. How does the chart tell "the price did not change for a month" from "nobody looked for a month"?</p>
+<p>Sketch the price-history and alert records. How can the chart tell "the price did not change for a month" from "nobody looked for a month"?</p>
 </x-task>
 <x-answer>
-<p>Store history as segments: a price, when first seen, when last confirmed. A gap between one segment's last confirmation and the next one's start is time nobody looked. Alerts are rows indexed by product and target price.</p>
+<p>Store history as segments, each with a price, the time it was first seen and the time it was last confirmed. A gap between one segment's last confirmation and the next segment's start is time when nobody looked. Alerts are rows indexed by product and target price.</p>
 </x-answer>
 </x-tryit>
 
@@ -143,14 +120,14 @@ crawl_state
 </pre>
 </x-code>
 
-<p>History is written in time order and read as "one product, one time range": a <strong>wide-column or time-series store</strong> keyed by <code>(product_id, first_seen)</code>, where a chart is one range scan. Alerts need "armed alerts on P-77 with a target at or above $64.99", an index range scan in a <strong>relational database</strong>. Crawl state is a priority queue in the crawler.</p>
+<p>History is read as one product over one time range, which fits a wide-column or time-series store keyed by <code>(product_id, first_seen)</code>, where a chart is a single range scan. Alerts are queried as "armed alerts on P-77 with a target at or above $64.99", a range scan on an index in a relational database. Crawl state is a priority queue that lives inside the crawler.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch how prices arrive, where they are checked and stored, and how a change becomes a notification.</p>
+<p>Sketch how prices arrive, where they are checked and stored, and how a price change becomes a notification.</p>
 </x-task>
 <x-answer>
-<p>Fetches and crowd reports feed one price service, which writes history and emits an event only when a verified price changes. An alert matcher turns events into notifications.</p>
+<p>Fetches and crowd reports both feed one price service, which writes history and emits an event only when a verified price changes. An alert matcher turns each event into notifications.</p>
 </x-answer>
 </x-tryit>
 
@@ -186,7 +163,7 @@ crawl_state
 </script>
 </x-arch>
 
-<p>Not drawn: the API servers write alerts to the alerts database, and the crawler reads alert counts from it to set priorities. Both arrows into the price service pass through a log partitioned by <code>product_id</code>, so one instance handles each product's observations in order, and two copies of one drop cannot both emit an event.</p>
+<p>Not drawn: the API servers write alerts to the alerts database, and the crawler reads alert counts from it. Both arrows into the price service pass through a log partitioned by <code>product_id</code>, so one instance handles each product's observations in order and two copies of the same drop cannot both emit an event.</p>
 
 <x-tracer title="A price drop, crowd reports, and a crash">
 <script type="application/json">
@@ -218,47 +195,47 @@ crawl_state
   },
   "steps": [
     {
-      "caption": "P-77 has 3,400 trackers and alerts near its price, so it is checked every 2 hours. It is due; the crawler fetches it.",
+      "caption": "P-77 has 3,400 trackers and alerts close to its price, so it is checked every 2 hours. It is due, so the crawler fetches it.",
       "arch": { "active": ["crawl", "shop", ["crawl", "shop"]], "dim": ["user", "api", "ext", "match", "notif", "alertdb"] },
       "vars": { "P-77 last verified": "$79.99", "budget": "500/s" }
     },
     {
-      "caption": "The parser reads $64.99, a change from the last verified $79.99. The price service closes the old segment and starts a new one.",
+      "caption": "The parser reads $64.99 instead of the last verified $79.99, so the price service closes the old segment and starts a new one.",
       "arch": { "active": ["price", "hist", ["crawl", "price"], ["price", "hist"]], "mark": ["hist"], "dim": ["user", "api", "ext", "match", "notif", "alertdb"], "notes": { "hist": "new: $64.99" } },
       "vars": { "P-77 last verified": "$64.99", "change id": "c-501" }
     },
     {
-      "caption": "It emits change c-501. The matcher finds armed alerts on P-77 with a target of $64.99 or more: $70, $67.99 and $65.",
+      "caption": "The price service emits change c-501. The matcher finds the armed alerts on P-77 with a target of $64.99 or more, which are $70, $67.99 and $65.",
       "arch": { "active": ["price", "match", "alertdb", ["price", "match"], ["match", "alertdb"]], "dim": ["user", "api", "ext", "shop", "crawl"] },
       "vars": { "change id": "c-501", "alerts matched": 3 }
     },
     {
-      "caption": "It sends 3 notifications keyed <code>alert id + c-501</code>, then marks the alerts fired. A $60 target is not reached, so that user is not told.",
+      "caption": "The matcher sends 3 notifications keyed by <code>alert id + c-501</code> and marks the alerts as fired. A $60 target is not reached, so that user is not notified.",
       "arch": { "active": ["match", "notif", "alertdb", ["match", "notif"], ["match", "alertdb"]], "mark": ["notif"], "dim": ["user", "api", "ext", "shop", "crawl"] },
       "vars": { "change id": "c-501", "alerts sent": 3 }
     },
     {
-      "caption": "The matcher crashes before marking the alerts fired. The log redelivers c-501 and it sends again with the same keys. The notification system drops all 3 as duplicates.",
+      "caption": "If the matcher crashes before marking the alerts, the log redelivers c-501 and the matcher sends again with the same keys. The notification system drops all 3 as duplicates.",
       "arch": { "active": ["match", "notif", ["price", "match"], ["match", "notif"]], "dim": ["user", "api", "ext", "shop", "crawl"], "notes": { "match": "redelivered", "notif": "3 duplicates" } },
       "vars": { "change id": "c-501", "alerts delivered": 3 }
     },
     {
-      "caption": "An extension user reports P-77 at $64.99. Same price: only <code>last_seen</code> moves, no event, and P-77's next fetch is pushed back 2 hours.",
+      "caption": "An extension user reports P-77 at the known $64.99. Only <code>last_seen</code> moves, no event is emitted, and the next fetch is pushed back by 2 hours.",
       "arch": { "active": ["ext", "price", "hist", ["ext", "price"], ["price", "hist"]], "dim": ["user", "api", "match", "notif", "alertdb", "shop"] },
       "vars": { "P-77 last verified": "$64.99", "events": 0, "fetches saved": 1 }
     },
     {
-      "caption": "One install reports P-90 at $9.99, an 89% drop from the verified $89.99. It is held as unverified: no history, no event.",
+      "caption": "One install reports P-90 at $9.99, an 89% drop from the verified $89.99. The report is held as unverified, so there is no history entry and no event.",
       "arch": { "active": ["ext", "price", ["ext", "price"]], "dim": ["user", "api", "hist", "match", "notif", "alertdb", "shop"], "notes": { "price": "unverified" } },
       "vars": { "P-90 last verified": "$89.99", "P-90 report": "$9.99" }
     },
     {
-      "caption": "A priority fetch of P-90 reads $89.99. The report is discarded and that install's trust score drops. No false alert.",
+      "caption": "A priority fetch of P-90 reads $89.99, so the report is discarded and that install's trust score drops.",
       "arch": { "active": ["crawl", "shop", "price", ["crawl", "shop"], ["crawl", "price"]], "fail": ["ext"], "dim": ["user", "api", "hist", "match", "notif", "alertdb"], "notes": { "ext": "trust down" } },
       "vars": { "P-90 last verified": "$89.99", "false alerts": 0 }
     },
     {
-      "caption": "Next day P-77 rises to $66, then back to $64.99. The $65 alert re-arms only above $65 × 1.05 = $68.25, so it stays fired: no second message.",
+      "caption": "Later P-77 rises to $66 and falls back to $64.99. The $65 alert re-arms only above $65 × 1.05 = $68.25, so it stays fired and sends nothing.",
       "arch": { "active": ["match", "alertdb", ["price", "match"], ["match", "alertdb"]], "dim": ["user", "api", "ext", "shop", "crawl", "notif"], "notes": { "alertdb": "still fired" } },
       "vars": { "target": "$65", "re-arm above": "$68.25", "alerts sent": 0 }
     }
@@ -271,22 +248,27 @@ crawl_state
 
 <h3>Spending the fetch budget</h3>
 
-<p>The crawler is the one from <a href="/system-design/design-a-web-crawler.html">Design a Web Crawler</a>, except its frontier is a priority queue ordered by <code>next_due</code>, with each product's interval set by how much users care. A token bucket holds the fleet to 500 fetches a second. One plan for 43.2 million a day:</p>
+<p>The budget is 500 fetches a second, and the question is which pages get them. The crawler is the one from <a href="/system-design/design-a-web-crawler.html">Design a Web Crawler</a>, with a token bucket holding the fleet to 500 fetches a second. What changes is the order in which it visits pages, and there are three ways to choose it.</p>
 
-<table>
-<thead><tr><th>Tier</th><th>Products</th><th>Interval</th><th>Fetches a day</th></tr></thead>
-<tbody>
-<tr><td>Hot: most trackers, or an alert within 5% of the price</td><td>1 million</td><td>2 hours</td><td>1M × 12 = 12 million</td></tr>
-<tr><td>Tracked</td><td>19 million</td><td>1 day</td><td>19 million</td></tr>
-<tr><td>Untracked, for history and new products</td><td>480 million</td><td>about 40 days</td><td>the remaining 12.2 million</td></tr>
-</tbody>
-</table>
+<p>The first is to visit every page in turn. A full pass takes about 12 days, so a weekend sale would be missed, and most fetches would go to products nobody tracks.</p>
 
-<p>Tiers simplify a score: more trackers, an alert near the price, a volatile price and a long time since the last look all raise priority. An alert 40% below the price needs no fetch every 2 hours; one 2% away does. Each verified extension report moves <code>next_due</code> forward and saves a fetch, mostly in the hot tier, since people view the pages they care about.</p>
+<p>The second is to fetch tracked products on a fixed schedule, which wastes fetches on a product whose nearest alert is 40% below the price.</p>
+
+<p>The third is to give each product a priority and keep the pages in a queue ordered by <code>next_due</code>. Priority rises with the number of trackers, with how close the nearest alert is to the price, with how often the price changes, and with the time since the last check. The crawler takes whatever is due next. A simple version uses tiers, and this is the plan to describe in an interview.</p>
+
+<p>The hot tier holds about 1 million products with the most trackers or an alert within 5% of the price, checked every 2 hours, which costs 12 million fetches a day. The tracked tier holds the other 19 million products with an alert, checked daily, which costs 19 million. The remaining 12.2 million fetches go to the 480 million untracked products, about one visit each every 40 days, so that a new alert starts with a recent price.</p>
+
+<p>Each verified extension report that matches the known price moves <code>next_due</code> forward and saves a fetch, mostly in the hot tier.</p>
 
 <h3>Trusting crowd reports</h3>
 
-<p>Extension reports are free but come from strangers. Some are wrong by accident (a member price, a coupon, a used offer, a misread page); some on purpose. The rule: <strong>a crowd report can extend a price or ask for a check; it cannot alone make a big change.</strong></p>
+<p>Extension reports cost nothing, but they come from strangers. Some are wrong by accident, because the extension saw a member-only price, a coupon price, a used offer or a misparsed page. Some are wrong on purpose. The rule to state is that a crowd report can confirm a price or ask for a check, and it cannot make a large change alone. There are three ways to apply it.</p>
+
+<p>The first option is to trust every report. This is fastest, but one script posting $9.99 for a popular product would send thousands of false alerts within minutes, and a sent notification cannot be taken back.</p>
+
+<p>The second option is to use reports only to schedule fetches. A report that disagrees with the known price moves the product to the front of the queue, and the crawler reads the price itself, so no crowd price enters the history. Every change still needs a fetch, so little is saved, but it suits a new extension with no trust scores yet.</p>
+
+<p>The third option is to verify by the size of the change. A report that matches the known price extends it. A change of up to 10% from an install with a good record is accepted. A larger change, or any change from a new install, is held until a second install on a different network reports the same price within an hour, or until a priority fetch confirms it. Trust goes up when an install's reports later agree with fetches and down when they do not, and each install is <a href="/system-design/rate-limiting.html">rate limited</a>. A real large drop waits for confirmation, but most savings remain, so this is the choice here.</p>
 
 <x-tradeoffs caption="What to do with a crowd report">
 <script type="application/json">
@@ -294,21 +276,21 @@ crawl_state
   "options": [
     {
       "name": "Trust every report",
-      "good": "Most coverage, fastest alerts.",
-      "bad": "One script posting $9.99 for a popular product sends thousands of false alerts in minutes.",
+      "good": "It gives the most coverage and the fastest alerts.",
+      "bad": "One script posting a fake price sends thousands of false alerts in minutes.",
       "pick": "Never, for anything that triggers alerts."
     },
     {
       "name": "Use reports only to schedule fetches",
-      "good": "No crowd price enters history; a reported change jumps the queue.",
-      "bad": "Every change still costs a fetch; small savings.",
-      "pick": "Heavy abuse, or a new extension with no trust scores yet."
+      "good": "No crowd price enters the history, and a reported change jumps the queue.",
+      "bad": "Every change still costs a fetch, so the savings are small.",
+      "pick": "A new extension with no trust scores yet, or during heavy abuse."
     },
     {
       "name": "Verify by size of change",
-      "good": "Small changes from trusted installs are accepted; big ones need confirmation.",
-      "bad": "Trust scores and rules to build and tune; a big real drop waits for confirmation.",
-      "pick": "A mature extension with many reporters. The choice here.",
+      "good": "Small changes from trusted installs are accepted and large ones need confirmation.",
+      "bad": "Trust scores and thresholds must be built and tuned, and a large real drop waits for confirmation.",
+      "pick": "A mature extension with many reporters. This is the choice here.",
       "default": true
     }
   ]
@@ -316,101 +298,83 @@ crawl_state
 </script>
 </x-tradeoffs>
 
-<ul>
-<li>The extension parses the crawler's fields (seller, condition, currency); anything but the public new price is dropped.</li>
-<li>A change of up to 10% from a trusted install is accepted.</li>
-<li>Anything bigger, or from a new install, waits for a second install on a different network to report the same price within an hour, or for a priority fetch.</li>
-<li>Trust rises when an install's reports later agree with fetches and falls when they do not. Each install is <a href="/system-design/rate-limiting.html">rate limited</a>.</li>
-</ul>
-
-<x-callout type="mistake" title="Alerting on unverified prices">
-<p>Firing alerts on any report is fastest, but one bad report then reaches every tracker of that product, and you cannot unsend a notification. Only verified changes produce events.</p>
-</x-callout>
+<p>An interviewer will often ask whether this delays a real flash sale. It does, by one priority fetch, which takes seconds, and that is acceptable because a late alert is better than a false one. The extension also drops everything except the public price of a new item.</p>
 
 <h3>Storing and charting history</h3>
 
-<p>Prices are mostly flat, so store <strong>segments</strong>: a new row only when the price changes; a matching observation moves <code>last_seen</code>. That is the estimate's 10x saving, and it keeps the chart honest: if <code>last_seen</code> is 10 days before the next segment, the chart shows a gap, not a flat line nobody checked.</p>
+<p>A product's price is flat for most of the time, so there are two ways to store it. The first is to store every observation as a row, which is simple but writes about 855 GB a year (73.2 million × 32 bytes × 365) and makes a chart read many identical rows. The second is to store segments. A segment has a price, the time it was first seen and the time it was last confirmed, and a new row is written only when the price changes. An observation that matches the current price only moves <code>last_seen</code>. With one change in ten observations this is about 85 GB a year, and it keeps the chart honest: if the last confirmation of one segment is 10 days before the start of the next, the chart shows a gap instead of a flat line that nobody checked.</p>
 
-<p>A one-year chart for a daily-changing product is 365 segments, one range scan. For "all time" on an hourly-changing product, read precomputed daily rollups (low, high, last), so no chart reads more than about a thousand rows. Keep the all-time low in a per-product summary row.</p>
-
-<x-callout type="mistake" title="Drawing straight lines between prices">
-<p>A price is $79.99 until the moment it is $64.99. Joining the two points with a slope suggests prices like $72 that never existed. Draw steps.</p>
-</x-callout>
+<p>A one-year chart for a product that changes price daily reads 365 segments in one range scan. For an "all time" chart of a product that changes hourly, the service reads precomputed daily rollups (low, high and last price), so no chart reads more than about a thousand rows. The chart is drawn as steps, because a sloped line between two prices suggests prices such as $72 that never existed.</p>
 
 <h3>Alerting once per drop</h3>
 
-<p>Duplicates come from three places:</p>
+<p>Duplicates come from three places, and each needs its own fix.</p>
 
-<ul>
-<li><strong>Two sources see the same drop.</strong> Only a <em>change</em> from the last verified price emits an event, so the second observation emits nothing.</li>
-<li><strong>The pipeline redelivers.</strong> The log delivers at least once. Each notification carries the key <code>alert_id + change_id</code>, and the <a href="/system-design/design-a-notification-system.html">notification system</a> drops keys it has sent. The alert's <code>fired_change</code> column lets the matcher skip work already done.</li>
-<li><strong>The price flaps.</strong> $64.99, $65.01, $64.99 is two drops below $65 by the letter of the rule. A fired alert re-arms only when the price climbs 5% above the target, or when the user asks.</li>
-</ul>
+<p>The first source is that the fetch and an extension report can both see the same drop. Only a change from the last verified price emits an event, so the second observation of the same price emits nothing.</p>
 
-<p>A popular product can match 200,000 alerts at once. The matcher pages through the <code>(product_id, state, target_cents)</code> index in batches. At 2,000 sends a second, the last user hears 200,000 ÷ 2,000 = 100 seconds after the first.</p>
+<p>The second source is redelivery. The log delivers events at least once, so after a crash the matcher can process the same event again. Each notification carries the key <code>alert_id + change_id</code>, and the <a href="/system-design/design-a-notification-system.html">notification system</a> drops any key it has already sent.</p>
+
+<p>The third source is a price that flaps around the target. A price that goes from $64.99 to $65.01 and back to $64.99 crosses a $65 target twice, but the user should not be told twice. A fired alert is therefore re-armed only when the price climbs 5% above the target, or when the user asks for it.</p>
+
+<p>One more problem is a popular product that matches 200,000 alerts at once. The matcher reads the <code>(product_id, state, target_cents)</code> index in batches. At 2,000 notifications a second the last user is told 100 seconds after the first.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x users the fetch budget stays fixed; the site sets it. Intervals stretch, and the extension, which grows with users, matters more. History grows by less than 10x, because prices do not change more often. Even the worst case, about 850 GB a year, shards easily by <code>product_id</code>.</p>
+<p>At 10 times the users the fetch budget does not grow, because the shop sets it. Check intervals get longer and the extension, which grows with users, matters more. History grows by less than 10 times because prices do not change more often, and even 850 GB a year is easy to shard by <code>product_id</code>.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>The site starts blocking fetches</td><td>Fetch errors climb; prices go stale.</td><td>Back off at once by lowering the token bucket rate. Lean on verified crowd reports; show "last checked" honestly.</td></tr>
-<tr><td>The site changes its page layout</td><td>The parser returns nothing, or worse, the wrong number.</td><td>Reject parses that fail sanity checks, alert the team when failures jump, and emit no events from a parser that just started disagreeing with history.</td></tr>
-<tr><td>The price service</td><td>Fetches and reports pile up.</td><td>They wait in the log; the service catches up from its last offset.</td></tr>
-<tr><td>The alert matcher</td><td>Alerts are late, not lost.</td><td>Events wait in the log; it resumes from its last committed offset.</td></tr>
-<tr><td>The notification system</td><td>Matched alerts cannot be sent.</td><td>Keep the alerts armed until sending succeeds; the idempotency key makes retries safe.</td></tr>
+<tr><td>The shop starts blocking fetches</td><td>Fetch errors increase and prices become stale.</td><td>Lower the token bucket rate at once, rely more on verified reports, and show the "last checked" time.</td></tr>
+<tr><td>The shop changes its page layout</td><td>The parser returns nothing, or returns a wrong number.</td><td>Reject parses that fail sanity checks, alert the team when failures jump, and emit no events from a parser that suddenly disagrees with history.</td></tr>
+<tr><td>The price service</td><td>Fetches and reports pile up.</td><td>They wait in the log, and the service catches up from its last committed offset when it restarts.</td></tr>
+<tr><td>The alert matcher</td><td>Alerts are late but not lost.</td><td>Events wait in the log, and the matcher resumes from its last committed offset.</td></tr>
+<tr><td>The notification system</td><td>Matched alerts cannot be sent.</td><td>Keep the alerts armed until sending succeeds. The idempotency key makes the retries safe.</td></tr>
 </tbody>
 </table>
 
 <h2>What a strong answer sounds like</h2>
 
+<p>Interviewers look first for the fetch budget as the central constraint, then for how the candidate treats untrusted data.</p>
+
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>A cron job fetches every tracked product, stores every price, and compares each with every alert.</td></tr>
-<tr><td>Mid</td><td>Sees the budget cannot cover the catalogue, prioritises tracked products, keys history by product and time, and sends alerts through a queue.</td></tr>
-<tr><td>Senior</td><td>Treats the fetch budget as the design, prioritises by how close alerts are to firing, uses the extension to save fetches but never to fire alerts alone, stores segments that show gaps, and fixes each source of duplicate alerts.</td></tr>
+<tr><td>Junior</td><td>Fetches every tracked product on a cron job, stores every price and compares each with every alert.</td></tr>
+<tr><td>Mid-level</td><td>Sees that the budget cannot cover the catalogue, prioritises tracked products, keys history by product and time, and sends alerts through a queue.</td></tr>
+<tr><td>Senior</td><td>Treats the fetch budget as the design, prioritises by how close alerts are to firing, never lets the extension fire alerts alone, stores segments that show gaps, and fixes each source of duplicates.</td></tr>
 </tbody>
 </table>
 
-<x-interview title="Using the extension" tone="weak">
+<x-interview title="Using the extension">
 <x-interviewer>How do you use the extension's reports?</x-interviewer>
-<x-you>They are real prices users saw, so I write them into history and run alerts on them.</x-you>
-<x-coach>One fake or misread report becomes a false alert to everyone tracking that product. The answer never asks how a report could be wrong.</x-coach>
-</x-interview>
-
-<x-interview title="Using the extension" tone="strong">
-<x-interviewer>How do you use the extension's reports?</x-interviewer>
-<x-you>Mostly to save fetches. A report matching the known price confirms it and pushes the next fetch back. A small change from a trusted install is accepted. A big change needs a second independent reporter or our own fetch, because only verified changes fire alerts.</x-you>
+<x-you>Mostly to save fetches. A report that matches the known price confirms it and lets me push the next fetch back. A large change needs a second independent reporter or our own fetch, because only verified changes may fire alerts.</x-you>
 <x-interviewer>Doesn't that delay real flash sales?</x-interviewer>
-<x-you>By one priority fetch, a few seconds. You said a late alert beats a wrong one.</x-you>
+<x-you>By one priority fetch, a few seconds. You said a late alert is better than a wrong one.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-
 <h3>How would you support many stores?</h3>
-<p>Each store gets its own budget, token bucket, parser and frontier; the rest does not care where a price came from. Matching one product across stores is a separate problem.</p>
+<p>Each store gets its own budget, token bucket, parser and queue of due products. The rest of the pipeline does not care where a price came from.</p>
 
-<h3>How do you detect fake drops, where the price is raised before a "sale"?</h3>
-<p>The history shows it. Compare the "sale" price with the 90-day median, not the day before, and label the drop honestly in the alert.</p>
+<h3>How do you detect fake drops, where the price is raised before a sale?</h3>
+<p>The history shows it. Compare the sale price with the median of the last 90 days instead of the day before, because a price raised just before the sale makes the discount look larger than it is.</p>
 
-<h3>Why not just fetch tracked products more often from many IP addresses?</h3>
-<p>The budget is the site's limit. Evading it breaks the site's terms and gets you blocked. Coverage comes from the extension and better priorities.</p>
+<h3>Why not fetch from many IP addresses to get around the limit?</h3>
+<p>The 500 fetches a second is the shop's limit, and evading it breaks the shop's terms and invites a block. Coverage should come from the extension and better priorities.</p>
 
 <h3>How do you know the system is healthy?</h3>
-<p>Track the age of the last verified price per tier, parse failures, the share of crowd reports that fetches contradict, and change-to-alert time. Rising contradictions often mean a layout change, not cheaters.</p>
+<p>Track the age of the last verified price in each tier, parse failures, the share of reports that fetches contradict, and the time from a price change to the alert. A rising share of contradicted reports often means a layout change, not more cheaters.</p>
 
 <x-checklist title="Self-review: price tracker">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked how prices are obtained and the rate limit", "I said a false alert is worse than a late one", "I asked how fresh alerts must be"] },
+    { "title": "Before drawing", "items": ["I asked how prices are obtained and what the rate limit is", "I said a false alert is worse than a late one", "I asked how fresh alerts must be"] },
     { "title": "Numbers and interfaces", "items": ["I showed the budget covers the catalogue only every 12 days", "I split the budget into tiers that sum to the daily total", "I returned 202 with no verdict to the extension"] },
-    { "title": "Design and depth", "items": ["I prioritised fetches by how close alerts are to firing", "Crowd reports save fetches but never fire alerts alone", "History is segments that show gaps, drawn as steps", "Alerts are indexed by product and target price", "I named each source of duplicate alerts and its fix"] },
-    { "title": "Failure", "items": ["I covered the site blocking us or changing its layout", "I said why alerts are late, not lost, when the matcher dies"] }
+    { "title": "Design and depth", "items": ["I prioritised fetches by how close alerts are to firing", "I used crowd reports to save fetches but never to fire alerts alone", "I stored history as segments that show gaps and drew them as steps", "I indexed alerts by product and target price", "I named each source of duplicate alerts and its fix"] },
+    { "title": "Failure", "items": ["I covered the shop blocking us or changing its layout", "I said why alerts are late and not lost when the matcher dies"] }
   ]
 }
 </script>

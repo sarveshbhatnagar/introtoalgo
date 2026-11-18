@@ -1,41 +1,37 @@
 <!--
 {
   "title": "Design a Distributed Message Queue",
-  "description": "Build a log-based broker: segmented logs on disk, partitions and ordering, leaders and in-sync replicas, acks, consumer groups, offsets and retention.",
+  "description": "How a log-based message broker stores, replicates and delivers messages, and the questions interviewers ask about it.",
   "minutes": 30,
   "kind": "design",
   "tags": ["case study", "streaming", "replication", "ordering", "durability"]
 }
 -->
-<p>Dozens of services publish events: orders placed, payments taken. Dozens more read them at their own pace, and some reread last Tuesday's events after a bug fix. You build the broker in the middle, a Kafka: a cluster that accepts a hundred thousand messages a second, keeps them for a week, and never loses an acknowledged message when a broker dies.</p>
+<p>A distributed message queue is a cluster of servers (brokers) that accepts messages from many producers, stores them durably, and lets many consumers read them later at their own pace. Kafka is the best-known example, and this lesson designs that kind of system: a log that several consumer groups read independently and can replay.</p>
 
-<p>Using a queue is covered in <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>. This lesson builds the log itself: files on disk, replicas, offsets, and the exact meaning of "acknowledged". The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The question is hard because the broker must combine three things that pull against each other: very high throughput, an acknowledgement that really means the message will not be lost when a machine dies, and ordering that survives retries and failovers. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and how applications use a queue is covered in <a href="/system-design/message-queues-and-streams.html">Message Queues and Streams</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a distributed message queue.</x-interviewer>
-<x-you>A job queue, where each message goes to one worker and is deleted, or a log that several groups read and replay?</x-you>
+<x-you>Should it be a job queue, where each message goes to one worker and is deleted once handled, or a log that several consumer groups read and can replay?</x-you>
 <x-interviewer>A log.</x-interviewer>
-<x-you>Do consumers need order across all events, or per key, like per order ID? And what scale and retention?</x-you>
-<x-interviewer>Per key is enough. 100,000 messages a second on average, three times that at peak, about 1 KB each, kept for seven days. Each message is read by about three groups.</x-interviewer>
-<x-you>Then my priorities: no acknowledged message is lost when a broker dies, order holds per key, and consumers can rewind.</x-you>
-<x-coach>"Queue or log?" changes the whole storage design, and "order per what?" decides the partitioning.</x-coach>
+<x-you>Do consumers need ordering across all events, or only per key, for example per order ID? And what are the message rate and the retention?</x-you>
+<x-interviewer>Order per key is enough. Assume 100,000 messages a second on average and three times that at peak, about 1 KB each, kept for seven days. Each message is read by about three consumer groups.</x-interviewer>
+<x-you>Then my priorities are these: an acknowledged message is never lost when a broker dies, order holds per key, and consumers can rewind to an older position.</x-you>
+<x-coach>Queue or log changes the whole storage design, and the order needed decides the partitioning.</x-coach>
 </x-interview>
 
-<ul>
-<li><strong>Functional:</strong> produce to a topic, with an optional key; consume in groups, where each group gets every message and members share the work; commit and rewind positions; delete after retention, or keep only the latest value per key.</li>
-<li><strong>Non-functional:</strong> the priorities above; produce p99 under about 10 ms; 300,000 messages a second at peak; consumers hours behind do not slow producers.</li>
-<li><strong>Out of scope:</strong> delayed and priority messages, per-message acknowledgement, replication between regions.</li>
-</ul>
+<p><strong>Functional requirements.</strong> Producers publish messages to a topic, with an optional key. Consumers read in groups: every group receives every message, and the members of a group share the work. Consumers can save their position and rewind it.</p>
+
+<p><strong>Non-functional requirements.</strong> No acknowledged message is lost when one broker fails. Messages with the same key are read in the order they were written. Producing has a p99 latency under about 10 ms.</p>
+
+<p><strong>Out of scope.</strong> Delayed messages and cross-region replication.</p>
 
 <h2>Estimate the scale</h2>
 
-<ul>
-<li><strong>Ingest:</strong> 100,000 × 1 KB = 100 MB/s on average, 300 MB/s at peak.</li>
-<li><strong>Per day:</strong> 100 MB/s × 86,400 s ≈ 8.6 TB.</li>
-<li><strong>Reads:</strong> three groups: 300 MB/s out on average, 900 MB/s at peak, plus replica traffic.</li>
-</ul>
+<p>The ingest rate is 100,000 messages a second × 1 KB = 100 MB/s on average and 300 MB/s at peak. With three consumer groups, the cluster sends out 300 MB/s on average and 900 MB/s at peak.</p>
 
 <x-estimate title="Disk for seven days">
 <script type="application/json">
@@ -46,33 +42,19 @@
   "answer": "180 TB",
   "accept": ["60 TB", "600 TB"],
   "steps": ["100 MB/s × 86,400 s ≈ 8.64 TB a day", "8.64 TB × 7 ≈ 60 TB", "60 TB × 3 copies ≈ 180 TB"],
-  "note": "At 12 TB usable per broker, 180 ÷ 12 = 15 full brokers; under 75% full, 20. Disk, not CPU, sets the cluster size."
+  "note": "At 12 TB of usable disk per broker, 180 ÷ 12 = 15 brokers if completely full, so about 20 with headroom. Disk sets the cluster size."
 }
 </script>
 </x-estimate>
 
-<p>At peak each of 20 brokers writes 300 MB/s × 3 ÷ 20 = 45 MB/s and serves 900 MB/s ÷ 20 = 45 MB/s of reads. Comfortable for sequential I/O.</p>
-
-<x-estimate title="Partitions for the busiest topic">
-<script type="application/json">
-{
-  "question": "The busiest topic peaks at 40,000 messages a second. One consumer instance handles 2,500 a second. How many partitions does it need today?",
-  "givens": ["40,000 messages a second at peak", "One consumer handles 2,500 a second", "Within a group, one partition is read by one consumer at a time"],
-  "unit": "count",
-  "answer": "16",
-  "accept": ["8", "64"],
-  "steps": ["40,000 ÷ 2,500 = 16 consumers busy at peak", "Each needs its own partition, so at least 16", "Plan for growth: double it to 32"],
-  "note": "Partitions are hard to add later without breaking per-key order, so choose for next year's load."
-}
-</script>
-</x-estimate>
+<p>With 20 brokers, each one writes about 300 MB/s × 3 ÷ 20 = 45 MB/s at peak and serves about 900 MB/s ÷ 20 = 45 MB/s of reads, which is comfortable for sequential disk access.</p>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls for producing, consuming and saving a position. How does a consumer say where to read from, and what does a producer hear from the wrong broker?</p>
+<p>Write the calls for producing, consuming and saving a position. What does a producer hear when it contacts the wrong broker?</p>
 </x-task>
 <x-answer>
-<p>Produce returns the batch's offset. Fetch takes a partition and an offset, so the consumer owns its position; commit saves it for the group. An error tells clients to refresh metadata when leadership moves.</p>
+<p>Produce returns the offset of the batch. Fetch takes a partition and an offset, so the consumer owns its position, and commit saves that position for the group. When leadership moves, the broker returns an error that tells clients to refresh their metadata.</p>
 </x-answer>
 </x-tryit>
 
@@ -103,14 +85,14 @@ CommitOffset(group, generation, partition, offset)
 </pre>
 </x-code>
 
-<p>The decision worth arguing is <strong>pull versus push</strong>. Consumers pull from their own offset at their own pace, so a slow consumer slows no one, reads batch well, and rewinding is asking for an older offset. To avoid busy polling, fetch <em>waits</em> up to <code>max_wait_ms</code> before answering empty.</p>
+<p>The API decision worth arguing is pull versus push. In this design consumers pull from their own offset at their own pace. A slow consumer then slows nobody else, the broker can return large batches efficiently, and rewinding is just a fetch with an older offset. With push, the broker would have to track how fast each consumer can accept data. To avoid wasted requests on an empty partition, a fetch waits on the broker for up to <code>max_wait_ms</code> before it returns an empty response.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>How does a broker store a partition so appends and reads from any offset are fast and deleting old data is cheap? What must the cluster agree on?</p>
+<p>How does a broker store a partition so that appends and reads from any offset are fast, and deleting old data is cheap? What must the cluster agree on?</p>
 </x-task>
 <x-answer>
-<p>A directory of segment files named by first offset, each with a sparse index. Appends go to the newest; retention deletes whole old ones. The cluster agrees on each partition's replicas, leader, and in-sync set.</p>
+<p>A partition is a directory of segment files named by their first offset, each with a sparse index. Appends go to the newest segment, and retention deletes whole old segments. The cluster must agree on each partition's replicas, its leader and its set of in-sync replicas.</p>
 </x-answer>
 </x-tryit>
 
@@ -138,22 +120,22 @@ consumer offsets                      an internal topic, compacted
 </pre>
 </x-code>
 
-<p>There is no database: the broker's files are the store, accessed only by "append" and "read forward from offset X". Consumer positions are messages in a compacted internal topic. The critical metadata lives in a controller replicated with <a href="/system-design/consensus-and-leader-election.html">consensus</a>.</p>
+<p>There is no database: the brokers' own files are the store, accessed only by appending and by reading forward from an offset. Consumer positions are stored as messages in a compacted internal topic. The metadata that must never be wrong, such as who leads each partition, is held by a controller that is replicated with <a href="/system-design/consensus-and-leader-election.html">consensus</a>.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch one partition with three replicas. Who does the producer talk to, how do the copies get the data, and who picks the leader?</p>
+<p>Sketch one partition with three replicas. Who does the producer talk to, how do the other copies get the data, and who chooses the leader?</p>
 </x-task>
 <x-answer>
-<p>Producers and consumers talk to the partition's leader; followers fetch from it like consumers. A controller quorum records leaders and in-sync replicas and replaces a dead leader.</p>
+<p>Producers and consumers talk to the leader of the partition, and the followers fetch from the leader in the same way consumers do. A controller quorum records the leaders and the in-sync replicas and replaces a leader that dies.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Each partition has a leader and two followers on different brokers; each broker leads about a third of its partitions.</p>
+<p>Each topic is split into partitions. Each partition has one leader and two followers on different brokers, and leaders are spread evenly across brokers.</p>
 
-<x-arch caption="For one partition: producers and consumers talk to the leader; followers pull from the leader; the controller quorum records who leads and who is in sync.">
+<x-arch caption="For one partition, producers and consumers talk to the leader, the followers pull from the leader, and the controller quorum records who leads and who is in sync.">
 <script type="application/json">
 {
   "nodes": [
@@ -197,57 +179,52 @@ consumer offsets                      an internal topic, compacted
   },
   "steps": [
     {
-      "caption": "A producer hashes <code>order-881</code> to partition 7 (leader: broker 1) and sends a batch with <code>acks=all</code>, producer id 31, sequence 42.",
+      "caption": "A producer hashes the key <code>order-881</code> to partition 7, whose leader is broker 1, and sends a batch with <code>acks=all</code>, producer id 31 and sequence number 42.",
       "arch": { "active": ["prod", "b1", ["prod", "b1"]], "dim": ["cons"] },
       "vars": { "end of log": 5000, "high watermark": 5000 }
     },
     {
-      "caption": "Broker 1 appends the batch at offset 5,000. It is in one machine's page cache only, so the producer waits.",
+      "caption": "Broker 1 appends the batch at offset 5,000. Only one machine has it, so the producer keeps waiting.",
       "arch": { "active": ["b1"], "dim": ["cons"], "notes": { "b1": "offset 5000" } },
       "vars": { "end of log": 5001, "high watermark": 5000 }
     },
     {
-      "caption": "Brokers 2 and 3 fetch from offset 5,000 and append the same bytes to their logs.",
+      "caption": "Brokers 2 and 3 fetch from offset 5,000 and append the same bytes to their own logs.",
       "arch": { "active": ["b2", "b3", ["b2", "b1"], ["b3", "b1"]], "dim": ["cons"], "notes": { "b2": "has 5000", "b3": "has 5000" } },
       "vars": { "end of log": 5001, "high watermark": 5000 }
     },
     {
-      "caption": "Their next fetches ask for 5,001, telling the leader they hold 5,000. All in-sync replicas have it, so the high watermark moves to 5,001 and the producer gets OK.",
+      "caption": "Their next fetches ask for 5,001, which tells the leader they hold 5,000, so the high watermark moves to 5,001 and the producer receives OK.",
       "arch": { "active": ["b1", ["b1", "prod"]], "mark": ["prod", "b2", "b3"], "dim": ["cons"] },
       "vars": { "end of log": 5001, "high watermark": 5001 }
     },
     {
-      "caption": "A billing consumer fetches from its committed offset 5,000. Consumers see only records below the high watermark.",
-      "arch": { "active": ["cons", "b1", ["cons", "b1"], ["b1", "cons"]], "notes": { "cons": "read 5000" } },
-      "vars": { "high watermark": 5001, "billing offset": 5000 }
-    },
-    {
-      "caption": "It processes the order, then commits offset 5,001 (\"next, read 5,001\"): at-least-once delivery.",
-      "arch": { "active": ["cons", ["cons", "b1"]], "mark": ["cons"] },
+      "caption": "A billing consumer reads the record from offset 5,000, which is below the high watermark, processes it, and then commits offset 5,001. Committing after processing gives at-least-once delivery.",
+      "arch": { "active": ["cons", "b1", ["cons", "b1"], ["b1", "cons"]], "mark": ["cons"], "notes": { "cons": "committed 5001" } },
       "vars": { "high watermark": 5001, "billing offset": 5001 }
     },
     {
-      "caption": "The producer sends sequence 43 to offset 5,001. Both followers copy it, but broker 1 dies before the OK. The producer times out, unsure if it landed.",
+      "caption": "The producer sends sequence 43. Both followers copy it, but broker 1 dies before it sends the OK, so the producer cannot tell whether the batch was written.",
       "arch": { "fail": ["b1", ["b1", "prod"]], "mark": ["b2", "b3"], "notes": { "b2": "has 5001", "b3": "has 5001" } },
       "vars": { "high watermark": 5001, "billing offset": 5001 }
     },
     {
-      "caption": "Broker 1 stops heartbeating. After a few seconds the controller makes in-sync broker 2 leader and raises the leader epoch from 4 to 5.",
+      "caption": "Broker 1 stops sending heartbeats. After a few seconds the controller makes broker 2, which is in sync, the new leader and raises the leader epoch from 4 to 5.",
       "arch": { "fail": ["b1"], "active": ["ctl", "b2"], "notes": { "ctl": "epoch 5", "b2": "leader" } },
       "vars": { "leader": "broker 2", "leader epoch": 5 }
     },
     {
-      "caption": "The producer refreshes metadata and retries sequence 43 at broker 2, which already holds it, so it returns the original offset 5,001 instead of writing a copy.",
+      "caption": "The producer refreshes its metadata and retries sequence 43 at broker 2, which already holds it and returns the original offset 5,001 without writing a second copy.",
       "arch": { "fail": ["b1"], "active": ["prod", "b2"], "mark": ["b2"], "notes": { "b2": "dup seq 43" } },
       "vars": { "leader": "broker 2", "copies of seq 43": 1 }
     },
     {
-      "caption": "The consumer group moves to broker 2 and resumes at 5,001. Every acknowledged record was on every in-sync replica, so nothing is lost.",
+      "caption": "The consumer group moves to broker 2 and continues from offset 5,001. Nothing acknowledged was lost.",
       "arch": { "fail": ["b1"], "active": ["cons", "b2"], "mark": ["cons"], "notes": { "cons": "read 5001" } },
       "vars": { "leader": "broker 2", "billing offset": 5001 }
     },
     {
-      "caption": "Broker 1 restarts, cuts off any records past what broker 2 had at the epoch change, and follows broker 2 until back in sync.",
+      "caption": "When broker 1 restarts, it discards any records beyond what broker 2 held at the epoch change and then follows broker 2 until it is back in sync.",
       "arch": { "active": ["b1"], "mark": ["b2"], "notes": { "b1": "truncate, follow" } },
       "vars": { "leader": "broker 2", "leader epoch": 5 }
     }
@@ -258,70 +235,74 @@ consumer offsets                      an internal topic, compacted
 
 <h2>Deep dives</h2>
 
-<h3>The log on disk</h3>
+<h3>How the log is stored on disk</h3>
 
-<p>A random 1 KB write on a spinning disk costs a 10 ms seek: 100 KB a second. Appending, it streams about 200 MB/s, 2,000 times more; SSDs narrow the gap. So the broker <strong>only appends</strong>: no updates in place, no per-message index.</p>
+<p>The broker has to write 100 MB/s of small messages. A random 1 KB write on a spinning disk costs a seek of about 10 ms, so it manages about 100 writes and 100 KB a second. Appending to the end of a file streams at about 200 MB/s, roughly 2,000 times faster. For this reason the broker only appends, and it never updates a record in place or keeps a per-message index.</p>
+
+<p>Three techniques make the append-only design fast.</p>
 
 <ul>
-<li><strong>Batching.</strong> Producers group messages for a few milliseconds, say 16 KB: about 6,250 requests a second instead of 100,000, each compressed as a unit.</li>
-<li><strong>The page cache.</strong> The broker writes to the OS file cache without forcing each write to disk. Consumers that keep up read from memory.</li>
-<li><strong>Zero copy.</strong> Stored bytes equal sent bytes, so the kernel sends a file range straight to the socket.</li>
+<li>Batching: producers send messages in batches of about 16 KB, so the broker handles about 6,250 requests a second instead of 100,000.</li>
+<li>The page cache: the broker writes into the operating system's file cache, so consumers that keep up read recent data from memory.</li>
+<li>Zero copy: the stored bytes are the bytes sent to consumers, so the kernel sends a file range to the socket directly.</li>
 </ul>
 
-<p><strong>Segments and the index.</strong> Segments are about 1 GB. To serve "read from offset 4,712,345", the broker picks the segment by name, then uses a sparse index with one entry per 4 KB: about 250,000 entries, 2 MB, in memory. <a href="/algorithms/binary-search.html">Binary search</a> finds the nearest entry in about 18 steps, then the broker scans forward under 4 KB.</p>
+<p>A partition is split into segments of about 1 GB. To serve a fetch for offset 4,712,345, the broker picks the segment from the file names, then uses a sparse index with one entry per 4 KB of data, about 250,000 entries or 2 MB, which fits in memory. A <a href="/algorithms/binary-search.html">binary search</a> finds the nearest entry in about 18 steps, and the broker scans forward less than 4 KB from there.</p>
 
-<p><strong>Retention and compaction.</strong> Retention deletes a closed segment once its newest record is 7 days old: a file delete, not a rewrite. Where only the latest value per key matters (a user's address, consumer offsets), <strong>compaction</strong> rewrites old segments keeping the last record per key. A <em>tombstone</em> (empty value) deletes a key and is itself removed after a grace period, so slow readers still see the delete.</p>
+<p>There are two ways to remove old data. With time-based retention, the broker deletes a closed segment once its newest record is older than seven days. This is a cheap file delete. With compaction, for topics where only the latest value for each key matters (such as the consumer offsets), a background job rewrites old segments and keeps the last record for each key.</p>
 
-<h3>Replication and what "acknowledged" means</h3>
+<h3>Replication and what an acknowledgement means</h3>
 
-<p>The leader tracks which followers are caught up, within say 10 seconds: the <strong>in-sync replicas</strong> (ISR). The <strong>high watermark</strong> is the highest offset every ISR member has; consumers see only records below it. The producer picks how long to wait with <code>acks</code>:</p>
+<p>Each partition is copied to three brokers so that one machine failing loses nothing. The leader tracks which followers are caught up, for example within the last 10 seconds; these and the leader are the in-sync replicas (ISR). The high watermark is the highest offset that every member of the ISR has stored, and consumers can only read below it. This means a consumer never reads a record that could vanish if the leader failed. The producer chooses how long to wait through the <code>acks</code> setting, and there are three options.</p>
+
+<p>With <code>acks=0</code> the producer does not wait, so a crash loses messages unnoticed. With <code>acks=1</code> the producer waits for the leader alone, about 1 to 2 ms, so a message acknowledged just before the leader fails can be lost. With <code>acks=all</code> the leader acknowledges only after every ISR member has the batch, which costs the latency of the slowest in-sync follower.</p>
 
 <x-tradeoffs caption="What the producer waits for">
 <script type="application/json">
 {
   "options": [
-    { "name": "acks=0", "good": "Lowest latency; no waiting.", "bad": "Any network error or broker crash loses messages silently.", "pick": "Metrics or logs where a small loss is fine." },
-    { "name": "acks=1", "good": "One round trip to the leader, about 1 to 2 ms.", "bad": "If the leader dies before followers copy it, an acknowledged message is lost.", "pick": "High-volume events where losing a few on failover is fine." },
-    { "name": "acks=all, min ISR 2", "good": "An acknowledged record is on every in-sync replica, at least 2. One broker can die with no loss.", "bad": "Waits for the slowest in-sync follower. With only 1 in sync, writes are refused.", "pick": "Orders, payments, anything that must not vanish.", "default": true }
+    { "name": "acks=0", "good": "It has the lowest latency because the producer does not wait.", "bad": "Any network error or broker crash loses messages silently.", "pick": "Metrics or logs where a small loss is fine." },
+    { "name": "acks=1", "good": "It needs one round trip to the leader, about 1 to 2 ms.", "bad": "If the leader dies before the followers copy the batch, an acknowledged message is lost.", "pick": "High-volume events where losing a few messages during a failover is acceptable." },
+    { "name": "acks=all, min ISR 2", "good": "An acknowledged record is on at least 2 brokers, so one broker can die without any loss.", "bad": "It waits for the slowest in-sync follower, and writes are refused when only one replica is in sync.", "pick": "Orders, payments and anything that must not vanish.", "default": true }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>Be exact. With 3 replicas, <code>acks=all</code> and a minimum ISR of 2, an acknowledged record is in the log of at least 2 brokers: in their page cache, not necessarily on disk. Durability comes from copies failing independently, so use different racks or zones. Without the minimum, the ISR could shrink to the leader alone, and <code>acks=all</code> would quietly mean <code>acks=1</code>.</p>
+<p>The choice is <code>acks=all</code> with a minimum ISR of 2, because acknowledged messages must not be lost. Without the minimum, the ISR could shrink to the leader alone, and <code>acks=all</code> would quietly behave like <code>acks=1</code>. With it, the broker returns <code>NOT_ENOUGH_REPLICAS</code> instead of accepting a write held by one machine.</p>
 
-<p><strong>The controller.</strong> A quorum of 3 nodes keeps the metadata in a consensus log, spots dead brokers, picks leaders from the ISR, and records ISR changes. Each new leader gets a higher <strong>leader epoch</strong>, and brokers reject requests with an older one. This fences a zombie leader: cut off from the controller, it cannot shrink the ISR, so it cannot acknowledge an <code>acks=all</code> write alone. With <code>acks=1</code> it can, and those writes are cut off when it rejoins.</p>
+<p>An acknowledged record is in the log of at least two brokers, but possibly only in their page cache and not yet on disk. The safety comes from the copies failing independently, so the replicas belong in different racks or zones.</p>
 
-<p>If every ISR member dies, either wait for one to return (unavailable, no loss) or let an out-of-sync replica lead (available, acknowledged records lost). Wait, by default.</p>
+<p>The controller is a quorum of three nodes that stores the cluster metadata in a consensus log. It detects dead brokers, chooses new leaders from the ISR and records every change of the ISR. Each new leader gets a higher leader epoch, and brokers reject requests that carry an older epoch. This fences a zombie leader, a broker that was replaced but does not know it yet. The followers have moved on, so the zombie cannot collect <code>acks=all</code> acknowledgements, although with <code>acks=1</code> it can still acknowledge writes that are later discarded.</p>
+
+<p>If every member of the ISR dies, there are two options. The cluster can wait for one of them to come back, which keeps the topic unavailable but loses nothing. Or it can let an out-of-sync replica become leader, which restores availability but loses acknowledged records that replica never received. Waiting is safer.</p>
 
 <h3>Ordering and producing without duplicates</h3>
 
-<p>Order is per partition, chosen by hashing the key. Retries can break it: batch 42 fails, 43 succeeds, then 42 lands after 43. And a retry after a lost acknowledgement writes a duplicate.</p>
+<p>Order is guaranteed only within a partition, and the partition is chosen by hashing the key, so all messages with one key stay in order. Retries can break this: if batch 42 fails after batch 43 was already sent, batch 42 lands after 43. A retry after a lost acknowledgement can also write a batch twice.</p>
 
-<p>The <strong>idempotent producer</strong> fixes both. Each producer has an id and numbers its batches per partition. The broker remembers the last few sequence numbers per producer: a repeat gets the original offset, and a gap (43 before 42) is rejected so the producer resends in order. A restarted producer gets a new id, so its resends slip through unless it keeps a stable id. See <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a>.</p>
+<p>The idempotent producer solves both problems. Every producer has an id and numbers its batches for each partition. The broker remembers the last few sequence numbers for each producer. If it sees a sequence number it already has, it returns the original offset without writing again. If it sees a gap, such as 43 arriving before 42, it rejects the batch, and the producer resends in order. See <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a>.</p>
 
-<h3>Consumer groups, offsets and delivery</h3>
+<h3>Consumer groups, offsets and delivery guarantees</h3>
 
-<p>When a member joins, leaves or misses heartbeats, the group coordinator <strong>rebalances</strong>. Each assignment has a <strong>generation</strong>, and commits from an old one are rejected, so a consumer that paused for a minute cannot overwrite its successor's position. Prefer a <strong>cooperative</strong> rebalance, which pauses only the partitions changing owner, not all 32.</p>
+<p>Within a group, each partition is read by exactly one member, so a topic has at most as many busy consumers as partitions. When a member joins, leaves or stops sending heartbeats, the group coordinator rebalances the assignment. Every assignment has a generation number, and the broker rejects commits that carry an old generation. A consumer that paused for a minute and was replaced therefore cannot overwrite its successor's position. A cooperative rebalance pauses only the partitions that change owner.</p>
 
-<p>Commit after processing for <strong>at-least-once</strong>: with commits every 5 seconds, a dead consumer's last 5 × 2,500 = 12,500 messages are processed again. For <strong>exactly-once within the log</strong>, a consumer that writes to another topic commits its output and offsets in one transaction, and readers of committed data never see a half-done result. That promise ends at the log: an email or external database write still needs idempotent processing.</p>
+<p>The time at which a consumer commits its offset decides the delivery guarantee. Committing after processing gives at-least-once delivery. If the consumer dies, it restarts from the last commit, and with commits every 5 seconds and a consumer handling 2,500 messages a second, up to 5 × 2,500 = 12,500 messages are processed again. So processing must be idempotent.</p>
 
-<x-callout type="mistake" title="Committing before the work is done">
-<p>A timer auto-commit can commit offset 5,001 while message 5,000 is still in progress. If the consumer then dies, 5,000 is skipped forever. Commit only finished work.</p>
-</x-callout>
+<p>Exactly-once is possible inside the log. A consumer that reads from one topic and writes to another can commit its output messages and its input offsets in a single transaction, and readers configured to see only committed data never observe a half-finished result. The promise ends at the edge of the log: sending an email or writing to an external database is not covered, and those side effects still need idempotent handling.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (1 GB/s in, 1.8 PB a week) disks run out first: 1.8 PB ÷ 12 TB = 150 brokers, about 200 with headroom. Move segments older than a day to cheaper <a href="/system-design/blob-storage.html">object storage</a>; the same tiering keeps data for a year. Hot keys stay hot partitions. A consumer replaying last week evicts recent data from the page cache, so cap replay bandwidth per client.</p>
+<p>At 10 times the load, which is 1 GB/s of input and 1.8 PB of disk for a week, disk runs out first. 1.8 PB ÷ 12 TB is 150 brokers, or about 200 with headroom. Segments older than a day can move to cheaper <a href="/system-design/blob-storage.html">object storage</a>. A hot key still maps to a single partition, which can then become much busier than the rest. A consumer that replays last week's data pushes recent data out of the page cache, so replay bandwidth per client should be capped.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A leader broker</td><td>Its partitions refuse writes for a few seconds.</td><td>The controller promotes ISR members; producers retry without duplicates.</td></tr>
-<tr><td>A follower</td><td>It drops out of the ISR; writes continue with 2 in sync.</td><td>Replace it; it copies the log and rejoins. A second loss blocks writes, not reads.</td></tr>
-<tr><td>A controller node</td><td>Nothing, with 2 of 3 alive.</td><td>Replace it. Losing 2 freezes leader changes; leaders keep serving.</td></tr>
-<tr><td>A slow consumer</td><td>Lag grows; producers are unaffected.</td><td>Alert on lag. Past 7 days it gets <code>OFFSET_OUT_OF_RANGE</code>.</td></tr>
-<tr><td>A whole zone</td><td>One replica of each partition is gone.</td><td>Spread replicas over 3 zones, so 2 in-sync copies remain.</td></tr>
+<tr><td>A leader broker</td><td>Its partitions refuse writes for a few seconds.</td><td>The controller promotes an in-sync follower, and producers retry without creating duplicates.</td></tr>
+<tr><td>A follower broker</td><td>It leaves the ISR, and writes continue with two replicas in sync.</td><td>Replace it, and it copies the log and rejoins. A second failure blocks writes but not reads.</td></tr>
+<tr><td>A controller node</td><td>Nothing changes while two of the three nodes are alive.</td><td>Replace it. If two fail, leader changes freeze.</td></tr>
+<tr><td>A slow consumer</td><td>Its lag grows, and producers are not affected.</td><td>Alert on lag. After 7 days of lag, its fetch returns <code>OFFSET_OUT_OF_RANGE</code>.</td></tr>
+<tr><td>A whole zone</td><td>One replica of every partition is gone.</td><td>With replicas spread over 3 zones, two in-sync copies remain and writes continue.</td></tr>
 </tbody>
 </table>
 
@@ -330,39 +311,39 @@ consumer offsets                      an internal topic, compacted
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Stores messages in a database table and deletes them once read.</td></tr>
-<tr><td>Mid</td><td>An append-only log with partitions and offsets, disks sized from retention, replicas, order per partition.</td></tr>
-<tr><td>Senior</td><td>Explains why sequential writes are fast, defines the ISR and high watermark, states exactly what <code>acks=all</code> guarantees, fences zombies with epochs and generations, and says what exactly-once does not cover.</td></tr>
+<tr><td>Junior</td><td>Stores messages in a database table and deletes each one after it is read.</td></tr>
+<tr><td>Mid-level</td><td>Designs an append-only log with partitions and offsets, sizes the disks from retention, and adds replicas.</td></tr>
+<tr><td>Senior</td><td>Explains why sequential writes are fast, defines the ISR, states exactly what <code>acks=all</code> guarantees and what breaks it, fences old leaders with epochs, and says what exactly-once does not cover.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="What does acks=all promise?" tone="strong">
-<x-interviewer>With acks=all, can an acknowledged message be lost?</x-interviewer>
-<x-you>With a minimum ISR of 2, only if both copies fail before either flushes, so replicas go in separate zones. Two settings lose it anyway: letting an out-of-sync replica lead, or a minimum of 1.</x-you>
-<x-interviewer>Why not fsync every message?</x-interviewer>
-<x-you>It caps each disk at its sync rate and adds milliseconds to every write. Independent copies buy more safety per millisecond.</x-you>
-<x-coach>The guarantee, its preconditions, and the two settings that quietly break it.</x-coach>
+<x-interviewer>With acks=all, can an acknowledged message still be lost?</x-interviewer>
+<x-you>With a minimum ISR of 2, it is lost only if both brokers holding it fail before either flushes it to disk, which is why the replicas go in separate zones. Two settings lose it anyway: allowing an out-of-sync replica to become leader, and setting the minimum ISR to 1.</x-you>
+<x-interviewer>Why not call fsync on every message?</x-interviewer>
+<x-you>It limits each disk to its sync rate and adds milliseconds to every write, and copies on independent machines give more safety for less latency.</x-you>
+<x-coach>It states the guarantee, its conditions and the settings that break it.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>Why not use a database table as the queue?</h3>
-<p>Every consume becomes an update or delete, and consumers fight over the same rows. A log only appends, and each group's position is one number per partition.</p>
+<p>Every consume becomes an update or a delete, and consumers compete for the same rows. A log only appends, and several groups can read and replay the same data.</p>
 
 <h3>How do you add partitions to a busy topic?</h3>
-<p>It changes <code>hash(key) mod n</code>, so a key's new events land in a different partition from its old ones and order breaks. Size for future load, or migrate to a new topic.</p>
+<p>Adding partitions changes the result of <code>hash(key) mod n</code>, so new messages for a key go to a different partition from its older messages, and the order for that key breaks. Choose the partition count for next year's load at the start, or migrate to a new topic.</p>
 
-<h3>How do you support many small topics?</h3>
-<p>Each partition costs files, index memory and metadata. Share partitions across tenants with a key prefix, or cap partitions per broker.</p>
+<h3>What happens to a consumer group that is far behind?</h3>
+<p>Producers are not affected, because each group reads at its own offset. The group reads older segments from disk instead of the page cache, which is slower. If its lag exceeds the retention period, the data it needs is deleted and it gets <code>OFFSET_OUT_OF_RANGE</code>, so it must restart from the earliest or latest available offset.</p>
 
 <x-checklist title="Self-review: distributed message queue">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked queue or log, and order global or per key", "I got message rate, size, retention and reading groups"] },
-    { "title": "Numbers and interfaces", "items": ["I sized disk from rate × retention × copies, and brokers from disk", "I sized partitions from consumer throughput, with growth", "I chose pull with long polling and said why"] },
-    { "title": "Design and depth", "items": ["I explained segments, the sparse index and why sequential writes are fast", "I defined the ISR and the high watermark", "I stated what acks=all with a minimum ISR guarantees, and what breaks it", "I made producer retries safe with ids and sequence numbers", "I explained rebalancing, generations and when to commit offsets", "I separated exactly-once in the log from side effects outside it"] },
-    { "title": "Failure", "items": ["I walked through a leader failover without losing acknowledged records", "I said what happens to a consumer that falls past retention"] }
+    { "title": "Before drawing", "items": ["I asked whether it is a queue or a log, and whether order is global or per key", "I got the message rate, message size, retention and number of reading groups"] },
+    { "title": "Numbers and interfaces", "items": ["I sized the disk from rate × retention × copies, and the brokers from the disk", "I chose pull with long polling and said why"] },
+    { "title": "Design and depth", "items": ["I explained segments, the sparse index and why sequential writes are fast", "I defined the ISR and the high watermark", "I stated what acks=all with a minimum ISR guarantees, and what breaks it", "I made producer retries safe with producer ids and sequence numbers", "I explained rebalancing, generations and when to commit offsets", "I separated exactly-once inside the log from side effects outside it"] },
+    { "title": "Failure", "items": ["I walked through a leader failover without losing acknowledged records", "I said what happens to a consumer that falls behind past the retention period"] }
   ]
 }
 </script>

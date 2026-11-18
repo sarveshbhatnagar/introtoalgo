@@ -1,24 +1,50 @@
 <!--
 {
   "title": "API Design",
-  "description": "Design endpoints the way interviewers expect: REST resources, cursor pagination, idempotency keys, versioning, errors, and when RPC or events fit.",
-  "minutes": 14,
+  "description": "How to design REST endpoints, pagination, idempotency keys, versioning and errors, when RPC, GraphQL or events fit better, and what interviewers ask.",
+  "minutes": 18,
   "tags": ["interview", "api", "rest", "idempotency"]
 }
 -->
-<p>A diner taps "Book" for 4 people at 19:30. The server books a table, but the phone loses signal before the reply arrives. The app times out and retries, and the server books a second table. If 0.5% of the <a href="/system-design/requirements-and-scope.html">reservation system</a>'s 1 million daily bookings lose their reply, that is 1,000,000 × 0.005 = 5,000 duplicates a day.</p>
+<p>An API is the contract between a service and its clients: which requests a client may send, what each request does, and what comes back. In an interview, designing the API means choosing the resources, the request style, how long lists are paged, how failed requests are retried safely, how errors are reported and how the API changes over time. These are the parts that are expensive to change once clients depend on them.</p>
 
-<p>That is an API design bug. Settle the parts that are expensive to change: resources, paging, retries, errors, versions.</p>
+<p>Without these decisions, ordinary network behaviour turns into bugs. If a phone sends a booking request and loses signal before the reply arrives, the app times out and retries, and a server that treats every request as new creates a second booking. A list that is paged by position shows the same item twice when a new item is added between two page loads.</p>
 
 <x-callout type="tip" title="Optional in the interview">
-<p>Write out the API only if the interviewer asks, an API choice shapes the design, or time permits. Otherwise name the main calls in a sentence and move on.</p>
+<p>The "Define the API" step is optional. Write it out when the interviewer asks for it, when an API choice shapes the design, or when you have time left. Otherwise name the main calls in one sentence and move on to the data model and the architecture.</p>
 </x-callout>
 
-<h2>Resources and methods</h2>
+<h2>Where the API sits</h2>
 
-<p>Each functional requirement becomes an endpoint. In REST, URLs name things (nouns) and HTTP methods say what you do to them. The full version below is for when the interviewer digs in; <a href="#in-the-interview">in the interview</a> you write far less.</p>
+<x-arch caption="Clients call the public API through a gateway; services call each other with RPC or publish events to a queue.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Mobile app / browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "gw", "label": "API gateway", "kind": "gateway", "col": 1, "row": 1 },
+    { "id": "svc", "label": "Reservation service", "kind": "service", "col": 2, "row": 1 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 3, "row": 0 },
+    { "id": "queue", "label": "Event queue", "kind": "queue", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "gw", "label": "REST over HTTPS" },
+    { "from": "gw", "to": "svc", "label": "RPC" },
+    { "from": "svc", "to": "db" },
+    { "from": "svc", "to": "queue", "label": "publish event", "style": "async" }
+  ]
+}
+</script>
+</x-arch>
 
-<x-code single title="Reservation API (version 1)">
+<p>The public API is the hardest to change because you do not control the clients. The examples in this lesson use a restaurant reservation service where diners search for free times, book a table and list their bookings.</p>
+
+<h2>REST resources and methods</h2>
+
+<p>In a REST API the URL names a thing, such as a reservation or a restaurant, and the HTTP method says what to do with it. Use plural nouns for collections (<code>/reservations</code>) and put the id after the collection (<code>/reservations/r-5521</code>). A verb in the URL, such as <code>/createReservation</code>, is a sign that the resources were not worked out, because the method already is the verb.</p>
+
+<p>The methods differ in how safe they are to repeat. <code>GET</code> only reads, so repeating it changes nothing. <code>PUT</code> replaces a resource with the body you send and <code>DELETE</code> removes it, so doing either twice leaves the same state as doing it once. <code>POST</code> creates a new resource each time, so repeating it creates a second one. This difference decides which calls need the idempotency keys described below.</p>
+
+<x-code single title="Reservation API, version 1">
 <pre lang="text">
 GET    /v1/restaurants/{id}/availability?date=2026-12-04&party_size=4
          200  { "slots": [ { "time": "19:00", "tables_free": 2 }, ... ] }
@@ -35,13 +61,11 @@ GET    /v1/users/me/reservations?limit=20&cursor=...
 </pre>
 </x-code>
 
-<p>The client asks for a time and party size; the server picks a free table. So a blind retry books a second table instead of failing.</p>
-
-<p>Methods differ on retries. <code>GET</code> changes nothing. <code>PUT</code> and <code>DELETE</code> are idempotent: twice leaves the same state as once. <code>POST</code> creates something new each time, so repeating it is dangerous.</p>
+<p>The client sends a time and a party size, and the server chooses which table to assign. Because the client does not name a table, a blind retry would book a second table, which is why the booking call needs a key.</p>
 
 <h2>Idempotency keys</h2>
 
-<p>The fix: the client generates a unique key per user action (a random UUID when the diner taps "Book") and sends it with every retry of that action. The server stores each key with its response, and answers a repeat with the stored response instead of booking again.</p>
+<p>An idempotency key lets a client retry a request that changes data without the change happening twice. The client generates a unique key, usually a random UUID, once for each user action, for example when the diner taps "Book", and sends it in a header with every attempt of that action. The server stores each key together with the response it produced. When a request arrives with a key it has already seen, the server returns the stored response and does not run the action again.</p>
 
 <x-tracer title="A booking, a lost reply, a safe retry">
 <script type="application/json">
@@ -64,27 +88,27 @@ GET    /v1/users/me/reservations?limit=20&cursor=...
       "vars": { "key": "6f1c", "bookings": 0 }
     },
     {
-      "caption": "In one transaction the API inserts the key (only if absent), books table 7 and stores the response. A crash leaves all three or none.",
+      "caption": "In one transaction the API inserts the key (only if it is absent), books table 7 and stores the response. A crash leaves all three or none.",
       "arch": { "active": ["api", "db", ["api", "db"]], "notes": { "db": "6f1c → r-5521" } },
       "vars": { "key": "6f1c", "bookings": 1 }
     },
     {
-      "caption": "The reply is lost. After a timeout the app cannot know whether the booking happened.",
+      "caption": "The reply is lost on the way back. After a timeout the app cannot know whether the booking happened.",
       "arch": { "fail": [["api", "app"]], "mark": ["db"] },
       "vars": { "key": "6f1c", "bookings": 1 }
     },
     {
-      "caption": "The app retries with the same key and body. A new key here would book a second table.",
+      "caption": "The app retries with the same key and the same body. A new key here would book a second table.",
       "arch": { "active": ["app", ["app", "api"]], "mark": ["db"] },
       "vars": { "key": "6f1c", "bookings": 1 }
     },
     {
-      "caption": "The key insert finds <code>6f1c</code> already stored. Nothing is booked.",
+      "caption": "The key insert finds <code>6f1c</code> already stored, so nothing is booked.",
       "arch": { "active": ["db", ["api", "db"]], "notes": { "db": "6f1c seen" } },
       "vars": { "key": "6f1c", "bookings": 1 }
     },
     {
-      "caption": "The API replays the stored <code>201</code> with <code>r-5521</code>. One booking, one table.",
+      "caption": "The API replays the stored <code>201</code> response with <code>r-5521</code>. The result is one booking and one table.",
       "arch": { "active": [["api", "app"]], "mark": ["app", "db"] },
       "vars": { "key": "6f1c", "bookings": 1, "status": 201 }
     }
@@ -93,127 +117,122 @@ GET    /v1/users/me/reservations?limit=20&cursor=...
 </script>
 </x-tracer>
 
-<p>Details interviewers check:</p>
+<p>The key is stored in the same database transaction as the booking. In a separate cache, a crash between the two writes would leave a booking with no key, and the retry would book again.</p>
 
-<ul>
-<li>A repeat arriving while the first still runs must not run in parallel. The key row is claimed first, so the second waits or gets a "still in progress" error.</li>
-<li>The same key with a different body is a client bug: reject it with 422.</li>
-<li>Keep keys longer than any client retries (24 hours is typical).</li>
-</ul>
-
-<p>The network can still deliver a request twice; the key makes the <em>effect</em> happen once (see <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>).</p>
+<p>Three details come up in interviews. If a retry arrives while the first attempt is still running, the second request must not run in parallel, so the first attempt claims the key row before doing any work, and the second waits or receives a "request in progress" error. If the same key arrives with a different body, the client has a bug, and the server rejects the request with a 422 instead of replaying an unrelated response. Keys are kept for longer than any client keeps retrying, which is typically 24 hours. <a href="/system-design/idempotency-and-retries.html">Idempotency and retries</a> covers this in more depth.</p>
 
 <h2>Pagination</h2>
 
-<p>A diner's reservation history grows, so return it in pages of 20.</p>
+<p>An endpoint that returns a list must return it in pages, because the list can grow without limit and a single response with every item would be slow and large. There are two common ways to ask for the next page.</p>
 
-<ul>
-<li><strong>Offset</strong>: <code>?offset=20&amp;limit=20</code> means "sort, skip 20, take 20". An item added while the diner pages shifts everything, so items repeat. And the database still reads every skipped row.</li>
-<li><strong>Cursor</strong>: the response includes <code>next_cursor</code>, an opaque token holding the last item's sort key, such as <code>(created_at, id)</code>. The next query asks for items after it, which an index answers directly; inserts elsewhere shift nothing.</li>
-</ul>
+<h3>Offset pagination</h3>
 
-<x-tradeoffs caption="Two ways to page a list">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Offset and limit",
-      "good": "Simple. Lets a user jump to page 37.",
-      "bad": "Items repeat or vanish when the list changes. Deep pages get slower.",
-      "pick": "Small, stable lists, or an admin table that needs page numbers."
-    },
-    {
-      "name": "Cursor",
-      "good": "Stable while the list changes. Every page costs the same.",
-      "bad": "No jumping to page N. The sort needs a unique tiebreaker such as the id.",
-      "pick": "Feeds, histories, any growing list. The usual interview answer.",
-      "default": true
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>The client sends <code>?offset=40&amp;limit=20</code>, and the server sorts the list, skips 40 items and returns the next 20. It is simple, and it lets a user jump straight to page 37.</p>
 
-<h2>Errors and versioning</h2>
+<p>It has two problems. If an item is added or removed while the user is paging, every later item shifts by one position, so the next page repeats an item the user has already seen or skips one. The second problem is cost: to return rows 100,000 to 100,019, the database still reads and discards the first 100,000 rows, so each page is slower than the one before it. Offset paging suits small, stable lists.</p>
 
-<p>The status code gives the category, the body the detail: <code>{"error": {"code": "slot_taken", "message": "Table 7 was just booked", "retryable": false}}</code>. The app reacts to <code>code</code> (show other times) and <code>retryable</code>. 4xx means the client must change something; 5xx and 429 may succeed later, with backoff.</p>
+<h3>Cursor pagination</h3>
 
-<p>Adding a field is safe; clients ignore what they do not know. Removing, renaming or redefining one breaks apps that live on phones for years. For a public API, put a major version in the path (<code>/v1/</code>), and run old and new side by side until the old one's traffic fades.</p>
+<p>The response includes a <code>next_cursor</code>, an opaque token that encodes the sort key of the last item returned, for example its <code>(created_at, id)</code>. The client sends the token back to get the next page, and the server asks the database for the items after that key. An index on the sort columns answers this directly, so every page costs the same no matter how deep it is, and a new item inserted elsewhere in the list does not shift the pages.</p>
 
-<h2>When REST is the wrong shape</h2>
+<x-code single title="The query behind a cursor">
+<pre lang="sql">
+SELECT * FROM reservations
+WHERE user_id = 7
+  AND (created_at, id) < ('2026-11-02 18:40:00', 'r-5521')   -- values decoded from the cursor
+ORDER BY created_at DESC, id DESC
+LIMIT 21;   -- one extra row tells the server whether another page exists
+</pre>
+</x-code>
 
-<x-tradeoffs caption="Request styles">
+<p>Two details matter. The sort must end with a unique column such as the id, because otherwise items with the same timestamp can be skipped or repeated at a page boundary. And the client cannot jump to page N. Cursor pagination is the usual answer for any list that grows.</p>
+
+<h2>Error responses</h2>
+
+<p>The HTTP status code gives the category of the failure and the response body gives the detail. A 4xx status means the client sent something that must change before the request can succeed: 400 or 422 for an invalid request, 404 for a missing resource, and 409 when the request conflicts with the current state, such as booking a slot that was just taken. A 5xx status means the server failed, and 429 means the client is sending too many requests. Both may succeed on a later retry, and 429 should carry a <code>Retry-After</code> header.</p>
+
+<p>The body should have a stable shape that programs can read, for example <code>{"error": {"code": "slot_taken", "message": "Table 7 was just booked", "retryable": false}}</code>. The client reacts to the machine-readable <code>code</code>, such as offering other times, and uses <code>retryable</code> to decide whether to try again. Use the same format on every endpoint.</p>
+
+<h2>Versioning</h2>
+
+<p>Adding a field to a response is safe, because clients ignore fields they do not know. Removing a field, renaming it or changing its meaning breaks existing clients, and mobile apps stay installed for years. A breaking change therefore needs a new version. The most common approach is to put the major version in the path, as in <code>/v1/reservations</code>, because it is easy to see and route. Run both versions side by side until the old one has little traffic left, then retire it.</p>
+
+<h2>When REST is not the best fit</h2>
+
+<p>REST over HTTP is the default for public APIs. The alternatives below fit specific situations, and an interviewer who asks about them wants to hear which situation, not a feature list.</p>
+
+<h3>RPC and gRPC</h3>
+
+<p>In an RPC style, the client calls a named operation on a server, such as <code>ReserveTable(request)</code>, and the request and response types are defined in a schema file. A framework such as gRPC generates typed client and server code from that schema and sends compact binary messages over a persistent HTTP/2 connection. It fits high-volume calls between your own services, because it is faster than JSON and the generated code catches contract mismatches at build time. Browsers cannot call it directly without a proxy, and third-party developers expect REST.</p>
+
+<h3>GraphQL</h3>
+
+<p>With GraphQL the server publishes one endpoint and a typed schema, and the client sends a query that lists exactly the fields it wants, including related objects. A screen that needs a reservation and its restaurant gets both in one round trip. It fits an API whose many clients need different shapes of the same data. It costs more on the server: a client can write an expensive query, so you need depth and cost limits, and plain HTTP caching of GET requests no longer works because every request is a POST to one URL.</p>
+
+<h3>Events</h3>
+
+<p>Sometimes nobody needs a reply. When a booking is confirmed, the email service and the analytics pipeline need to know, but the booking request should not wait for them. The reservation service publishes a "booking confirmed" event to a <a href="/system-design/message-queues-and-streams.html">queue or stream</a>, and each consumer reads it on its own schedule. The cost is that there is no direct response, and consumers can receive the same event twice and must handle that.</p>
+
+<x-tradeoffs caption="Summary of the request styles">
 <script type="application/json">
 {
   "options": [
     {
       "name": "REST over HTTP",
-      "good": "Every client understands it. Browsers and CDNs can cache GETs.",
-      "bad": "Loose contracts without a schema. Chatty for complex reads.",
-      "pick": "Public and mobile APIs. The default.",
+      "good": "Every client understands it, and browsers and CDNs can cache GET requests.",
+      "bad": "The contract is loose without a schema, and complex screens need several calls.",
+      "pick": "Public and mobile APIs. This is the default.",
       "default": true
     },
     {
-      "name": "RPC (gRPC, for example)",
-      "good": "Typed, generated client code and compact binary messages.",
-      "bad": "Browsers need a proxy. Harder to inspect by hand.",
-      "pick": "High-volume internal service-to-service calls."
+      "name": "RPC (gRPC)",
+      "good": "It has typed, generated clients and compact binary messages.",
+      "bad": "Browsers need a proxy, and it is harder to inspect by hand.",
+      "pick": "High-volume calls between internal services."
+    },
+    {
+      "name": "GraphQL",
+      "good": "Each client fetches exactly the fields it needs in one request.",
+      "bad": "Expensive queries need limits, and HTTP caching is lost.",
+      "pick": "Many clients that need different shapes of the same data."
     },
     {
       "name": "Events on a queue",
-      "good": "The sender does not wait or know who listens. Add consumers freely.",
-      "bad": "No direct reply. Consumers must handle ordering and duplicates.",
-      "pick": "Others react to an event: a booking triggers an email and analytics."
+      "good": "The sender does not wait, and consumers can be added freely.",
+      "bad": "There is no direct reply, and consumers must handle duplicates and ordering.",
+      "pick": "Other systems need to react to something that happened."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
+<h2>Problems interviewers probe</h2>
+
+<h3>Two requests change the same resource at once</h3>
+
+<p>Two users editing the same record can silently overwrite each other if each sends a full update. The fix is optimistic concurrency: the server returns a version number or an <code>ETag</code> with the resource, the client sends it back in an <code>If-Match</code> header with the update, and the server rejects the update with 412 (or 409) if the version has changed.</p>
 
 <h2>In the interview</h2>
 
-<p>You have a minute or two. Write the 2 or 3 core calls, one line each. Skip bodies and error cases unless asked:</p>
+<p>Name the two or three core calls in a sentence each, and then spend your words on the one decision that changes the design. Choose REST by default, cursor pagination for any list that grows, and an idempotency key for any call that creates something and that clients retry. Give the reason in one clause, for example "booking is retried on bad networks, so it takes an idempotency key".</p>
 
-<x-code single title="What you actually write">
-<pre lang="text">
-GET  /restaurants/{id}/availability   open slots
-POST /reservations                   book (idempotency key)
-GET  /me/reservations?cursor=        my bookings, paged
-</pre>
-</x-code>
-
-<p>Then one sentence on the decision that changes the design, if there is one:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li>"Booking is a POST that clients retry on bad networks, so it takes an idempotency key."</li>
-<li>"History changes while you scroll, so I'll page it with a cursor."</li>
-<li>"Public clients get REST; booking emits an event for the email service, so it never waits for an email."</li>
+<li><strong>"Who generates the idempotency key?"</strong> The client generates it, once per user action and before the first attempt. A key made by the server cannot recognise a retry, because the retry has no way to know the key from a reply it never received.</li>
+<li><strong>"Offset or cursor pagination?"</strong> Cursor for anything that grows or changes while it is read, because the pages stay correct and every page costs the same. Offset only for small, stable lists or when the user must jump to a page number.</li>
+<li><strong>"How do you change the API without breaking clients?"</strong> Make additive changes whenever possible, because clients ignore new fields. For a breaking change, add a new major version in the path, run both versions together and retire the old one when its traffic is gone.</li>
+<li><strong>"Would you use GraphQL or gRPC?"</strong> I would use REST for the public API. gRPC is a good choice between internal services that call each other at a high rate, and GraphQL is worth it only when many clients need different shapes of the same data, because of its query cost and caching problems.</li>
 </ul>
 
 <x-interview title="Defending the booking endpoint" tone="strong">
 <x-interviewer>Why not just check for a duplicate reservation before inserting?</x-interviewer>
-<x-you>The original and a retry can both check, find nothing, and insert. And "same diner, same time" is not always a duplicate: someone might book for two groups. The key marks exactly which request is a retry, and commits with the booking.</x-you>
-<x-coach>It names the race in the alternative and why the key avoids it.</x-coach>
+<x-you>The original request and a retry can both run the check at the same time, find nothing, and both insert. An idempotency key identifies exactly which request is a retry, and I store it in the same transaction as the booking with a unique constraint, so only one of the two can succeed.</x-you>
+<x-interviewer>What does the second request return?</x-interviewer>
+<x-you>If the first one has finished, it gets the stored response, the same 201 and the same reservation id. If the first one is still running, it gets a "request in progress" error and retries after a short delay.</x-you>
+<x-coach>The candidate names the race in the simpler alternative, explains where the key is stored, and describes both outcomes of a retry.</x-coach>
 </x-interview>
-
-<p>Expected follow-ups:</p>
-
-<ul>
-<li><strong>"Who generates the key?"</strong> The client, once per action, before the first attempt. A server-made key cannot recognize a retry.</li>
-<li><strong>"How do you rate limit this API?"</strong> Per user or API key, returning 429 with <code>Retry-After</code> (see <a href="/system-design/rate-limiting.html">rate limiting</a>).</li>
-<li><strong>"Would you use GraphQL?"</strong> Only if many screens need different shapes of the same data.</li>
-</ul>
-
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Verbs in URLs">
-<p><code>POST /createReservation</code> and <code>GET /getUserReservations</code> hide the resources. Use <code>POST /reservations</code> and <code>GET /users/me/reservations</code>: the method is the verb.</p>
-</x-callout>
-
-<x-callout type="mistake" title="Storing the key outside the transaction">
-<p>Key in a cache, booking in the database: a crash between them books with no key, and the retry books again. Use one transaction.</p>
-</x-callout>
 
 <x-quiz>
 <script type="application/json">
@@ -224,23 +243,23 @@ GET  /me/reservations?cursor=        my bookings, paged
       "options": [
         { "text": "Exactly the next 20 items", "why": "Offsets count from the top, and the top just moved." },
         { "text": "The last item of page 1 again, at the top of page 2", "correct": true, "why": "Everything shifted down by one, so position 21 holds the old 20th item." },
-        { "text": "An error", "why": "Nothing fails; the result is silently wrong." }
+        { "text": "An error", "why": "Nothing fails, and the result is silently wrong." }
       ]
     },
     {
       "question": "Which request is safe for a client to retry with no extra mechanism?",
       "options": [
         { "text": "<code>POST /v1/reservations</code>", "why": "Each POST creates a new reservation." },
-        { "text": "<code>DELETE /v1/reservations/r-5521</code>", "correct": true, "why": "Deleting twice leaves the same state as once. The second call may return 404, but nothing new happens." },
-        { "text": "<code>POST /v1/payments</code>", "why": "Repeating it could charge twice. It needs an idempotency key even more." }
+        { "text": "<code>DELETE /v1/reservations/r-5521</code>", "correct": true, "why": "Deleting twice leaves the same state as deleting once. The second call may return 404, but nothing new happens." },
+        { "text": "<code>POST /v1/payments</code>", "why": "Repeating it could charge twice, so it needs an idempotency key even more." }
       ]
     },
     {
-      "question": "A list is sorted by an indexed column. With <code>offset=100000&amp;limit=20</code>, about how many rows does the database read?",
+      "question": "Where should the idempotency key be stored?",
       "options": [
-        { "text": "20", "why": "That is what a cursor query reads. Offset still reads the rows it skips." },
-        { "text": "About 100,000", "correct": true, "why": "100,000 skipped plus 20 returned: 100,020 rows." },
-        { "text": "Every row in the table", "why": "Walking the index, it stops after offset + limit rows." }
+        { "text": "In a cache, because it is fast", "why": "A crash between the booking and the cache write leaves a booking with no key, and the retry books again." },
+        { "text": "In the same database transaction as the booking", "correct": true, "why": "The key and the booking are then saved together or not at all." },
+        { "text": "In the client only", "why": "The server cannot recognise a retry if it never saw the key." }
       ]
     }
   ]
@@ -248,6 +267,6 @@ GET  /me/reservations?cursor=        my bookings, paged
 </script>
 </x-quiz>
 
-<h2>What to practice next</h2>
+<h2>What to practise next</h2>
 
-<p><a href="/system-design/data-modeling.html">Data Modeling</a> turns these endpoints' queries into tables and keys.</p>
+<p><a href="/system-design/data-modeling.html">Data Modeling</a> turns these endpoints' queries into tables and keys, and <a href="/system-design/idempotency-and-retries.html">Idempotency and Retries</a> goes deeper into making repeated requests safe.</p>

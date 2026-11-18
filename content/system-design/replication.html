@@ -1,26 +1,41 @@
 <!--
 {
   "title": "Replication",
-  "description": "Keep copies of data on several machines: leader-follower, multi-leader and quorums, sync vs async, replication lag, read-your-writes and failover.",
-  "minutes": 13,
+  "description": "How replication keeps copies of data on several machines, how single-leader, multi-leader and leaderless setups differ, and what interviewers ask.",
+  "minutes": 18,
   "tags": ["databases", "replication", "building blocks", "availability"]
 }
 -->
-<p>A shop's only database server loses its disk at 14:00. The last backup is from 02:00: 12 hours of orders are gone. Restoring the 2 TB backup at 200 MB/s takes 2 × 10<sup>12</sup> ÷ 2 × 10<sup>8</sup> = 10,000 seconds, nearly 3 hours of downtime.</p>
+<p>Replication means keeping copies of the same data on several machines, so that every change made on one machine is also applied to the others. It is used so that data survives the loss of a machine, so that another copy can take over when a machine fails, and so that reads can be spread over several machines. The cost is that the copies can briefly disagree, so most replication decisions are about how long they may disagree and who is allowed to see it.</p>
 
-<p>With a second server receiving every change live, the same failure costs under a second of writes and a minute of downtime.</p>
+<p>Without replication, a database on one machine is a single point of failure. If its disk fails, everything since the last backup is lost, and restoring a large backup can take hours of downtime. That machine also serves every read, so reads can overload it even when nothing has failed.</p>
 
-<h2>The idea</h2>
+<h2>Where replication sits</h2>
 
-<p>Replication keeps copies of the data on several machines (replicas), shipping each change through a log. You get <strong>durability</strong> (a dead disk loses nothing), <strong>availability</strong> (another replica takes over), and <strong>read capacity</strong> (reads spread across copies).</p>
+<x-arch caption="Writes go to one primary database, and the changes are copied to replicas that serve reads.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Client", "kind": "client", "col": 0, "row": 1 },
+    { "id": "app", "label": "App servers", "kind": "service", "col": 1, "row": 1, "stack": true },
+    { "id": "primary", "label": "Primary database", "kind": "database", "col": 2, "row": 0 },
+    { "id": "replica", "label": "Replicas", "kind": "database", "col": 2, "row": 2, "stack": true }
+  ],
+  "edges": [
+    { "from": "client", "to": "app" },
+    { "from": "app", "to": "primary", "label": "writes" },
+    { "from": "app", "to": "replica", "label": "reads" },
+    { "from": "primary", "to": "replica", "label": "change log" }
+  ]
+}
+</script>
+</x-arch>
 
-<p>The cost: for a while after each write, replicas disagree. Most replication decisions are about how long that gap is and who can see it.</p>
+<h2>Single-leader replication</h2>
 
-<h2>Leader and followers</h2>
+<p>In single-leader replication, also called leader-follower or primary-replica, one node is the leader and accepts every write. It appends each change to a log and sends the log to the followers, which apply the changes in the same order. Reads can go to the leader or to any follower. Because one machine orders all writes there are no write conflicts, which is why single-leader is the default choice.</p>
 
-<p>One <strong>leader</strong> accepts all writes and streams its log to <strong>followers</strong>, which apply it in order. Reads can go to any of them.</p>
-
-<x-tracer title="A write, a stale read, and a failover">
+<x-tracer title="A write, a stale read and a fix">
 <script type="application/json">
 {
   "arch": {
@@ -42,94 +57,81 @@
   },
   "steps": [
     {
-      "caption": "A user renames their profile to \"Mo\". The write goes to leader A.",
+      "caption": "A user renames their profile to Mo, and the write goes to leader A.",
       "arch": { "active": ["user", "a", ["user", "app"], ["app", "a"]], "notes": { "a": "name = Mo" } },
       "vars": { "A log": 1042, "B log": 1041, "C log": 1041 }
     },
     {
-      "caption": "A commits and replies at once. Replication is asynchronous: A does not wait for B or C.",
+      "caption": "A commits and replies at once, because replication is asynchronous and A does not wait for B or C.",
       "arch": { "active": [["a", "app"], ["app", "user"]], "mark": ["a"] },
       "vars": { "A log": 1042, "B log": 1041, "C log": 1041 }
     },
     {
-      "caption": "The user reloads. The read hits follower C, which lacks entry 1042: the old name. That is replication lag.",
+      "caption": "The user reloads the page and the read goes to follower C, which has not yet applied entry 1042, so it returns the old name. This is replication lag.",
       "arch": { "active": ["c", ["app", "c"]], "notes": { "c": "old name" } },
       "vars": { "A log": 1042, "B log": 1041, "C log": 1041 }
     },
     {
-      "caption": "Fix, read-your-writes: the app remembers the user wrote at position 1042 and sends their reads to the leader until a follower catches up.",
+      "caption": "To fix it, the app remembers that this user wrote at position 1042 and sends their reads to the leader until a follower has caught up to that position.",
       "arch": { "active": ["a", ["app", "a"]], "notes": { "a": "name = Mo" } },
       "vars": { "A log": 1042, "B log": 1041, "C log": 1041 }
-    },
-    {
-      "caption": "300 ms later, both followers have 1042.",
-      "arch": { "active": [["a", "b"], ["a", "c"]], "mark": ["b", "c"] },
-      "vars": { "A log": 1042, "B log": 1042, "C log": 1042 }
-    },
-    {
-      "caption": "A takes 5 more writes, up to 1047, and dies. B has applied up to 1045, C to 1044. Writes fail.",
-      "arch": { "fail": ["a"], "dim": [["a", "b"], ["a", "c"]] },
-      "vars": { "A log": 1047, "B log": 1045, "C log": 1044 }
-    },
-    {
-      "caption": "After 10 seconds without a heartbeat from A, the most up-to-date follower, B, is promoted. Entries 1046 and 1047 never left A: 2 acknowledged writes are lost.",
-      "arch": { "fail": ["a"], "active": ["b"], "notes": { "b": "new leader" } },
-      "vars": { "lost writes": 2, "B log": 1045 }
-    },
-    {
-      "caption": "Writes go to B; C follows B. A restarted A must rejoin as a follower and discard 1046 and 1047. Acting as leader, it would accept conflicting writes: split brain.",
-      "arch": { "fail": ["a"], "active": ["b", "c", ["app", "b"]], "notes": { "b": "leader", "c": "follows B" } },
-      "vars": { "lost writes": 2, "B log": 1045 }
     }
   ]
 }
 </script>
 </x-tracer>
 
-<h3>Synchronous or asynchronous</h3>
+<p>The limit of single-leader replication is that every write goes through one machine, so followers add read capacity but no write capacity. When the leader fails, a follower has to be promoted, as described under failover below.</p>
 
-<ul>
-<li><strong>Synchronous</strong>: the leader waits for a follower's confirmation before replying "saved". Failover loses no acknowledged write, but each write pays a round trip and stalls if that follower is down.</li>
-<li><strong>Asynchronous</strong>: writes never wait, but failover loses whatever had not shipped, as in the tracer.</li>
-</ul>
+<h2>Synchronous, asynchronous and semi-synchronous replication</h2>
 
-<p>The usual middle ground: one synchronous follower, the rest asynchronous. If the synchronous one fails, another takes its role.</p>
+<p>This choice decides whether the leader waits for followers before it tells the client that a write succeeded.</p>
 
-<h2>Three ways to arrange replicas</h2>
+<h3>Synchronous replication</h3>
 
-<x-tradeoffs caption="Replication topologies">
+<p>With synchronous replication the leader waits until a follower confirms it has stored the change, and only then replies to the client. An acknowledged write therefore exists on at least two machines, so losing the leader cannot lose it. The cost is one extra round trip per write, and the leader cannot accept writes while that follower is down, so one slow follower stalls everything if all followers are synchronous.</p>
+
+<h3>Asynchronous replication</h3>
+
+<p>With asynchronous replication the leader replies as soon as it has stored the change itself and ships it to the followers afterwards. Writes are fast and a dead follower does not affect them. The followers are always slightly behind, and if the leader fails, changes that had not been shipped are lost even though the client was told they succeeded.</p>
+
+<h3>Semi-synchronous replication</h3>
+
+<p>Semi-synchronous replication makes one follower synchronous and the rest asynchronous. Every acknowledged write is on the leader and on at least one follower, and the write waits for only one follower. If the synchronous follower becomes slow or dies, an asynchronous one takes its place. Use it when acknowledged writes must not be lost, such as for payments, and use plain asynchronous replication when a few lost writes are tolerable, such as for likes.</p>
+
+<h2>Multi-leader replication</h2>
+
+<x-arch caption="Each region has its own leader that accepts local writes, and the leaders send their changes to each other.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "Leader-follower",
-      "good": "One place orders all writes, so no conflicts. Reads scale with followers.",
-      "bad": "Write capacity is one machine. Careless failover loses writes or makes two leaders.",
-      "pick": "Almost always. The usual interview answer.",
-      "default": true
-    },
-    {
-      "name": "Multi-leader",
-      "good": "Each region (or device) writes locally: fast, and survives a region outage.",
-      "bad": "Two leaders can change the same row at once; you must resolve conflicts, and last-writer-wins silently drops one.",
-      "pick": "Writes in several regions that must not cross an ocean, or offline-first apps."
-    },
-    {
-      "name": "Leaderless (quorums)",
-      "good": "Any replica takes writes; no failover. Tolerates slow or dead nodes.",
-      "bad": "Every read and write contacts several nodes. Concurrent writes conflict.",
-      "pick": "Highly available key-value or wide-column stores; some staleness is fine."
-    }
+  "nodes": [
+    { "id": "eu-users", "label": "EU users", "kind": "client", "col": 0, "row": 0 },
+    { "id": "us-users", "label": "US users", "kind": "client", "col": 0, "row": 2 },
+    { "id": "eu", "label": "EU leader", "kind": "database", "col": 1, "row": 0 },
+    { "id": "us", "label": "US leader", "kind": "database", "col": 1, "row": 2 }
+  ],
+  "edges": [
+    { "from": "eu-users", "to": "eu", "label": "local writes" },
+    { "from": "us-users", "to": "us", "label": "local writes" },
+    { "from": "eu", "to": "us", "arrow": "both", "label": "async replication", "style": "async" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<h3>Quorums: why R + W &gt; N</h3>
+<p>In multi-leader replication several nodes accept writes and forward their changes to the other leaders. The usual setup is one leader per region. A user writes to the nearest leader, so writes are fast, and a region can go offline while the others keep accepting writes.</p>
 
-<p>In a leaderless store each key lives on <strong>N</strong> replicas. A write succeeds once <strong>W</strong> confirm; a read asks <strong>R</strong> and keeps the highest version. If R + W &gt; N, every read set overlaps every write set, so a read always reaches the latest successful write. That needs a strict quorum: if stand-in nodes accept writes while owners are down (a "sloppy" quorum), reads can miss the write until it is handed back.</p>
+<p>The price is write conflicts. Two users can change the same row in different regions at the same time, and each leader accepts its own write before it learns about the other, so the database needs a rule for the final value, as described below. Choose multi-leader only when writes must be local to several regions or must work offline.</p>
 
-<x-tracer title="N = 3, W = 2, R = 2">
+<h2>Leaderless replication</h2>
+
+<p>In a leaderless system, such as a Dynamo-style key-value store, a coordinator sends each write to several replicas at once and any replica can accept it. There is no leader, so there is no failover: if a replica is down, the others carry on.</p>
+
+<h3>Quorums and why R + W &gt; N</h3>
+
+<p>Each key is stored on N replicas. A write succeeds when W replicas confirm it, and a read asks R replicas and takes the newest version. If R + W &gt; N, any set of R replicas shares at least one replica with any set of W replicas, so every read reaches a replica that has the latest successful write.</p>
+
+<x-tracer title="A quorum write and read with N = 3, W = 2, R = 2">
 <script type="application/json">
 {
   "arch": {
@@ -149,32 +151,22 @@
   },
   "steps": [
     {
-      "caption": "A client writes <code>x = v2</code> to all 3 replicas, which hold <code>v1</code>.",
-      "arch": { "active": ["client", ["client", "coord"], ["coord", "r1"], ["coord", "r2"], ["coord", "r3"]] },
-      "vars": { "N": 3, "W": 2, "R": 2 }
-    },
-    {
-      "caption": "Replicas 1 and 2 confirm; replica 3 is unreachable. 2 confirmations = W: success.",
+      "caption": "A write of x = v2 reaches replicas 1 and 2, and replica 3 is unreachable. Two confirmations equal W, so the write succeeds.",
       "arch": { "mark": ["r1", "r2"], "fail": [["coord", "r3"]], "notes": { "r1": "v2", "r2": "v2", "r3": "v1" } },
       "vars": { "N": 3, "W": 2, "R": 2, "acks": 2 }
     },
     {
-      "caption": "A read asks replicas 2 and 3. They disagree: <code>v2</code> and <code>v1</code>.",
+      "caption": "A read asks replicas 2 and 3, and they disagree: replica 2 returns v2 and replica 3 returns v1.",
       "arch": { "active": ["r2", "r3", ["coord", "r2"], ["coord", "r3"]], "notes": { "r1": "v2", "r2": "v2", "r3": "v1" } },
       "vars": { "N": 3, "W": 2, "R": 2, "answers": "v2, v1" }
     },
     {
-      "caption": "Any 2 of 3 overlap any other 2 of 3, since 2 + 2 = 4 &gt; 3, so one answer is always new. The coordinator returns the higher version, <code>v2</code>.",
+      "caption": "Any 2 replicas out of 3 overlap with any other 2, because 2 + 2 = 4 is greater than 3, so one answer is always the latest. The coordinator returns the higher version, v2.",
       "arch": { "active": [["coord", "client"]], "mark": ["client"], "notes": { "r1": "v2", "r2": "v2", "r3": "v1" } },
       "vars": { "N": 3, "W": 2, "R": 2, "returned": "v2" }
     },
     {
-      "caption": "It writes <code>v2</code> back to replica 3 (read repair).",
-      "arch": { "active": [["coord", "r3"]], "mark": ["r1", "r2", "r3"], "notes": { "r1": "v2", "r2": "v2", "r3": "v2" } },
-      "vars": { "N": 3, "W": 2, "R": 2 }
-    },
-    {
-      "caption": "Contrast W = 1, R = 1: 1 + 1 = 2, not more than 3. A write to replica 1 alone, then a read of replica 3, returns <code>v1</code>. Faster, and stale.",
+      "caption": "With W = 1 and R = 1 the sum is 2, which is not greater than 3. A write that reached only replica 1 followed by a read of replica 3 returns the stale v1.",
       "arch": { "active": ["r3", ["coord", "r3"]], "notes": { "r1": "v2", "r3": "v1 (stale)" } },
       "vars": { "N": 3, "W": 1, "R": 1, "returned": "v1" }
     }
@@ -183,59 +175,97 @@
 </script>
 </x-tracer>
 
-<p>R + W &gt; N guarantees overlap, not the behaviour of one up-to-date copy (linearizability). A quorum does not stop:</p>
-<ul>
-<li>Concurrent writes to one key: both succeed; the store must merge or pick one.</li>
-<li>A write that reached fewer than W replicas reports failure but may still be read later.</li>
-<li>Mid-write, one reader sees the new value and a later reader the old.</li>
-</ul>
+<p>W = N with R = 1 makes reads fast but lets one dead replica block every write, and W = 1 with R = N does the opposite. A majority for both W and R tolerates a minority of replicas being down.</p>
 
-<h2>Numbers worth remembering</h2>
+<h3>What a quorum does not guarantee</h3>
 
-<ul>
-<li>Lag within a region: well under a second when healthy; seconds to minutes for an overloaded follower.</li>
-<li>A synchronous write adds one round trip: about 0.5 ms in a data center, 50 to 150 ms between continents.</li>
-<li>Async failover loses about write rate × lag. Detection takes seconds; shorter timeouts replace leaders that were only slow.</li>
-</ul>
+<p>R + W &gt; N guarantees overlap, but it does not make the system behave like one up-to-date copy. Concurrent writes to the same key can both succeed, so the store still needs a conflict rule. A write that reached fewer than W replicas is reported as failed but can still be seen by later reads. With a <strong>sloppy quorum</strong>, which accepts writes on stand-in nodes when the owners are unreachable, a read may miss the write until the stand-in hands the data back.</p>
 
-<x-estimate title="What an async failover loses">
+<x-tradeoffs caption="Summary of the three arrangements">
 <script type="application/json">
 {
-  "question": "The leader dies with followers about half a second behind. How many acknowledged writes are lost?",
-  "givens": ["2,000 writes a second at peak", "Replication is asynchronous", "The best follower lags 0.5 seconds"],
-  "unit": "count",
-  "answer": "1,000",
-  "accept": ["300", "3,000"],
-  "steps": ["Writes in the unshipped window: 2,000 a second × 0.5 s", "= 1,000 acknowledged writes lost"],
-  "note": "Fine for likes. For payments, use a synchronous follower."
+  "options": [
+    {
+      "name": "Single-leader",
+      "good": "There are no write conflicts, and reads scale with followers.",
+      "bad": "Writes are limited to one machine, and failover can lose writes.",
+      "pick": "Almost every system, and the usual interview answer.",
+      "default": true
+    },
+    {
+      "name": "Multi-leader",
+      "good": "Each region writes locally and survives other regions failing.",
+      "bad": "Concurrent writes to the same data conflict and must be resolved.",
+      "pick": "Local writes in several regions, or offline-first apps."
+    },
+    {
+      "name": "Leaderless",
+      "good": "There is no failover, and slow or dead nodes are tolerated.",
+      "bad": "Every operation contacts several nodes, and concurrent writes conflict.",
+      "pick": "Highly available key-value stores that tolerate stale reads."
+    }
+  ]
 }
 </script>
-</x-estimate>
+</x-tradeoffs>
+
+<h2>Problems that interviewers ask about</h2>
+
+<h3>Replication lag and what users see</h3>
+
+<p>With asynchronous replication a follower can be behind the leader, by milliseconds normally and by minutes if it is overloaded. Three guarantees cover the cases users notice.</p>
+
+<p><strong>Read-your-writes</strong> means a user always sees their own changes. The fix is to read from the leader for data the user has modified, for a short time after each write or until a follower reaches the log position of that write.</p>
+
+<p><strong>Monotonic reads</strong> means a user never sees data go backwards. Without it, one read can reach an up-to-date follower and the next a lagging one, so a comment appears and then disappears. The fix is to send each user's reads to the same replica, chosen by hashing the user id.</p>
+
+<p><strong>Consistent prefix reads</strong> means readers see related writes in the order they happened, so an answer never appears before its question. This matters mostly in sharded databases, where shards replicate at different speeds.</p>
+
+<h3>Failover, promotion and split brain</h3>
+
+<p>When the leader fails, the system must detect the failure, choose a new leader and point clients at it. Detection is usually a timeout without heartbeats: a short timeout replaces leaders that were only slow, and a long one leaves the system without writes for longer. The new leader should be the follower with the most complete log. With asynchronous replication, writes that the old leader had acknowledged but not shipped to that follower are lost.</p>
+
+<p><strong>Split brain</strong> happens when two nodes both believe they are the leader and both accept writes. The standard defence is to elect the leader through a consensus service that issues an increasing term number, and to make storage reject writes carrying an older term, which is called fencing. The old leader rejoins as a follower and discards log entries the new leader never received. See <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>.</p>
+
+<h3>Conflict resolution in multi-leader and leaderless systems</h3>
+
+<p>When two writes to the same data happen concurrently, the system needs a rule for the final value. There are four common approaches.</p>
+
+<ul>
+<li><strong>Avoid conflicts.</strong> Route all writes for a given record to the same leader, for example by assigning each user a home region. This is the simplest approach and works whenever the data has a natural owner.</li>
+<li><strong>Last write wins.</strong> Each write gets a timestamp and the highest one is kept. It is simple, but it silently discards the other write, and clocks differ between machines, so the winner may not be the later write.</li>
+<li><strong>Keep both versions.</strong> The store detects concurrent writes, for example with version vectors, and returns both to the application, which merges them. A shopping cart can merge by taking the union of items.</li>
+<li><strong>Merge automatically.</strong> Data types called CRDTs, such as counters and sets, combine concurrent updates without conflicts. Collaborative editors use this idea.</li>
+</ul>
+
+<h3>Read replicas help reads, not writes</h3>
+
+<p>Adding followers is the standard way to scale reads. It does nothing for write capacity, because every write still goes to the leader and must be applied on every follower. Lagging followers also serve stale data, so the fixes above are needed. When writes or data size exceed one machine, use <a href="/system-design/sharding-and-partitioning.html">sharding</a>, so that different leaders own different parts of the data.</p>
 
 <h2>In the interview</h2>
 
-<p>Bring up replication for "must not lose data", "highly available", or reads that swamp one server. Say which topology, sync or async, and how reads after a write behave.</p>
+<p>Bring up replication when the data must not be lost, the service must stay available, or reads exceed what one database serves. Name the arrangement, say whether it is synchronous, and say how a user who has just written reads their own data. The default is single-leader with one synchronous follower and the rest asynchronous.</p>
 
-<x-interview title="Replicating a profile service">
-<x-interviewer>Your database is a single point of failure. Fix it.</x-interviewer>
-<x-you>Leader-follower with two followers: one synchronous, so an acknowledged write is always on two machines, one asynchronous. Followers spread our 20,000 reads a second.</x-you>
-<x-interviewer>A user edits their profile and sees the old one. Why?</x-interviewer>
-<x-you>Their read hit a lagging follower. I'd send a user's reads to the leader for a few seconds after they write. Others seeing it 300 ms late is fine.</x-you>
-<x-coach>It names the guarantee and who needs it.</x-coach>
-</x-interview>
-
-<p>Follow-ups to expect:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do you avoid two leaders after failover?"</strong> Elect leaders through a consensus service with term numbers; storage rejects writes with an old term (fencing). See <a href="/system-design/consensus-and-leader-election.html">consensus and leader election</a>.</li>
-<li><strong>"Isn't replication a backup?"</strong> No: a bad <code>DELETE</code> replicates in milliseconds. Keep point-in-time backups too.</li>
+<li><strong>"What happens to writes when the leader dies?"</strong> A follower is promoted after a few seconds of detection and an election. With asynchronous replication, writes that had not reached that follower are lost, so use a synchronous follower when that is not acceptable.</li>
+<li><strong>"A user saves a change and then sees the old data. Why?"</strong> The read went to a follower that had not applied the write yet. Fix it with read-your-writes by sending that user's reads to the leader shortly after they write.</li>
+<li><strong>"How do you avoid two leaders after a failover?"</strong> Elect the leader through a consensus service that issues term numbers, and have storage reject writes from an older term. The old leader rejoins as a follower and drops writes the new leader does not have.</li>
+<li><strong>"Why does R + W &gt; N give you the latest value?"</strong> Any read set and any write set share at least one replica, so a read always reaches a replica with the latest successful write. It does not stop concurrent writes from conflicting, and a sloppy quorum weakens the overlap.</li>
+<li><strong>"How do you handle conflicting writes in two regions?"</strong> First avoid them by giving each record one home region. Otherwise use a merge that fits the data, such as a union for sets, and avoid last write wins where updates must not be lost.</li>
+<li><strong>"Will adding read replicas fix a write bottleneck?"</strong> No, because every write is applied on every replica. Writes need sharding to spread over several leaders.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Treating a quorum as full consistency">
-<p>R + W &gt; N gives overlap, not conflict resolution. Name your rule for concurrent writes; last-writer-wins silently drops one.</p>
-</x-callout>
+<x-interview title="Replicating a profile service" tone="strong">
+<x-interviewer>Your database is a single point of failure. How would you fix that?</x-interviewer>
+<x-you>I would use single-leader replication with two followers. One follower is synchronous, so every acknowledged write exists on two machines, and the other is asynchronous. The followers also take over most of the read traffic.</x-you>
+<x-interviewer>A user edits their profile and then sees the old version. What is going on?</x-interviewer>
+<x-you>Their read went to a follower that had not yet applied the write. I would send that user's reads to the leader for a few seconds after they write. Other users seeing the new profile a few hundred milliseconds late is fine.</x-you>
+<x-interviewer>What if the leader fails?</x-interviewer>
+<x-you>The synchronous follower has every acknowledged write, so I would promote it through a consensus-based election that issues a new term number. The old leader is then fenced off, and it rejoins as a follower if it comes back.</x-you>
+<x-coach>The candidate names the guarantee each user needs, says who needs it, and explains why the failover loses no acknowledged write.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
@@ -244,17 +274,17 @@
     {
       "question": "A leaderless store keeps N = 5 copies and writes with W = 3. What is the smallest R that guarantees reads overlap the latest successful write?",
       "options": [
-        { "text": "2", "why": "2 + 3 = 5, not more than 5. Two replicas that missed the write could answer." },
-        { "text": "3", "correct": true, "why": "3 + 3 = 6 &gt; 5, so every read set overlaps every write set." },
-        { "text": "5", "why": "Not the smallest, and one dead replica blocks every read." }
+        { "text": "2", "why": "2 + 3 = 5, which is not greater than 5, so two replicas that both missed the write could answer." },
+        { "text": "3", "correct": true, "why": "3 + 3 = 6 is greater than 5, so every read set shares a replica with every write set." },
+        { "text": "5", "why": "It also works, but it is not the smallest, and one dead replica would block every read." }
       ]
     },
     {
-      "question": "A user posts a comment and the reloaded page lacks it. Which fix targets this directly?",
+      "question": "A user posts a comment and the reloaded page does not show it. Which fix targets this problem directly?",
       "options": [
-        { "text": "Make all replication synchronous", "why": "It slows every write for everyone to fix one user's view." },
-        { "text": "Read-your-writes: route that user's reads to the leader briefly after they write", "correct": true, "why": "Only the writer needs fresh data, and only briefly." },
-        { "text": "Add more followers", "why": "Followers add read capacity, not freshness." }
+        { "text": "Make all replication synchronous", "why": "That slows every write for everyone in order to fix one user's view." },
+        { "text": "Route that user's reads to the leader for a short time after they write", "correct": true, "why": "Only the writer needs fresh data, and only until the followers catch up." },
+        { "text": "Add more followers", "why": "More followers add read capacity but do not make any of them more up to date." }
       ]
     }
   ]
@@ -264,4 +294,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Replication copies all data to every replica; when data is too big for one machine, split it with <a href="/system-design/sharding-and-partitioning.html">sharding</a>. The guarantees here are made precise in <a href="/system-design/cap-and-consistency.html">CAP and consistency</a>, and a quorum store is built end to end in <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>
+<p>For data too large for one leader, read <a href="/system-design/sharding-and-partitioning.html">Sharding and Partitioning</a>. The guarantees here are defined precisely in <a href="/system-design/cap-and-consistency.html">CAP and Consistency</a>, and a quorum store is built end to end in <a href="/system-design/design-a-key-value-store.html">Design a Key-Value Store</a>.</p>

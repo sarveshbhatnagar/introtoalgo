@@ -1,42 +1,48 @@
 <!--
 {
   "title": "Design Ticket Booking",
-  "description": "Sell seats for a popular event without selling one twice: seat holds that expire, locking choices, a virtual waiting room for the spike, and payment.",
-  "minutes": 29,
+  "description": "How a ticket booking system avoids selling a seat twice, holds seats while fans pay, handles a spike with a waiting room, and what interviewers ask.",
+  "minutes": 27,
   "kind": "design",
   "tags": ["case study", "concurrency", "locking", "traffic spikes", "waiting room"]
 }
 -->
-<p>A band announces one stadium show, on sale Friday at 10:00. At 9:59 two million fans are on the page, and there are 50,000 seats. Within minutes, each seat must go to exactly one person, everyone who pays must get a seat, and the site must stay up.</p>
+<p>A ticket booking system lets people browse events, choose seats on a seat map, pay, and receive tickets. Its central rule is that each seat is sold to exactly one buyer, and everyone who pays must end up with a ticket or a refund.</p>
 
-<p>The normal day is easy. The hard parts: two people clicking one seat in the same second, a huge spike at one moment, and a payment that takes minutes while the seat stays reserved. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>Interviewers ask this question because three hard problems appear together: several buyers can try to take the same seat at once, demand for a popular event arrives in one spike, and a seat must stay reserved for minutes while the buyer pays. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a ticket booking system for concerts and sports.</x-interviewer>
-<x-you>Are seats assigned, like row C seat 12, or is it general admission?</x-you>
-<x-interviewer>Assigned seats. Fans pick from a seat map.</x-interviewer>
-<x-you>How big is a big on-sale: seats, and people arriving at once?</x-you>
-<x-interviewer>The biggest shows have about 50,000 seats and two million people waiting at 10:00. The platform sells about 5 million orders a month.</x-interviewer>
-<x-you>Then the steady load is small and the on-sale is the problem. My priorities: never sell a seat twice, never take money without issuing a ticket, and stay up during the spike, even if people wait in line. A fan gets a few minutes to pay after picking seats.</x-you>
-<x-coach>Ranking correctness above speed and saying a queue is acceptable shapes the whole design.</x-coach>
+<x-you>Are the seats assigned, like row C seat 12, or is it general admission with no specific seat?</x-you>
+<x-interviewer>The seats are assigned, and fans choose them from a seat map.</x-interviewer>
+<x-you>How big is the largest on-sale, in seats and in people arriving at the same time?</x-you>
+<x-interviewer>The biggest shows have about 50,000 seats and two million people waiting when sales open. The platform sells about 5 million orders a month.</x-interviewer>
+<x-you>Then the normal load is small and the on-sale is the real problem. My priorities are that no seat is sold twice, that we never take money without giving a ticket, and that the site stays up during the spike, even if people have to wait in a line. I will also assume a fan gets about ten minutes to pay after choosing seats.</x-you>
+<x-coach>Ranking correctness above speed, and saying that a waiting line is acceptable, shapes the whole design.</x-coach>
 </x-interview>
 
+<p><strong>Functional requirements:</strong></p>
 <ul>
-<li><strong>Functional:</strong> browse events and a live seat map; hold seats for a few minutes; pay and get tickets; release unpaid seats.</li>
-<li><strong>Non-functional:</strong> no seat sold twice (strong consistency on inventory); a paid order always ends with tickets or a refund; stay up when demand is 80 times supply; holds last 10 minutes.</li>
-<li><strong>Out of scope:</strong> resale, dynamic pricing, event creation, ticket scanning at the door.</li>
+<li>Fans can browse events, see a live seat map, hold seats for a few minutes, pay, and receive tickets.</li>
+<li>Seats that are held but never paid for are released automatically.</li>
 </ul>
+
+<p><strong>Non-functional requirements:</strong></p>
+<ul>
+<li>A seat is never sold twice, so inventory needs strong consistency, and a paid order always ends with tickets or a refund.</li>
+<li>The system stays available when demand is about 80 times the supply of seats.</li>
+<li>A hold lasts 10 minutes.</li>
+</ul>
+
+<p><strong>Out of scope:</strong> resale, dynamic pricing, event creation and scanning tickets at the door.</p>
 
 <h2>Estimate the scale</h2>
 
-<ul>
-<li><strong>Normal day:</strong> 5 million orders a month ÷ 2.6 million seconds ≈ 2 a second. Browsing at 100 times that is 200 reads a second. One database handles it.</li>
-<li><strong>On-sale demand:</strong> 50,000 seats at about 2 per order is 25,000 orders: 80 fans per order. Most leave with nothing and must be told fast.</li>
-<li><strong>Without control:</strong> two million fans refreshing every 5 seconds is 2,000,000 ÷ 5 = 400,000 requests a second, all at one event's 50,000 rows.</li>
-<li><strong>Storage:</strong> 100,000 events a year × 2,000 seats × 100 B = 20 GB of seats; 60 million orders × 1 KB = 60 GB. Size is not the problem; contention is.</li>
-</ul>
+<p>On a normal day, 5 million orders a month is 5,000,000 ÷ 2,600,000 seconds, about 2 orders a second. Browsing at 100 times that is 200 reads a second, which one database handles easily. The numbers that matter are the ones for an on-sale.</p>
+
+<p>A 50,000-seat show sells about 25,000 orders at 2 seats per order, so with two million people waiting there are about 80 fans for every order. If each of those fans refreshed the page every 5 seconds without any control, the load would be 2,000,000 ÷ 5 = 400,000 requests a second, all aimed at the same 50,000 seat rows. Storage is small, so the difficulty is contention on a few rows and not size. If waiting fans check their place every 10 seconds, two million fans send 2,000,000 ÷ 10 = 200,000 requests a second, which is far too much for a database, so the waiting room must answer without one.</p>
 
 <x-estimate title="How fast to let fans in">
 <script type="application/json">
@@ -47,32 +53,17 @@
   "answer": "33/s",
   "accept": ["10/s", "100/s"],
   "steps": ["Each slot frees up every 300 seconds", "10,000 slots ÷ 300 s ≈ 33 fans a second, about 2,000 a minute"],
-  "note": "At 33 a second, 25,000 orders sell out in about 25,000 ÷ 33 ≈ 750 seconds, roughly 12 minutes, if everyone admitted buys."
-}
-</script>
-</x-estimate>
-
-<x-estimate title="Polling load from the waiting room">
-<script type="application/json">
-{
-  "question": "Two million fans wait, each browser checking its place every 10 seconds. How many requests per second?",
-  "givens": ["2 million fans waiting", "One check per fan every 10 seconds"],
-  "unit": "count/s",
-  "answer": "200 thousand/s",
-  "accept": ["60 thousand/s", "600 thousand/s"],
-  "choices": ["2 thousand/s", "20 thousand/s", "200 thousand/s", "2 million/s"],
-  "steps": ["2,000,000 ÷ 10 s = 200,000 requests a second"],
-  "note": "Too much for any database, so the waiting room must answer without one."
+  "note": "At this rate 25,000 orders sell out in about 750 seconds, roughly 12 minutes."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write endpoints to join the line, load the seat map, hold seats and pay. What comes back when seats are gone?</p>
+<p>Write the endpoints to join the line, load the seat map, hold seats and pay. What should come back when the seats have already been taken?</p>
 </x-task>
 <x-answer>
-<p>Join returns a place in line; a hold creates an order with an expiry; paying confirms it. The key error, "those seats were just taken", returns fresh availability so the fan can pick again.</p>
+<p>Joining returns a place in line, holding seats creates an order with an expiry time, and paying confirms it. When seats are gone, the error should include current availability so the fan can choose again.</p>
 </x-answer>
 </x-tryit>
 
@@ -96,27 +87,27 @@ GET  /events/{id}/seats?section=C           needs a pass
 POST /events/{id}/holds                     needs a pass
   body: { "seat_ids": ["C-12", "C-13"] }
   201 { "order_id": "9001", "held_until": "10:31:04" }
-  409 Conflict      one or more seats are taken; body lists them
+  409 Conflict      one or more seats are taken; the body lists them
 
 POST /orders/{id}/pay    Idempotency-Key: 9001
   200 { "status": "paid", "tickets": [...] }
-  402 Payment Required   card declined; the hold stays until it expires
+  402 Payment Required   the card was declined; the hold stays until it expires
   410 Gone               the hold expired before payment started
 
 DELETE /orders/{id}                         release a hold early
 </pre>
 </x-code>
 
-<p>The decision worth arguing is the waiting-room status. Each fan's ticket carries their number, so the server publishes one number per event, "admitted up to 40,500". Every fan gets the same tiny response, so a CDN caching it for a second absorbs nearly all 200,000 requests a second.</p>
+<p>The API decision worth arguing about is the waiting-room status endpoint. The server publishes a single number per event, such as "admitted up to 40,500", and each fan compares it with the position in their own ticket. Every fan receives the same small response, so a CDN that caches it for one second absorbs nearly all of the 200,000 requests a second.</p>
 
-<p>Make <code>pay</code> safe to retry with an <a href="/system-design/idempotency-and-retries.html">idempotency key</a> (the order id), so a double-click on "Pay" never charges twice.</p>
+<p>The <code>pay</code> endpoint uses an <a href="/system-design/idempotency-and-retries.html">idempotency key</a>, the order id, so a double-click or a client retry never charges the card twice.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch the records for seats and orders. How does a hold disappear on its own if the fan walks away?</p>
+<p>Sketch the records for seats and orders. How can a hold disappear on its own if the fan walks away?</p>
 </x-task>
 <x-answer>
-<p>Put the hold on the seat row: a status, the holding order, and a <code>held_until</code> time. The claim query treats an expired hold as free, so nothing has to run for it to lapse.</p>
+<p>Store the hold on the seat row as a status, the holding order and a <code>held_until</code> time. The claim query treats an expired hold as free, so no background job has to run for the hold to lapse.</p>
 </x-answer>
 </x-tryit>
 
@@ -130,7 +121,7 @@ seats
   section      VARCHAR(8)
   price_cents  INT
   status       VARCHAR(10)     -- available | held | sold
-  order_id     BIGINT NULL     -- who holds or owns it
+  order_id     BIGINT NULL     -- the order that holds or owns it
   held_until   TIMESTAMP NULL
   PRIMARY KEY (event_id, seat_id)
 
@@ -145,22 +136,22 @@ orders
 </pre>
 </x-code>
 
-<p>Claiming several seats is all-or-nothing across rows: a <strong>relational database with transactions</strong>, partitioned by <code>event_id</code> when one machine is not enough. A key-value store does single-row conditional writes, not an atomic claim of two seats.</p>
+<p>Claiming two seats must succeed or fail as a unit, so the inventory belongs in a relational database with transactions, partitioned by <code>event_id</code> when one machine is not enough. A key-value store can do a conditional write on one row, but it cannot claim two seats atomically.</p>
 
-<p>Hold the seat in the row, not in a database lock: database locks last milliseconds, and a fan takes minutes to pay.</p>
+<p>The hold is stored in the seat row instead of being a database lock, because a database lock lasts for milliseconds while a fan takes minutes to pay.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch the boxes: where fans wait, what checks they were admitted, where the seat map comes from, and where holds and sales are written.</p>
+<p>Sketch the boxes. Where do fans wait, what checks that they were admitted, where does the seat map come from, and where are holds and sales written?</p>
 </x-task>
 <x-answer>
-<p>A waiting room served mostly from a CDN; a gateway that checks signed passes without a database call; a booking service over a seat map cache and the inventory database; a payment processor.</p>
+<p>A waiting room served from a CDN, a gateway that checks a signed pass, a booking service in front of a seat map cache and the inventory database, and a payment processor.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="Fans wait in a cheap waiting room. Only admitted fans, carrying a signed pass, reach the booking service and the inventory database.">
+<x-arch caption="Fans wait in a cheap waiting room, and only admitted fans carrying a signed pass reach the booking service and the inventory database.">
 <script type="application/json">
 {
   "nodes": [
@@ -185,7 +176,7 @@ orders
 </script>
 </x-arch>
 
-<x-tracer title="On-sale: admit, hold, a lost race, pay, expiry">
+<x-tracer title="On-sale: admit, hold, a lost race, pay and expiry">
 <script type="application/json">
 {
   "arch": {
@@ -210,47 +201,47 @@ orders
   },
   "steps": [
     {
-      "caption": "Ana joined at 10:00 with number 48,213 in a signed ticket. Every 10 seconds her browser polls the cached status: admitted up to 40,500.",
+      "caption": "Ana joined the line at 10:00 with number 48,213. Every 10 seconds her browser reads the cached status, which says fans up to 40,500 are admitted.",
       "arch": { "active": ["fan", "wait", ["fan", "wait"]], "dim": ["book", "map", "db", "pay"], "notes": { "wait": "up to 40,500" } },
       "vars": { "Ana's number": "48,213", "fans in flow": "10,000" }
     },
     {
-      "caption": "Admitted fans finish or time out, so the number rises to 48,300. Ana trades her ticket for a 15-minute pass.",
+      "caption": "Admitted fans finish or time out, so the admitted number rises to 48,300. Ana exchanges her ticket for a 15-minute pass.",
       "arch": { "active": ["wait", ["book", "wait"], ["fan", "wait"]], "mark": ["fan"], "dim": ["map", "db", "pay"], "notes": { "wait": "up to 48,300" } },
       "vars": { "Ana's number": "48,213", "fans in flow": "10,000" }
     },
     {
-      "caption": "She opens section C. The gateway checks the pass locally; the seats come from the map cache, about a second old.",
+      "caption": "Ana opens section C. The gateway checks her pass locally, and the seats come from the seat map cache, which is about a second old.",
       "arch": { "active": ["gw", "book", "map", ["fan", "gw"], ["gw", "book"], ["book", "map"]], "dim": ["wait", "pay"] },
       "vars": { "C-12": "available", "C-13": "available" }
     },
     {
-      "caption": "Ana picks C-12 and C-13. Order 9001 runs one conditional update: claim both only if each is available or its hold expired. 2 rows change: she has both.",
+      "caption": "Ana picks C-12 and C-13. Order 9001 runs one conditional update that claims both seats only if each is available or has an expired hold. Two rows change, so she holds both.",
       "arch": { "active": ["book", "db", ["gw", "book"], ["book", "db"]], "dim": ["wait", "pay", "map"], "notes": { "db": "2 rows held" } },
       "vars": { "C-12": "held by 9001", "C-13": "held by 9001", "held until": "10:31" }
     },
     {
-      "caption": "A second later Ben, whose cached map still shows C-13 free, tries C-13 and C-14. Only C-14 changes, so it rolls back: 409 with fresh availability.",
+      "caption": "A second later Ben, whose cached map still shows C-13 as free, tries C-13 and C-14. Only C-14 changes, so his claim rolls back and he receives a 409 with fresh availability.",
       "arch": { "active": ["book", ["book", "db"], ["book", "gw"], ["gw", "fan"]], "fail": ["db"], "dim": ["wait", "pay", "map"], "notes": { "db": "1 of 2: rollback" } },
       "vars": { "C-12": "held by 9001", "C-13": "held by 9001", "C-14": "available" }
     },
     {
-      "caption": "Ana pays. The order moves to <code>paying</code> and the hold is extended past the slowest payment. Order 9001 is the idempotency key.",
+      "caption": "Ana pays. The order moves to <code>paying</code> and the hold is extended beyond the processor's longest response time. Order 9001 is the idempotency key.",
       "arch": { "active": ["book", "pay", ["book", "pay"], ["book", "db"]], "dim": ["wait", "map"], "notes": { "pay": "key 9001" } },
       "vars": { "C-12": "held by 9001", "C-13": "held by 9001", "order 9001": "paying" }
     },
     {
-      "caption": "The charge succeeds. One transaction marks both seats sold and the order paid. Ana's slot frees up for the next fan.",
+      "caption": "The charge succeeds. One transaction marks both seats as sold and the order as paid, and Ana's slot in the flow is given to the next fan in line.",
       "arch": { "active": [["pay", "book"], ["book", "db"], ["book", "gw"], ["gw", "fan"], ["book", "wait"]], "mark": ["fan", "db"], "dim": ["map"] },
       "vars": { "C-12": "sold", "C-13": "sold", "order 9001": "paid" }
     },
     {
-      "caption": "Ben holds C-14 and C-15, then closes his laptop. Ten minutes later the claim query treats the hold as free.",
+      "caption": "Ben holds C-14 and C-15 and closes his laptop. Ten minutes later the claim query treats those holds as free.",
       "arch": { "active": ["db"], "dim": ["wait", "map", "pay", "gw"], "fail": ["fan"], "notes": { "fan": "gone", "db": "hold lapsed" } },
       "vars": { "C-14": "held, expired", "C-15": "held, expired" }
     },
     {
-      "caption": "A sweeper, every 30 seconds, frees lapsed seats and expires the order, so the map shows them again.",
+      "caption": "A cleanup job runs every 30 seconds, sets lapsed seats back to available and marks the order expired, so the seat map shows them again.",
       "arch": { "active": ["db", "map", ["book", "db"], ["book", "map"]], "mark": ["db"], "dim": ["wait", "pay", "fan", "gw"] },
       "vars": { "C-14": "available", "C-15": "available" }
     }
@@ -263,41 +254,51 @@ orders
 
 <h3>Preventing double booking</h3>
 
-<p>Two requests for C-13 arrive within a millisecond. Each alone would read "available" and write "held". One must fail.</p>
+<p>Suppose two requests for C-13 arrive within a millisecond of each other. If each one reads the seat as available and then writes it as held, both succeed and the seat is sold twice, so the database has to make exactly one of them fail. There are three ways to do that, and a fourth that moves the hold out of the database. The mistake to avoid in all of them is checking in one statement and writing in another, because the check and the write must be one atomic step.</p>
 
-<x-tradeoffs caption="Ways to stop two buyers taking one seat">
+<p><strong>Pessimistic locking.</strong> The transaction runs <code>SELECT … FOR UPDATE</code> on the seat rows, which makes every other transaction that touches those rows wait. It then checks the status and writes. This works when a decision needs several reads, but buyers queue behind the lock, so the transaction must be short and must never stay open while a fan decides or pays.</p>
+
+<p><strong>Optimistic version check.</strong> Each row has a version number. The code reads the row, and later writes with <code>WHERE version = 7</code>, so the write changes nothing if another transaction wrote first, and the code retries. This is good when conflicts are rare, but during an on-sale most attempts hit the same rows, so most writes fail and retry.</p>
+
+<p><strong>Conditional update.</strong> A single <code>UPDATE</code> statement claims the seats only if they are free, and the caller checks how many rows changed. It takes one round trip, and the row lock lasts only for that statement. It fits whenever the rule can be written in a <code>WHERE</code> clause, as it can for claiming a known set of seats.</p>
+
+<p><strong>Holds in an in-memory store.</strong> A store such as Redis can create a hold with "set if absent, expire in 10 minutes", which is fast and expires on its own. It is a second source of truth, though: if a failover loses a recent write, two fans can hold one seat, so the database must still confirm the sale.</p>
+
+<x-tradeoffs caption="Summary of the options for preventing double booking">
 <script type="application/json">
 {
   "options": [
     {
       "name": "Pessimistic lock",
-      "good": "<code>SELECT … FOR UPDATE</code> locks the rows; then check and write. Easy to reason about.",
-      "bad": "Other buyers queue behind the lock. Holding it while the fan pays freezes seats for minutes.",
-      "pick": "The check needs several reads, and the transaction is short."
+      "good": "It is easy to reason about, and it supports checks that need several reads.",
+      "bad": "Other buyers wait behind the lock, and holding it while a fan pays would freeze seats for minutes.",
+      "pick": "The check needs several reads and the transaction is short."
     },
     {
       "name": "Optimistic version check",
-      "good": "No read locks. Write with <code>WHERE version = 7</code>; if someone wrote first, retry.",
-      "bad": "Under heavy contention most attempts fail and retry, wasting work.",
+      "good": "It takes no read locks and is cheap when conflicts are rare.",
+      "bad": "Under heavy contention most attempts fail and retry, which wastes work.",
       "pick": "Conflicts are rare, as on a normal day."
     },
     {
       "name": "Conditional update",
-      "good": "One statement claims the seats only if they are free. One round trip; the row lock lasts one statement.",
-      "bad": "The rule must fit a <code>WHERE</code> clause; the caller must check rows changed.",
-      "pick": "Claiming a known set of seats. The usual answer here.",
+      "good": "It claims the seats in one statement and one round trip, and the lock lasts only for that statement.",
+      "bad": "The rule must fit in a WHERE clause, and the caller must check how many rows changed.",
+      "pick": "Claiming a known set of seats, which is the usual answer here.",
       "default": true
     },
     {
       "name": "Holds in an in-memory store",
-      "good": "Very fast; \"set if absent, expire in 10 minutes\" gives self-expiring holds.",
-      "bad": "A second source of truth. A failover that loses a write lets two fans hold one seat, so the sale must still be checked in the database.",
-      "pick": "The database cannot take the hold rate, even behind a waiting room."
+      "good": "It is very fast, and holds expire without any cleanup job.",
+      "bad": "It is a second source of truth, so the database must still confirm every sale.",
+      "pick": "The database cannot handle the hold rate even behind a waiting room."
     }
   ]
 }
 </script>
 </x-tradeoffs>
+
+<p>I would choose the conditional update, because it needs one round trip and no lock is held while anyone is thinking. The seats are claimed like this:</p>
 
 <x-code single title="Claim two seats, all or nothing">
 <pre lang="sql">
@@ -308,112 +309,92 @@ UPDATE seats
  WHERE event_id = 77 AND seat_id IN ('C-12', 'C-13')
    AND (status = 'available'
         OR (status = 'held' AND held_until < now()));
--- rows changed = 2: COMMIT.  fewer than 2: ROLLBACK, report 409.
+-- rows changed = 2: COMMIT.  fewer than 2: ROLLBACK and report 409.
 COMMIT;
 </pre>
 </x-code>
 
-<p>Why this is safe: the second transaction to update a row waits for the first one's row lock. At the default read-committed level in databases such as PostgreSQL, it then re-checks its <code>WHERE</code> clause, sees <code>held</code>, and changes nothing. At repeatable read or serializable it fails with a serialization error; treat that like a 409. Databases differ (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>), so name the level you rely on. Overlapping claims in opposite order can deadlock; the database aborts one, which reports the seats as taken.</p>
-
-<p>I would pick the conditional update: one round trip, and no lock held while anyone thinks.</p>
-
-<x-callout type="mistake" title="Checking, then writing, in two steps">
-<p>Reading "is C-13 free?" then writing "hold C-13" in a separate statement leaves a gap: two requests both see free, both write held. Check and write must be one atomic step.</p>
-</x-callout>
+<p>This is safe because the second transaction to update a row waits for the first one's row lock. At the read-committed level in databases such as PostgreSQL, it then re-checks its <code>WHERE</code> clause, sees the seat is held, and changes nothing. At repeatable read or serializable it fails with a serialization error, which you treat like a 409. Databases differ here (see <a href="/system-design/transactions-and-isolation.html">transactions and isolation</a>), so name the isolation level you rely on. Two orders that claim overlapping seats in opposite order can deadlock, and sorting the seat ids before claiming avoids that.</p>
 
 <h3>Surviving the on-sale spike</h3>
 
-<p>More servers do not help: the 50,000 seats live on one partition, and more booking servers only send it more conflicting writes. Instead, limit how many fans reach booking with a <strong>virtual waiting room</strong>.</p>
+<p>Adding booking servers does not help, because all 50,000 seats live in one partition and more servers only send it more conflicting writes. Returning a 429 error to the excess traffic protects the database, but it rewards whoever retries fastest, which usually means bots. A <strong>virtual waiting room</strong> limits how many fans reach booking and gives the rest a fair place in line.</p>
+
+<p>The waiting room works in five parts:</p>
 
 <ul>
-<li><strong>Join:</strong> each fan gets a number in a signed ticket. Numbers handed out before 10:00 are shuffled at 10:00, so racing the clock gains nothing; after that, first come, first served.</li>
-<li><strong>Wait:</strong> fans poll only the cached "admitted up to N", so 200,000 polls a second cost almost nothing.</li>
-<li><strong>Admit:</strong> a controller keeps at most 10,000 fans in the flow, raising N as orders complete or passes time out. The database sees about 33 new fans a second, whatever the crowd.</li>
-<li><strong>Enter:</strong> an admitted fan gets a signed 15-minute pass tied to their account. The gateway checks it without shared state.</li>
-<li><strong>Stop:</strong> when no seat is available or held, announce sold out. At 33 a second, two million would take 2,000,000 ÷ 33 ≈ 60,000 seconds, about 17 hours, to drain.</li>
+<li>When a fan joins, they receive a number in a signed ticket. Numbers handed out before 10:00 are shuffled at 10:00, so arriving early at the page gains nothing, and after that numbers are assigned in order of arrival.</li>
+<li>While waiting, the browser reads only the cached "admitted up to N" value, so 200,000 checks a second cost almost nothing.</li>
+<li>A controller keeps at most 10,000 fans in the booking flow and raises N as orders complete or passes time out. The database therefore sees about 33 new fans a second, however large the crowd is.</li>
+<li>An admitted fan exchanges their ticket for a signed 15-minute pass tied to their account, and the gateway verifies it without any shared state.</li>
+<li>When no seat is available or held, the event is announced as sold out and waiting fans are told at once.</li>
 </ul>
 
-<p>The seat map cache is rebuilt about once a second. The map is advice and the conditional update is the truth, so a stale map costs a fan one 409, never a double sale.</p>
+<p>The seat map cache is rebuilt about once a second. The map is only advice and the conditional update is the source of truth, so a stale map costs a fan one 409 and never causes a double sale.</p>
 
-<h3>Paying and releasing holds</h3>
+<h3>Holds, payment and releasing seats</h3>
 
-<p>Bugs live between "held" and "sold".</p>
+<p>Most bugs in a booking system live between "held" and "sold". Storing the hold in the seat row, with an expiry time, means an abandoned hold becomes claimable without any cleanup, because the claim query already treats it as free. The cleanup job only refreshes the seat map and the order status.</p>
 
-<ul>
-<li><strong>The hold must outlive the payment.</strong> If a hold lapses at 10:31:04 and the charge succeeds at 10:31:05, another fan may hold the seat. So on Pay, move the order to <code>paying</code> and extend <code>held_until</code> past the processor's longest time. <code>paying</code> holds are never swept.</li>
-<li><strong>Confirm with a check.</strong> The sale is <code>UPDATE seats SET status = 'sold' WHERE order_id = 9001 AND status = 'held'</code>, and it must change both rows. If not, refund automatically.</li>
-<li><strong>An unknown result is not a failure.</strong> After a timeout the charge may have gone through. Keep the order in <code>paying</code>, ask the processor by idempotency key, then sell or release (see <a href="/system-design/design-a-payment-system.html">Design a Payment System</a>).</li>
-</ul>
+<p>The second problem is that a hold must outlive the payment. If a hold lapses at 10:31:04 and the charge succeeds at 10:31:05, another fan may already have claimed the seat. So when the fan presses pay, the order moves to <code>paying</code> and <code>held_until</code> is extended beyond the longest time the processor can take. The sale then runs as <code>UPDATE seats SET status = 'sold' WHERE order_id = 9001 AND status = 'held'</code> and must change both rows. If it does not, the order is refunded automatically.</p>
+
+<p>The third problem is that a timeout is not a failure. After a timeout the charge may still have succeeded, so the order stays in <code>paying</code>, the booking service asks the processor for the result using the idempotency key, and only then sells or releases the seats. <a href="/system-design/design-a-payment-system.html">Design a Payment System</a> covers this in more detail.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, twenty million fans for one show, 2 million polls a second for one cached number is a CDN problem. The booking side does not change: the admission cap sets its load. For many on-sales at once, partition inventory by <code>event_id</code> so each big show gets its own partition.</p>
+<p>If demand grows 10 times to twenty million fans, the waiting room answers 2 million checks a second for one cached number, which is a CDN problem and not a database problem. The booking side does not change, because the admission cap fixes its load. When many big on-sales overlap, partition the inventory by <code>event_id</code> so each show has its own partition.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A booking server</td><td>In-flight requests fail; committed holds are safe.</td><td>The fan retries elsewhere.</td></tr>
-<tr><td>The seat map cache</td><td>10,000 admitted fans refreshing every 5 seconds send 10,000 ÷ 5 = 2,000 reads a second to the database.</td><td>Serve a stale copy from each booking server's memory.</td></tr>
-<tr><td>The inventory primary</td><td>Holds and sales stop until a replica takes over.</td><td>Replicate synchronously (see below). Pause admissions during failover.</td></tr>
-<tr><td>The payment processor</td><td>Fans cannot pay; holds start lapsing.</td><td>Pause admissions and extend unexpired holds; fans should not pay for an outage.</td></tr>
-<tr><td>The sweeper</td><td>Lapsed holds still look held on the map.</td><td>Restart it; the claim query already treats them as free.</td></tr>
-<tr><td>The waiting room origin</td><td>The CDN serves the last admitted number; nobody new gets in.</td><td>Run it in several zones; admitted fans keep booking.</td></tr>
+<tr><td>A booking server</td><td>Requests in progress fail, but committed holds are safe in the database.</td><td>The fan retries and the request goes to another server.</td></tr>
+<tr><td>The seat map cache</td><td>The 10,000 admitted fans refresh every 5 seconds, which sends 10,000 ÷ 5 = 2,000 reads a second to the database.</td><td>Serve a slightly stale copy from each booking server's memory.</td></tr>
+<tr><td>The inventory primary</td><td>Holds and sales stop until a replica takes over.</td><td>Use synchronous replication, because with asynchronous replication a replica that missed an acknowledged hold would sell the seat again. Pause admissions during the failover.</td></tr>
+<tr><td>The payment processor</td><td>Fans cannot pay and their holds start to lapse.</td><td>Pause admissions and extend unexpired holds, because fans should not lose seats during an outage they did not cause.</td></tr>
+<tr><td>The waiting room origin</td><td>The CDN keeps serving the last admitted number, so nobody new is let in.</td><td>Run it in several zones. Fans who were already admitted keep booking.</td></tr>
 </tbody>
 </table>
-
-<x-callout type="mistake" title="Asynchronous replication on the inventory database">
-<p>With asynchronous replication, an acknowledged hold is lost if a replica that never received it takes over. The seat looks free and sells again. For inventory, pay the write latency of a synchronous replica.</p>
-</x-callout>
 
 <h2>What a strong answer sounds like</h2>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>A booking service and a database; with prompting, a transaction around "check, then book".</td></tr>
-<tr><td>Mid</td><td>Expiring holds, a conditional update or lock with reasons, a cached seat map.</td></tr>
-<tr><td>Senior</td><td>Sees the spike lands on one partition and cannot be scaled away, adds a waiting room with a cheap status endpoint, protects the hold-to-payment gap, and names each cost.</td></tr>
+<tr><td>Junior</td><td>Draws a booking service and a database, and with prompting wraps "check, then book" in a transaction.</td></tr>
+<tr><td>Mid-level</td><td>Adds holds that expire, chooses between a lock and a conditional update and explains why, and caches the seat map.</td></tr>
+<tr><td>Senior</td><td>Recognises that the spike lands on one partition, adds a waiting room with a cheap status endpoint, protects the gap between hold and payment, and names the cost of each choice.</td></tr>
 </tbody>
 </table>
 
-<x-interview title="Handling the spike" tone="weak">
-<x-interviewer>Two million people arrive at 10:00. What do you do?</x-interviewer>
-<x-you>Autoscale the booking servers and put a cache in front of the database.</x-you>
-<x-coach>More servers send more conflicting writes to the same 50,000 rows, and a cache does not help writes. It misses where the load lands.</x-coach>
-</x-interview>
-
 <x-interview title="Handling the spike" tone="strong">
 <x-interviewer>Two million people arrive at 10:00. What do you do?</x-interviewer>
-<x-you>That demand all lands on one event's rows, so I can't scale it out. A waiting room admits about 33 fans a second, keeping 10,000 in the flow. It only publishes "admitted up to N", so 200,000 polls a second hit a CDN. Fans at the back wait, and hear "sold out" as soon as it is.</x-you>
-<x-interviewer>Why not just return 429 when you're overloaded?</x-interviewer>
-<x-you>It protects the database but rewards whoever retries fastest, usually bots. A line is fairer and gives predictable load.</x-you>
+<x-you>All of that demand lands on one event's rows, so I cannot scale it out. I would use a waiting room that admits about 33 fans a second and keeps 10,000 in the booking flow. It publishes only an "admitted up to N" number, so the 200,000 checks a second are served by a CDN.</x-you>
+<x-interviewer>Why not just return a 429 when you are overloaded?</x-interviewer>
+<x-you>That protects the database, but it rewards whoever retries fastest, which is usually bots. A line is fairer to real fans and gives the database a predictable load.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you handle general admission?</h3>
-<p>Keep a count per section and decrement it with a conditional update: <code>SET remaining = remaining - 2 WHERE remaining &gt;= 2</code>. Every claim waits for that one row's lock. Split the count across, say, 10 rows and have each request try a random row with tickets left, so ten claims commit at once.</p>
+<p>Keep a count of remaining tickets per section and decrement it with a conditional update such as <code>SET remaining = remaining - 2 WHERE remaining &gt;= 2</code>. All claims then wait for the lock on that one row, so split the count across about 10 rows and have each request try a random row that still has tickets.</p>
 
 <h3>How do you stop bots from buying everything?</h3>
-<p>One place in line per verified account, a challenge on joining, and a ticket cap per order and per account.</p>
+<p>Allow one place in line per verified account and add a challenge when joining the line.</p>
 
 <h3>A group wants six seats together. What changes?</h3>
-<p>Offer "best available": the booking service finds six adjacent free seats and claims them with the same all-or-nothing update. If one was just taken, search again.</p>
+<p>Offer a "best available" option in which the booking service searches for six adjacent free seats and claims them with the same all-or-nothing update. If one was taken in the meantime, fewer than six rows change, so it rolls back and searches again.</p>
 
 <h3>Could you push seat changes to the map instead of polling?</h3>
-<p>Yes, over server-sent events. It cuts 409s but adds 10,000 open connections and a fan-out per write. A map one second stale is harmless, so add push only if 409s are frequent.</p>
-
-<h3>Why not hold the seats for 30 minutes to be kind?</h3>
-<p>Each minute of hold hides an abandoned seat from fans in line. Ten minutes, extended once payment starts, balances both.</p>
+<p>Yes, with server-sent events. That reduces 409 responses, but it adds 10,000 open connections and a fan-out for every seat change. A map that is one second stale does little harm, so I would add push only if fans see too many 409s.</p>
 
 <x-checklist title="Self-review: ticket booking">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked: assigned seats or general admission", "I asked about the biggest on-sale, not the average", "I said correctness beats speed and a queue is fine"] },
-    { "title": "Numbers and interfaces", "items": ["I turned the on-sale into a polling rate and an admission rate", "I made the waiting-room status one cacheable number", "I returned fresh availability on a 409 and made pay idempotent"] },
-    { "title": "Design and depth", "items": ["I stored the hold as data with an expiry, not a lock", "I made the claim one atomic step and compared it with locking", "I explained why more servers do not fix one hot partition", "I protected the gap between hold and payment"] },
-    { "title": "Failure", "items": ["I covered inventory primary failover and why replication must be synchronous", "I covered the payment processor or sweeper being down"] }
+    { "title": "Before drawing", "items": ["I asked whether the seats are assigned or general admission", "I asked about the biggest on-sale and not the average one", "I said that correctness matters more than speed and that a waiting line is acceptable"] },
+    { "title": "Numbers and interfaces", "items": ["I turned the on-sale into a polling rate and an admission rate", "I made the waiting-room status a single cacheable number", "I returned fresh availability on a 409 and made payment idempotent"] },
+    { "title": "Design and depth", "items": ["I stored the hold as data with an expiry time and not as a lock", "I made the claim one atomic step and compared it with locking", "I explained why more servers do not fix one hot partition", "I protected the gap between the hold and the payment"] },
+    { "title": "Failure", "items": ["I covered inventory failover and why replication must be synchronous", "I covered what happens when the payment processor is down"] }
   ]
 }
 </script>

@@ -1,63 +1,62 @@
 <!--
 {
   "title": "Design Maps and Navigation",
-  "description": "Design a maps app end to end: map tiles on a CDN, fast routes on a huge road graph, live traffic from phone pings, ETAs and rerouting.",
-  "minutes": 28,
+  "description": "How to design a maps app: map tiles on a CDN, fast routes on a huge road graph, live traffic from phone locations, and rerouting.",
+  "minutes": 23,
   "kind": "design",
   "tags": ["case study", "location", "graphs", "cdn", "streaming"]
 }
 -->
-<p>You open a maps app, the city appears, you type an address, and a blue line says "10 min". You drive. A few minutes later: "Faster route found, saves 5 min", because a crash just blocked the motorway ahead.</p>
+<p>A maps and navigation service shows a map, finds the fastest driving route between two places with an estimated arrival time, and guides the driver while adjusting to live traffic. It is hard to design because it combines three different workloads: serving a very large amount of static map data, running shortest-path searches on a graph with hundreds of millions of junctions, and turning location reports from moving phones into traffic data.</p>
 
-<p>Three systems hide behind one screen: static content (the map), an algorithm (shortest paths on a huge graph) and a stream (moving phones turned into traffic). A strong answer keeps them apart and goes deep on one. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before reading on.</p>
+<p>A strong answer keeps the three apart and goes deep on one or two. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>. Try each "Your turn" box before you read the section after it.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a maps and navigation service.</x-interviewer>
-<x-you>Three features: the map, a route with an arrival time, and turn-by-turn guidance with live traffic. Are place search, walking and transit in scope?</x-you>
-<x-interviewer>Driving only. Assume address search exists and gives you coordinates.</x-interviewer>
-<x-you>What scale? Daily users, routes a day, and peak navigating phones?</x-you>
-<x-interviewer>100 million daily users, 100 million routes a day including reroutes, 5 million phones navigating at peak.</x-interviewer>
-<x-you>Then the map is CDN content, routing must be fast on a continent-sized graph, and traffic is a stream of about a million pings a second. If traffic fails, routing uses typical speeds.</x-you>
-<x-coach>Three differently shaped systems, and what degrades gracefully: that is what interviewers want early.</x-coach>
+<x-you>I see three features: the map, a route with an arrival time, and guidance that uses live traffic. Are place search, walking and public transport in scope?</x-you>
+<x-interviewer>Driving only, and you can assume address search already exists and gives you coordinates.</x-interviewer>
+<x-you>What scale should I plan for: daily users, routes per day and phones navigating at peak?</x-you>
+<x-interviewer>Assume 100 million daily users, 100 million routes a day including reroutes, and 5 million phones navigating at peak.</x-interviewer>
+<x-you>Then the map is static content that a CDN can serve, routing has to be fast on a graph the size of a continent, and traffic is a stream of about a million location batches a second. If traffic fails, routing should fall back to typical speeds.</x-you>
+<x-coach>Splitting the problem into three systems and saying what must keep working when one fails is what interviewers listen for early.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> a pannable, zoomable map; the fastest driving route with an ETA; while driving, live ETA updates and faster-route offers; reroute when the driver leaves the route.</li>
-<li><strong>Non-functional:</strong> tiles in under 100 ms from nearby; a route in under 200 ms at the server; new jams in ETAs within 2 to 3 minutes; routing works without live traffic; location data anonymised and kept briefly.</li>
-<li><strong>Out of scope:</strong> place search, walking and transit, map editing tools, street-level imagery.</li>
+<li><strong>Functional requirements:</strong> a map the user can pan and zoom; the fastest driving route with an estimated arrival time (ETA); live ETA updates and faster-route offers while driving; and a new route when the driver leaves the planned one.</li>
+<li><strong>Non-functional requirements:</strong> tiles arrive in under 100 ms; a route is computed in under 200 ms; a new jam shows in ETAs within 2 to 3 minutes; routing works without live traffic; and location data is anonymised and kept briefly.</li>
+<li><strong>Out of scope:</strong> place search, walking and public transport, map editing tools and street-level photos.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
 <ul>
-<li><strong>Tiles:</strong> 100 per user a day: 10 billion ÷ 86,400 ≈ 116,000 a second, about 350,000 at a 3x peak. With 95% CDN hits, the origin sees about 17,000.</li>
-<li><strong>Routes:</strong> 100 million ÷ 86,400 ≈ 1,200 a second, about 3,500 at peak.</li>
-<li><strong>Pings:</strong> 5 million phones, one batch every 5 seconds: 1 million batches a second. At about 100 bytes each, 100 MB/s, useful for only a few minutes: a partitioned stream aggregated in memory, not database rows.</li>
-<li><strong>Road graph:</strong> assume 500 million junctions and 1.2 billion one-way segments. At 8 bytes a junction (two packed coordinates) and 12 bytes a segment (target, travel time, segment id): 4 GB + 14.4 GB ≈ 18 GB. It fits in one large server's memory.</li>
+<li><strong>Tiles.</strong> At 100 tiles per user per day, 10 billion tiles a day is about 116,000 a second, or 350,000 at a 3x peak. If the CDN answers 95%, the origin sees about 17,000 a second.</li>
+<li><strong>Routes.</strong> 100 million routes a day is about 1,200 a second, or about 3,500 a second at peak.</li>
+<li><strong>Location pings.</strong> Each of the 5 million navigating phones sends a batch of about 100 bytes every 5 seconds, which is 1 million batches and about 100 MB/s. The data is useful for only a few minutes, so it belongs in a stream, not in database rows.</li>
+<li><strong>Road graph.</strong> Assume 500 million junctions and 1.2 billion one-way road segments. A junction takes 8 bytes (two packed coordinates) and a segment takes 12 bytes (target, travel time and id), so the graph needs 4 GB + 14.4 GB, about 18 GB, which fits in one large server's memory.</li>
 </ul>
 
 <x-estimate title="Vector tiles for the whole world">
 <script type="application/json">
 {
-  "question": "The world has 4<sup>z</sup> tiles at zoom z. You store vector tiles for zoom 0 to 14; the phone draws closer zooms itself. How much storage is that?",
-  "givens": ["4<sup>z</sup> tiles at zoom z, for z = 0 to 14", "About 10 KB per tile on average (most ocean tiles are nearly empty)"],
+  "question": "The world has 4<sup>z</sup> tiles at zoom level z. You store vector tiles for zoom 0 to 14, and the phone draws closer zoom levels itself. How much storage do the tiles need?",
+  "givens": ["4<sup>z</sup> tiles at zoom z, for z = 0 to 14", "About 10 KB per tile on average, because most ocean tiles are nearly empty"],
   "unit": "bytes",
   "answer": "3.6 TB",
   "accept": ["1 TB", "15 TB"],
-  "steps": ["Zoom 14 alone: 4<sup>14</sup> ≈ 268 million tiles", "All levels: 1 + 4 + … + 4<sup>14</sup> = (4<sup>15</sup> − 1) ÷ 3 ≈ 358 million tiles (each level adds a third more)", "358 × 10<sup>6</sup> × 10 KB ≈ 3.6 TB"],
-  "note": "Pre-rendered images to street level (zoom 18) would be (4<sup>19</sup> − 1) ÷ 3 ≈ 92 billion tiles; at 20 KB each, about 1.8 PB. Stopping at zoom 14 keeps the map small enough to rebuild often."
+  "steps": ["Zoom 14 alone has 4<sup>14</sup> ≈ 268 million tiles", "All levels together have (4<sup>15</sup> − 1) ÷ 3 ≈ 358 million tiles, because each level adds a third more than the sum of the levels above it", "358 × 10<sup>6</sup> × 10 KB ≈ 3.6 TB"]
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls to load the map, ask for a route, and send location while driving. How does the phone learn of a faster route?</p>
+<p>Write the calls for loading the map, asking for a route and sending location while driving. How does the phone find out that a faster route exists?</p>
 </x-task>
 <x-answer>
-<p>Tiles are cacheable GETs by zoom, x and y. A route is a POST with origin, destination and departure. Pings are a POST with a batch of points. The phone already calls every 5 seconds, so the ping reply can carry "a better route is ready".</p>
+<p>A tile is a cacheable GET addressed by zoom level, x and y. A route request is a POST with an origin and a destination. Pings are a POST with a batch of points, and since the phone sends one every 5 seconds, the reply can say that a better route is ready.</p>
 </x-answer>
 </x-tryit>
 
@@ -75,7 +74,7 @@ POST /routes
          "steps": [ { "turn": "left", "road": "...", "at_m": 1200 }, ... ],
          "graph_version": 812 }
   404  no road connects the two points
-  503  routing overloaded; the app retries with backoff
+  503  routing is overloaded; the app retries with backoff
 
 POST /nav/{route_id}/pings
   body: { "points": [ [t, lat, lng, speed, heading], ... ] }   5 points, one a second
@@ -84,16 +83,16 @@ POST /nav/{route_id}/pings
 </pre>
 </x-code>
 
-<p>The decision worth arguing is how the phone hears of a faster route. A WebSocket per driver means 5 million open connections; the ping reply carries it instead, at most 5 seconds late. See <a href="/system-design/realtime-communication.html">realtime communication</a> for when push is worth it.</p>
+<p>The decision worth arguing is how the phone hears about a faster route. A WebSocket per driver would mean 5 million open connections for a message that is rarely sent. Putting the news in the reply to the next ping costs nothing extra and arrives at most 5 seconds late, so it is the better fit here; <a href="/system-design/realtime-communication.html">realtime communication</a> covers when push is worth its cost.</p>
 
-<p>The tile URL holds the map version (<code>v812</code>), so a rebuild changes URLs: no CDN purge, no mixed builds. The cost is a cold CDN sending all 350,000 requests a second to the origin, so push popular tiles before switching.</p>
+<p>The tile URL contains the map version (<code>v812</code>), so a new map has new URLs, no CDN purge is needed, and a phone never mixes tiles from two builds. A new version starts with a cold CDN, so copy popular tiles into it first.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>For tiles, the road graph, live speeds and pings: where does each live and how is it read?</p>
+<p>For tiles, the road graph, live speeds and location pings, say where each one is stored and how it is read.</p>
 </x-task>
 <x-answer>
-<p>Tiles: immutable files in a blob store behind a CDN. Graph: built offline, loaded whole into each routing server. Live speeds: a small segment-to-speed map. An active route per navigating phone. Pings: a stream kept for hours.</p>
+<p>Tiles are immutable files in a blob store behind a CDN. The road graph is built offline and loaded into each routing server. Live speeds are a map from segment to speed, each navigating phone has an active route record, and pings go into a short-lived stream.</p>
 </x-answer>
 </x-tryit>
 
@@ -102,15 +101,15 @@ POST /nav/{route_id}/pings
 <x-code single title="Graph, speeds and pings">
 <pre lang="sql">
 -- road graph: built offline from map data, shipped as a file, loaded into RAM
-junction   id INT, lat INT, lng INT                 -- 8 B packed coordinates (+ id by position)
+junction   id INT, lat INT, lng INT                 -- 8 B packed coordinates (id is the array position)
 segment    from INT, to INT, segment_id INT,
            length_m INT, road_class TINYINT, turn_rules ...   -- one row per direction
 
 -- live speeds: key-value, overwritten every minute
 live_speed       segment_id -> (speed_kmh, samples, updated_at)   -- about 16 B each
 
--- typical speeds: a weekly curve, 672 slots of 15 minutes. Segments share
--- a few thousand curve shapes, so each stores a curve id, not 672 numbers
+-- typical speeds: a weekly curve of 672 slots of 15 minutes. Segments share
+-- a few thousand curve shapes, so each segment stores a curve id, not 672 numbers
 typical_curve    segment_id -> curve_id                      -- 2 B each
 curve            (curve_id, slot 0..671) -> speed_kmh
 
@@ -122,22 +121,28 @@ ping       trip_token, t, lat, lng, speed, heading
 </pre>
 </x-code>
 
-<p>Tiles are immutable, read by key: <a href="/system-design/blob-storage.html">blob storage</a> behind a <a href="/system-design/cdns.html">CDN</a>. The classic mistake is querying a database per search step: at 0.5 ms a round trip, 50,000 junctions take 25 seconds. The graph is read-only between builds, so it sits in each routing server's memory as compact arrays. Only main roads get enough pings for a live speed: 100 million segments × 16 B = 1.6 GB. Typical-speed curve ids add 1.2 billion × 2 B = 2.4 GB. Every routing server holds both. Pings are written and read once: a <a href="/system-design/message-queues-and-streams.html">stream</a>, with a random token per trip instead of a user id.</p>
+<p>Tiles never change and are read by key, so they are stored in <a href="/system-design/blob-storage.html">blob storage</a> behind a <a href="/system-design/cdns.html">CDN</a>.</p>
+
+<p>The road graph must not be read from a database during a search: at 0.5 ms per round trip, 50,000 lookups take 25 seconds. The graph is read-only between builds, so each routing server keeps it in memory as compact arrays.</p>
+
+<p>Only main roads receive enough pings to have a live speed: 100 million segments at 16 bytes is 1.6 GB, and the curve ids for all 1.2 billion segments add 2.4 GB. Every routing server holds both.</p>
+
+<p>Pings are written once and read once, so they go into a <a href="/system-design/message-queues-and-streams.html">stream</a>. Each trip uses a random token instead of a user id, which keeps the data anonymous.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch three flows: drawing the map, asking for a route, and turning pings into traffic the next route uses.</p>
+<p>Sketch three flows: drawing the map, asking for a route, and turning pings into traffic that the next route uses.</p>
 </x-task>
 <x-answer>
-<p>Tiles: phone, CDN, tile store. Routes: phone, gateway, routing servers holding the graph and live speeds; each route is saved as active. Pings: phone, gateway, stream, a traffic aggregator writing segment speeds. The ping reply checks the active route for a better one.</p>
+<p>Tiles go from the phone to the CDN and, on a miss, to the tile store. Routes go through the gateway to routing servers that hold the graph and live speeds, and each route is saved as active. Pings go through the gateway into a stream, and an aggregator turns them into segment speeds.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>The three flows share only the phone and gateway, so each fails alone.</p>
+<p>The three flows share only the phone and the gateway, so a failure in one of them does not stop the others.</p>
 
-<x-arch caption="Tiles never touch the API servers. Routing servers hold the graph and live speeds in memory; pings flow through a stream into the aggregator that produces the speeds.">
+<x-arch caption="Tiles never touch the API servers. Routing servers hold the graph and live speeds in memory, and pings flow through a stream into the aggregator that produces the speeds.">
 <script type="application/json">
 {
   "nodes": [
@@ -160,14 +165,14 @@ ping       trip_token, t, lat, lng, speed, heading
     { "from": "route", "to": "active", "label": "save, re-price" },
     { "from": "gw", "to": "pings", "label": "ping batch", "style": "async", "route": "vh" },
     { "from": "pings", "to": "agg", "style": "async" },
-    { "from": "agg", "to": "speeds", "label": "speed/segment" },
-    { "from": "route", "to": "speeds", "label": "read each min" }
+    { "from": "agg", "to": "speeds", "label": "speed per segment" },
+    { "from": "route", "to": "speeds", "label": "read each minute" }
   ]
 }
 </script>
 </x-arch>
 
-<x-tracer title="Map, route, traffic, reroute">
+<x-tracer title="Map, route, traffic and reroute">
 <script type="application/json">
 {
   "arch": {
@@ -197,50 +202,50 @@ ping       trip_token, t, lat, lng, speed, heading
   },
   "steps": [
     {
-      "caption": "Mia opens the app. About 20 tiles fill the screen from the phone's cache or the CDN; a miss is fetched once and kept for everyone after her.",
+      "caption": "Mia opens the app. About 20 tiles fill the screen, and almost all of them come from the phone's cache or the CDN.",
       "arch": { "active": ["phone", "cdn", ["phone", "cdn"]], "dim": ["gw", "route", "active", "pings", "speeds", "agg"], "notes": { "cdn": "19 hits" } }
     },
     {
-      "caption": "She asks for a route. Any routing server can answer: each holds the whole graph and latest speeds.",
+      "caption": "She asks for a route. Any routing server can answer, because each one holds the whole graph and the latest speeds.",
       "arch": { "active": ["gw", "route", ["phone", "gw"], ["gw", "route"]], "dim": ["cdn", "tiles", "active", "pings", "agg"] }
     },
     {
-      "caption": "Precomputed shortcuts mean the search settles about 50,000 junctions, not 20 million: about 50 ms. ETA: 10 minutes.",
+      "caption": "Precomputed shortcuts let the search settle about 50,000 junctions instead of 20 million, which takes about 50 ms.",
       "arch": { "active": ["route", "speeds"], "dim": ["cdn", "tiles", "active", "pings", "agg"], "notes": { "route": "50 ms" } },
       "vars": { "trip time": "10 min" }
     },
     {
-      "caption": "The route returns with turn steps and is saved as active. The phone follows it alone, even offline.",
+      "caption": "The route goes back to the phone with its turn steps and is saved as an active route.",
       "arch": { "active": ["active", ["route", "active"], ["route", "gw"], ["gw", "phone"]], "mark": ["phone"], "dim": ["cdn", "tiles", "pings", "agg"] },
       "vars": { "trip time": "10 min" }
     },
     {
-      "caption": "Driving, the phone sends 5 GPS points every 5 seconds. The gateway streams each batch, keyed by area, checks her active route for a better one (none), and replies.",
+      "caption": "While she drives, the phone sends 5 GPS points every 5 seconds. The gateway streams each batch, finds no better route, and replies.",
       "arch": { "active": ["pings", "active", ["phone", "gw"], ["gw", "pings"], ["gw", "active"], ["gw", "phone"]], "dim": ["cdn", "tiles", "route"] },
-      "vars": { "trip time": "10 min", "pings/s (all phones)": "1,000,000" }
+      "vars": { "trip time": "10 min", "pings per second": "1,000,000" }
     },
     {
-      "caption": "A crash ahead: phones on that 3 km stretch report 20 km/h, not 90. The aggregator snaps points to segments and averages each.",
+      "caption": "A crash blocks the road ahead, and phones on that 3 km stretch report 20 km/h instead of 90. The aggregator matches their points to segments and averages each speed.",
       "arch": { "active": ["agg", ["pings", "agg"]], "dim": ["cdn", "tiles", "route", "active"], "notes": { "agg": "seg 7731: 20" } },
       "vars": { "trip time": "10 min" }
     },
     {
-      "caption": "Once enough phones agree, it writes the new speed. Each minute, routing servers load changed speeds and refresh affected shortcuts.",
+      "caption": "Once enough phones agree, the aggregator writes the new speed. Each minute the routing servers load the changed speeds and recompute the affected shortcuts.",
       "arch": { "active": ["speeds", "route", ["agg", "speeds"], ["route", "speeds"]], "dim": ["cdn", "tiles", "pings", "active"], "notes": { "speeds": "seg 7731: 20" } },
       "vars": { "trip time": "10 min" }
     },
     {
-      "caption": "Routing servers re-price only active routes crossing changed segments. Mia's now costs 17 minutes; a route around takes 12, so it is saved.",
+      "caption": "The routing servers re-price only the active routes that cross a changed segment. Mia's route now takes 17 minutes, and a route around the crash takes 12, so the better route is saved.",
       "arch": { "active": ["route", "active", ["route", "active"]], "dim": ["cdn", "tiles", "pings", "agg"], "notes": { "active": "better: 12 min" } },
       "vars": { "trip time": "17 min" }
     },
     {
-      "caption": "Her next ping, at most 5 seconds later, gets the better route in its reply. No push channel.",
+      "caption": "Her next ping, at most 5 seconds later, receives the better route in its reply, so no push channel is needed.",
       "arch": { "active": ["gw", "active", ["phone", "gw"], ["gw", "active"], ["gw", "phone"]], "mark": ["phone"], "dim": ["cdn", "tiles", "agg", "route"], "notes": { "phone": "saves 5 min" } },
       "vars": { "trip time": "12 min" }
     },
     {
-      "caption": "Failure: the aggregator is down. Speeds over 5 minutes old are ignored; routing uses typical speeds for this hour. Routes work; ETAs are less sharp.",
+      "caption": "Now the aggregator fails. Speeds older than 5 minutes are ignored and routing uses the typical speeds for that hour, so routes still work but ETAs are less accurate.",
       "arch": { "fail": ["agg"], "active": ["route", "speeds", ["route", "speeds"]], "dim": ["cdn", "tiles"], "notes": { "speeds": "stale: 6 min" } },
       "vars": { "speed source": "typical" }
     }
@@ -251,39 +256,25 @@ ping       trip_token, t, lat, lng, speed, heading
 
 <h2>Deep dives</h2>
 
-<h3>Map tiles</h3>
+<h3>Serving the map as tiles</h3>
 
-<p>At zoom 0 one square holds the world; each zoom level splits every square into four. A tile is named <code>z/x/y</code>, so the phone works out which tiles cover the screen by itself.</p>
+<p>The map is too large to send as one file, so it is cut into square tiles. At zoom level 0 a single tile covers the whole world, and each further zoom level splits every tile into four. A tile is named <code>z/x/y</code>, so the phone can work out for itself which tiles cover its screen and ask for them by name.</p>
 
-<x-tradeoffs caption="How to serve the map">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Pre-rendered image tiles",
-      "good": "The phone just shows pictures. Works on any device.",
-      "bad": "About 1.8 PB to street level. Labels cannot rotate; a style change re-renders everything.",
-      "pick": "Old or very weak clients, or a satellite photo layer."
-    },
-    {
-      "name": "Vector tiles to zoom 14",
-      "good": "About 3.6 TB. The phone draws, so it zooms past 14, rotates and switches to night colours with no new data.",
-      "bad": "The phone does the drawing; the builder must simplify shapes per zoom.",
-      "pick": "A modern app. The usual answer.",
-      "default": true
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>A <strong>pre-rendered image tile</strong> is a finished picture. The phone only has to show it, so it works on any device, and it is the right choice for a satellite photo layer. The drawbacks are that images down to street level take about 1.8 PB, labels cannot rotate because they are part of the picture, and a new map style means rendering every tile again.</p>
+
+<p>A <strong>vector tile</strong> contains the geometry and labels as data, and the phone draws it. Vector tiles are stored only down to zoom 14, which is about 3.6 TB, because the phone can draw closer zoom levels from the same data. The phone can also rotate the map or switch to night colours without new data. The costs are that the phone does the drawing work and that the tile builder must simplify shapes for each zoom level. Vector tiles are the usual choice for a modern app.</p>
 
 <h3>Routing on a huge road graph</h3>
 
-<p>A route is a shortest path where a segment's weight is its travel time. <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> is correct, but it grows a circle of settled junctions around the start until it reaches the destination. On a long trip, say 20 million junctions at about 1 µs each (a heap operation plus a memory miss): 20 seconds, against a 200 ms goal.</p>
+<p>A route is a shortest path in which the weight of each road segment is its travel time. <a href="/algorithms/dijkstra.html">Dijkstra's algorithm</a> gives the correct answer, but it settles junctions in a growing circle around the start until it reaches the destination. On a long trip that circle can hold 20 million junctions. At about 1 µs per junction, for a heap operation and a memory miss, one query takes 20 seconds, while the goal is 200 ms.</p>
 
-<p>Searching from both ends, or A*, shrinks the circle only a few times; beyond one city, 3,500 routes a second would need tens of thousands of cores. Most work must happen before anyone asks.</p>
+<p>Searching from both ends, or using A*, shrinks the circle only slightly, so the work has to be done before anyone asks for a route.</p>
 
-<x-figure caption="The search walks real roads only in the start and end cells, and hops along precomputed border-to-border shortcuts in between.">
+<p>There are two well-known ways to do that. <strong>Contraction hierarchies</strong> rank every junction by importance and add shortcut edges that skip the unimportant junctions, so a query climbs up to the important ones, crosses the country and comes back down. Queries are extremely fast, but the shortcuts are computed from the travel times, so in the basic form every speed change means a rebuild. That suits a router whose weights rarely change.</p>
+
+<p><strong>Cells with border shortcuts</strong> split the graph into cells along natural borders such as rivers and motorways, so that each cell has only a few <strong>border junctions</strong>. The builder precomputes the fastest time between every pair of border junctions in a cell, and these become shortcut edges. A query runs Dijkstra on real roads inside the start and end cells and uses only shortcuts everywhere else. Using several levels of cells, a long query settles tens of thousands of junctions and the result is still exact for the current speeds. Queries are somewhat slower than with a full hierarchy, but when a speed changes, only the shortcuts of that segment's cell are recomputed.</p>
+
+<x-figure caption="The search follows real roads only in the start and end cells and uses precomputed border-to-border shortcuts in the cells between them.">
 <svg viewBox="0 0 480 190" aria-label="Three cells side by side. In the left cell a solid line runs from the start to a border point. Across the middle cell a dashed shortcut joins two border points. In the right cell a solid line runs from a border point to the destination.">
   <defs><marker id="mapsnav-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="f-accent"/></marker></defs>
   <rect x="10" y="20" width="140" height="130" rx="8" class="f-surface s-line"/>
@@ -307,23 +298,21 @@ ping       trip_token, t, lat, lng, speed, heading
 </svg>
 </x-figure>
 
-<p>Cut the graph into cells along natural borders, so each has few <strong>border junctions</strong>. Precompute the fastest time between every pair of a cell's border junctions: <strong>shortcut edges</strong>. A query runs Dijkstra on real roads in the end cells and on shortcuts elsewhere. With several cell levels, a long query settles tens of thousands of junctions, still exact for the current weights.</p>
-
 <x-tradeoffs caption="Ways to find a route">
 <script type="application/json">
 {
   "options": [
     {
       "name": "Contraction hierarchies",
-      "good": "Very fast queries. Junctions are ranked by importance; shortcuts skip unimportant ones.",
-      "bad": "In the basic form, the shortcuts depend on the weights; new speeds mean a rebuild.",
-      "pick": "Weights rarely change, for example a walking or cycling router."
+      "good": "Very fast queries, because shortcuts skip the unimportant junctions.",
+      "bad": "In the basic form the shortcuts depend on the travel times, so new speeds mean a rebuild.",
+      "pick": "Travel times rarely change, as in a walking or cycling router."
     },
     {
       "name": "Cells with border shortcuts",
-      "good": "Fast queries; a speed change recomputes only the touched cells' shortcuts, in parallel.",
-      "bad": "Slower than contraction hierarchies, and a careful partitioning job.",
-      "pick": "Live traffic changes weights every minute. The usual answer here.",
+      "good": "Fast queries, and a speed change recomputes only the shortcuts of the cells it touches.",
+      "bad": "Slower than contraction hierarchies, and the graph needs careful partitioning.",
+      "pick": "Live traffic changes the weights every minute. This is the usual choice here.",
       "default": true
     }
   ]
@@ -331,55 +320,35 @@ ping       trip_token, t, lat, lng, speed, heading
 </script>
 </x-tradeoffs>
 
-<p>Capacity: 50,000 junctions at 1 µs is 50 ms of one core; 3,500 routes a second × 0.05 s = 175 busy cores, so about 20 servers of 16 cores run near half busy. Each holds the 18 GB graph: replicas, not shards, which would turn one search into many network hops.</p>
+<p>A query that settles 50,000 junctions at 1 µs takes about 50 ms of one core, so 3,500 routes a second need 3,500 × 0.05 s = 175 busy cores, or about 20 servers with 16 cores at roughly half load. Each server holds the full 18 GB graph, because splitting it would turn each search into many network calls.</p>
 
 <h3>From pings to traffic and ETAs</h3>
 
-<p>A GPS point says where a phone is, not which road. The aggregator <strong>map-matches</strong> each run of points to the likeliest chain of segments, using heading and speed to tell a motorway from the road under it, then keeps each segment's recent speeds.</p>
+<p>A GPS point says where a phone is but not which road it is on, so the aggregator <strong>map-matches</strong> each run of points to the most likely chain of road segments, using heading and speed to tell a motorway from the road under it, and then keeps the recent speeds of each segment.</p>
 
-<ul>
-<li><strong>Partition by area.</strong> The stream is keyed by map tile, so one aggregator owns an area.</li>
-<li><strong>Ignore noise.</strong> One car stopping for fuel is not a jam: publish only when several phones agree.</li>
-<li><strong>Blend with history.</strong> With few samples, use the typical speed for that 15-minute slot of the week.</li>
-</ul>
+<p>The stream is partitioned by map tile, so one aggregator instance owns all the pings of an area. A speed is published only when several phones agree, because one car stopped for fuel is not a traffic jam. A segment with few samples blends in its typical speed for that 15-minute slot of the week.</p>
 
-<p>The ETA sums segment times. Mia's route before and after the crash:</p>
-
-<table>
-<thead><tr><th>Segment</th><th>Length</th><th>Speed before</th><th>Minutes</th><th>Speed after</th><th>Minutes</th></tr></thead>
-<tbody>
-<tr><td>City street</td><td>1.2 km</td><td>30 km/h</td><td>2.4</td><td>30 km/h</td><td>2.4</td></tr>
-<tr><td>Motorway</td><td>6 km</td><td>90 km/h</td><td>4.0</td><td>90 km/h</td><td>4.0</td></tr>
-<tr><td>Motorway, crash</td><td>3 km</td><td>90 km/h</td><td>2.0</td><td>20 km/h</td><td>9.0</td></tr>
-<tr><td>Exit road</td><td>0.8 km</td><td>30 km/h</td><td>1.6</td><td>30 km/h</td><td>1.6</td></tr>
-<tr><td><strong>Total</strong></td><td>11 km</td><td></td><td><strong>10.0</strong></td><td></td><td><strong>17.0</strong></td></tr>
-</tbody>
-</table>
-
-<p>A senior refinement: live speed suits the next few minutes; a segment reached in 50 minutes should use the typical speed for that time.</p>
+<p>The ETA is the sum of the travel times of the route's segments. On Mia's 11 km route, the 3 km crash segment takes 2 minutes at 90 km/h and 9 minutes at 20 km/h, which moves the total from 10 to 17 minutes. Live speeds are reliable only for the next few minutes, so a segment the driver will reach in 50 minutes should use its typical speed instead.</p>
 
 <h3>Rerouting</h3>
 
-<ul>
-<li><strong>The driver leaves the route.</strong> The phone sees several points in a row over, say, 50 m off the line and asks for a new route. Local detection is fast and survives a bad connection.</li>
-<li><strong>Traffic makes another route faster.</strong> Re-pricing all 5 million active routes every 90 seconds would be 55,000 searches a second, 15 times the route traffic. Re-price only routes crossing a changed segment, and offer a switch only if it saves, say, 2 minutes and 10% of the remaining time, so drivers are not flipped back and forth.</li>
-</ul>
+<p>There are two reasons to compute a new route. The first is that the driver leaves the planned route. The phone detects this itself, when several points in a row are more than about 50 m from the route, and asks the server for a new route, which is fast and works on a poor connection.</p>
 
-<x-callout type="mistake" title="Sending every driver down the same side road">
-<p>If every driver near the crash gets the same "faster" route at once, the side road jams within minutes. Offer it to a share of drivers at a time; the next minute of pings corrects the speeds.</p>
-</x-callout>
+<p>The second reason is that traffic has made another route faster. Re-pricing all 5 million active routes every 90 seconds would take about 55,000 searches a second, roughly 15 times the normal route traffic, so the routing servers re-price only routes that cross a changed segment. They offer a switch only when it saves, for example, 2 minutes and 10% of the remaining time, so drivers are not told to switch back and forth.</p>
+
+<p>If every driver near the crash receives the same faster route at once, the side road fills up within minutes and the offer becomes wrong. The fix is to offer the new route to only a share of the affected drivers at a time, so that the next minute of pings shows the effect on the side road.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (10 million pings, 35,000 routes a second), the stream and aggregator add partitions by area. Routing adds replicas: 35,000 × 0.05 s = 1,750 cores. The awkward part is the shortcut refresh every replica repeats; at that size, compute it once and ship it.</p>
+<p>At 10x the load, there are 10 million ping batches a second and 35,000 routes a second. The stream and aggregator add partitions, and routing adds replicas: 35,000 × 0.05 s is 1,750 busy cores.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>Component that fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>The tile store</td><td>Misses fail; cached areas still draw.</td><td>Replicate across zones; tiles are immutable, so any copy is right.</td></tr>
-<tr><td>A routing server</td><td>In-flight requests fail.</td><td>The gateway retries on another. Loading 18 GB takes a minute or two, so keep spares warm.</td></tr>
-<tr><td>The aggregator</td><td>Speeds go stale.</td><td>After 5 minutes, routing uses typical speeds. Old pings are worthless; skip ahead on restart.</td></tr>
-<tr><td>The network</td><td>That phone's pings and reroutes stop.</td><td>The phone keeps guiding along its stored route.</td></tr>
+<tr><td>The tile store</td><td>Tiles missing from the CDN fail to load, while cached areas still draw.</td><td>Replicate the store across zones; tiles never change, so any copy is correct.</td></tr>
+<tr><td>A routing server</td><td>The requests it was handling fail.</td><td>The gateway retries them on another server. Loading the graph takes a minute or two, so keep spares loaded.</td></tr>
+<tr><td>The traffic aggregator</td><td>Live speeds stop updating and become stale.</td><td>After 5 minutes, routing falls back to typical speeds. A restarted aggregator skips old pings.</td></tr>
+<tr><td>A phone's network connection</td><td>That phone's pings and reroute requests stop.</td><td>The phone keeps guiding the driver along the route it already stored.</td></tr>
 </tbody>
 </table>
 
@@ -388,43 +357,38 @@ ping       trip_token, t, lat, lng, speed, heading
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Draws map and route services, says "Dijkstra", stores pings in a database.</td></tr>
-<tr><td>Mid</td><td>Serves zoom-level tiles from a CDN, sees plain Dijkstra is too slow and names a precomputation, streams pings into segment speeds.</td></tr>
-<tr><td>Senior</td><td>Separates the three systems, picks cell shortcuts for live traffic, replicates the in-memory graph, falls back to typical speeds, and handles rerouting hysteresis and herding.</td></tr>
+<tr><td>Junior</td><td>Draws a map service and a route service, names Dijkstra, and stores pings in a database.</td></tr>
+<tr><td>Mid-level</td><td>Serves tiles from a CDN, sees that plain Dijkstra is too slow, and streams pings into segment speeds.</td></tr>
+<tr><td>Senior</td><td>Separates the three systems, chooses cell shortcuts because traffic changes the weights, falls back to typical speeds, and handles flip-flopping and herding when rerouting.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Routing at scale" tone="strong">
-<x-interviewer>How do you compute routes for 3,500 requests a second?</x-interviewer>
-<x-you>Plain Dijkstra settles tens of millions of junctions on a long trip, so I precompute times between each cell's border junctions. A query then settles about 50,000: 50 ms, 175 cores at peak. Every server holds the whole 18 GB graph.</x-you>
-<x-interviewer>Why cells and not a full hierarchy, which answers faster?</x-interviewer>
-<x-you>Speeds change every minute. With cells I recompute shortcuts only where speeds changed; a basic hierarchy picks shortcuts from all the weights, so it needs a full rebuild.</x-you>
+<x-interviewer>How do you compute routes at 3,500 requests a second?</x-interviewer>
+<x-you>Plain Dijkstra would settle tens of millions of junctions on a long trip, so I precompute the travel times between the border junctions of each cell. A query then settles about 50,000 junctions, which takes about 50 ms and needs about 175 busy cores at peak.</x-you>
+<x-interviewer>Why use cells instead of a full hierarchy, which gives faster queries?</x-interviewer>
+<x-you>Speeds change every minute. With cells, I recompute only the shortcuts of the cells where a speed changed, while a basic hierarchy would need a full rebuild.</x-you>
+<x-coach>Each answer gives a number, the reason for the choice, and what it costs, and the last answer shows that a failure degrades the service instead of stopping it.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
-<h3>How do you ship a new version of the map data?</h3>
-<p>Load the new graph beside the old, then switch. A reroute mid-switch uses its route's graph version.</p>
+<h3>How do you release a new version of the map data?</h3>
+<p>Load the new graph next to the old one on each routing server, and switch to it only when it is fully loaded. Each route records its graph version, so a reroute during the switch uses the same version.</p>
 
-<h3>How would offline navigation work?</h3>
-<p>The user downloads a region's tiles and graph with typical speeds; the phone runs the same search without live traffic.</p>
-
-<h3>How do you protect people's privacy?</h3>
-<p>Pings carry a random per-trip token, trip ends are trimmed so homes stay hidden, and raw pings are deleted after hours. Only segment averages are kept.</p>
-
-<h3>How do you know the ETAs are good?</h3>
-<p>Each finished trip gives a predicted and actual arrival. Track the error by region and hour, and tune the live/typical blend with it.</p>
+<h3>How do you protect users' privacy?</h3>
+<p>Pings carry a random token for each trip instead of a user id, and the start and end of every trip are trimmed so that home addresses stay hidden. Raw pings are deleted after a few hours.</p>
 
 <h3>How do you handle road closures and turn restrictions?</h3>
-<p>A closure sets a weight to infinity and goes through the same per-cell shortcut refresh as traffic. Turn restrictions live in the graph (edges between segments), so the search never produces an illegal turn.</p>
+<p>A closure sets the weight of the segment to infinity and goes through the same shortcut refresh as a traffic change. Turn restrictions are stored in the graph as allowed transitions between segments, so the search can never return an illegal turn.</p>
 
 <x-checklist title="Self-review: maps and navigation">
 <script type="application/json">
 {
   "groups": [
     { "title": "Before drawing", "items": ["I split the product into map display, routing and live traffic", "I said what keeps working when live traffic fails"] },
-    { "title": "Numbers and interfaces", "items": ["I estimated tile storage and the ping rate", "I sized the road graph and showed it fits in memory", "I versioned tile URLs so the CDN never needs purging", "I chose how the phone hears about a better route"] },
-    { "title": "Design and depth", "items": ["I explained why plain Dijkstra is too slow on a continent", "I described cell shortcuts and why they suit changing weights", "I turned pings into segment speeds by map-matching per area", "I computed an ETA from segment times, blending live and typical speeds", "I avoided flip-flopping and herding when rerouting"] },
+    { "title": "Numbers and interfaces", "items": ["I estimated tile storage and the ping rate", "I versioned tile URLs so the CDN never needs purging", "I chose how the phone hears about a better route"] },
+    { "title": "Design and depth", "items": ["I explained why plain Dijkstra is too slow on a continent", "I described cell shortcuts and why they suit changing weights", "I turned pings into segment speeds by map-matching per area", "I avoided flip-flopping and herding when rerouting"] },
     { "title": "Failure", "items": ["I said what happens when the aggregator, a routing server and the network each fail"] }
   ]
 }

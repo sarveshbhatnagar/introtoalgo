@@ -1,34 +1,34 @@
 <!--
 {
   "title": "Design a Key-Value Store",
-  "description": "Design a distributed, highly available key-value store: consistent hashing, replication with tunable quorums, conflicts, repair and the storage engine.",
-  "minutes": 30,
+  "description": "How to design a distributed, highly available key-value store: partitioning, replication with quorums, conflict resolution, repair and the storage engine.",
+  "minutes": 22,
   "kind": "design",
   "tags": ["case study", "distributed storage", "quorums", "replication", "consistency"]
 }
 -->
-<p>A key-value store does two things: <code>put(key, value)</code> and <code>get(key)</code>. On one machine that is a hash map with a log. Over thirty machines that fail, you must decide where each key lives, how many copies to keep, what a read returns while copies disagree, and how they heal.</p>
+<p>A key-value store supports <code>put(key, value)</code> and <code>get(key)</code>. On one machine it is a hash map backed by a log. A distributed key-value store spreads the data over many machines that can fail, so the design has to decide where each key lives, how many copies to keep, what a read returns while the copies disagree, and how the copies are repaired.</p>
 
-<p>It tests whether you are precise about guarantees; "eventually consistent" is not an answer. It follows <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a> and leans on <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> and <a href="/system-design/replication.html">Replication</a>.</p>
+<p>Interviewers ask this question to see whether you can state precisely what the system guarantees; "eventually consistent" alone is not an answer. The approach follows <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a> and builds on <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> and <a href="/system-design/replication.html">Replication</a>.</p>
 
 <h2>Clarify the problem</h2>
 
-<p>The design swings on one answer, so ask it early: during a failure, refuse writes, or accept them and sort out conflicts later?</p>
+<p>The most important question is whether the store should reject writes during a failure to stay consistent, or accept them and resolve conflicts later.</p>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a distributed key-value store.</x-interviewer>
-<x-you>How big are keys and values, do we need more than get, put and delete, and how much data and traffic?</x-you>
-<x-interviewer>Keys up to 256 bytes, values up to 1 MB but usually around 10 KB. Just get, put and delete. About 2 billion keys; at peak, 150,000 reads and 50,000 writes a second.</x-interviewer>
-<x-you>If a node or link fails, should we reject writes, or accept them and resolve conflicts later? Think of a shopping cart.</x-you>
-<x-interviewer>Accept them; a lost "add to cart" costs money. Some callers want stronger reads, though.</x-interviewer>
-<x-you>Then I'll favour availability, make consistency tunable per request, and never lose an acknowledged write. One region, three zones.</x-you>
-<x-coach>Asking in product terms gets a clear answer that justifies every later choice.</x-coach>
+<x-you>How large are keys and values, do we need anything beyond get, put and delete, and how much data and traffic should it handle?</x-you>
+<x-interviewer>Keys are up to 256 bytes and values up to 1 MB, usually around 10 KB. Only get, put and delete. Assume 2 billion keys, and at peak 150,000 reads and 50,000 writes a second.</x-interviewer>
+<x-you>If a node or a network link fails, should the store reject writes, or accept them and resolve conflicts afterwards? Think of a shopping cart.</x-you>
+<x-interviewer>Accept them, because a lost "add to cart" costs money. Some callers will want stronger reads, though.</x-interviewer>
+<x-you>Then I will favour availability, let each request choose its consistency level, and never lose an acknowledged write. I will assume one region with three zones.</x-you>
+<x-coach>Asking about failure behaviour in product terms gets an answer that justifies every later choice.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> <code>get</code>, <code>put</code> and <code>delete</code> by key; the caller chooses how many replicas must answer.</li>
-<li><strong>Non-functional:</strong> writes accepted with some replicas down; p99 under 10 ms in the region; at the default level, an acknowledged write survives any one node failure; grows without downtime.</li>
-<li><strong>Out of scope:</strong> range scans, secondary indexes, multi-key transactions, multiple regions.</li>
+<li><strong>Functional:</strong> <code>get</code>, <code>put</code> and <code>delete</code> by key, where the caller chooses how many replicas must answer.</li>
+<li><strong>Non-functional:</strong> writes are accepted while some replicas are down, p99 latency is under 10 ms within the region, an acknowledged write survives the loss of any one node at the default setting, and the cluster grows without downtime.</li>
+<li><strong>Out of scope:</strong> range scans, secondary indexes, transactions and multiple regions.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
@@ -42,7 +42,7 @@
   "answer": "60 TB",
   "accept": ["20 TB", "200 TB"],
   "steps": ["Raw: 2 × 10<sup>9</sup> × 10<sup>4</sup> B = 2 × 10<sup>13</sup> B = 20 TB", "Replicated: 20 TB × 3 = 60 TB"],
-  "note": "Keep each 4 TB node half full for compaction and growth: 60 ÷ 2 = 30 nodes."
+  "note": "Keep each 4 TB node half full so there is room for compaction and growth: 60 TB ÷ 2 TB per node = 30 nodes."
 }
 </script>
 </x-estimate>
@@ -51,23 +51,23 @@
 <script type="application/json">
 {
   "question": "About how many replica operations does each node handle at peak?",
-  "givens": ["150,000 reads and 50,000 writes a second at peak", "Each write goes to 3 replicas; each read asks 2", "30 nodes, load spread evenly"],
+  "givens": ["150,000 reads and 50,000 writes a second at peak", "Each write goes to 3 replicas and each read asks 2", "30 nodes, load spread evenly"],
   "unit": "count/s",
   "answer": "15 thousand/s",
   "accept": ["5 thousand/s", "50 thousand/s"],
   "choices": ["1.5 thousand/s", "15 thousand/s", "150 thousand/s", "1.5 million/s"],
   "steps": ["Replica reads: 150,000 × 2 = 300,000 a second", "Replica writes: 50,000 × 3 = 150,000 a second", "(300,000 + 150,000) ÷ 30 = 15,000 a second per node"],
-  "note": "Comfortable for an SSD node. Disk, not traffic, sets the node count."
+  "note": "Disk size, not traffic, sets the node count."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the three operations. What does <code>get</code> return when replicas disagree, and what must the caller send back on <code>put</code>?</p>
+<p>Write the three operations. What should <code>get</code> return when replicas disagree, and what must the caller send back with <code>put</code>?</p>
 </x-task>
 <x-answer>
-<p><code>get</code> can return several values (siblings) plus an opaque <strong>context</strong> of their versions, which the next <code>put</code> sends back.</p>
+<p><code>get</code> can return several values, called siblings, together with an opaque <strong>context</strong> that describes their versions. The caller sends that context back with its next <code>put</code>.</p>
 </x-answer>
 </x-tryit>
 
@@ -92,14 +92,14 @@ read / write levels: "one" | "quorum" | "all"   (R or W out of N = 3)
 </pre>
 </x-code>
 
-<p>The decision worth arguing is the <strong>context</strong>. Without it, the newest timestamp wins and one of two concurrent writes silently vanishes. With it, the store can tell "this replaces what you read" from "these happened in parallel" and hand both back to merge. It adds work for callers, so make it optional: no context means last-write-wins.</p>
+<p>The API decision worth arguing is the <strong>context</strong>. Without it, the write with the newest timestamp wins and one of two concurrent writes silently disappears. With it, the store can tell the difference between a write that replaces what the client read and two writes made in parallel, and it can hand both back to be merged. The context is optional, and a <code>put</code> without one uses last-write-wins.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>What does a record hold besides key and value? What must each node know about the cluster?</p>
+<p>What does a stored record contain besides the key and value? What does each node need to know about the cluster?</p>
 </x-task>
 <x-answer>
-<p>A version vector, timestamp and tombstone flag. Each node also holds the ring and, via gossip, who is alive.</p>
+<p>A record also holds a version vector, a timestamp and a tombstone flag. Each node knows the hash ring and, through gossip, which nodes are alive.</p>
 </x-answer>
 </x-tryit>
 
@@ -120,20 +120,20 @@ cluster metadata (same on every node, a few MB)
 </pre>
 </x-code>
 
-<p>Every operation is a single-key lookup or overwrite, and each node takes 5,000 replica writes a second to random keys. An <strong>LSM tree</strong> turns them into sequential appends (see <a href="/system-design/indexing.html">Indexing</a>), at the cost of reads that may check several files. With rare writes, a B-tree would win.</p>
+<p>Every operation reads or overwrites a single key, and each node receives about 5,000 replica writes a second to random keys. A log-structured merge tree (LSM tree) suits this pattern because it turns random writes into sequential appends, as described in <a href="/system-design/indexing.html">Indexing</a>. The cost is that a read may have to check several files. A B-tree would be the better choice only if writes were rare.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch a <code>put</code>: who receives it, how it finds the key's owners, when it says "done", and what happens if an owner is down.</p>
+<p>Sketch a <code>put</code>. Which node receives it, how does that node find the key's owners, when does it reply "done", and what happens if an owner is down?</p>
 </x-task>
 <x-answer>
-<p>No leader. The receiving node hashes the key, walks the ring to the next 3 distinct nodes, writes to all 3 and replies after 2 confirm. If an owner is down, a stand-in keeps the write as a hint and passes it on later.</p>
+<p>There is no leader. The node that receives the request hashes the key, finds the next 3 distinct nodes on the ring, sends the write to all 3 and replies once 2 have confirmed. If an owner is down, a stand-in node keeps the write as a hint and passes it on when the owner returns.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<p>Any node can coordinate any request, since every node knows the ring (about 100 virtual nodes per server). A key's <strong>preference list</strong> is the first 3 <em>distinct</em> servers clockwise from its hash, in 3 zones; skip points of servers already picked, or one zone outage could take every copy.</p>
+<p>Any node can coordinate any request, because every node holds the ring. A key's <strong>preference list</strong> is the first 3 distinct servers found clockwise from the key's hash, chosen from 3 different zones. Ring positions of a server already chosen are skipped, so one zone outage cannot take all three copies.</p>
 
 <x-arch caption="The node that receives a request coordinates it and sends it to the key's 3 replicas. When one replica is down, a stand-in node holds its writes as hints.">
 <script type="application/json">
@@ -181,47 +181,42 @@ cluster metadata (same on every node, a few MB)
   },
   "steps": [
     {
-      "caption": "The client calls <code>put(\"cart:42\", [milk])</code>. The node that receives it coordinates.",
+      "caption": "The client calls <code>put(\"cart:42\", [milk])</code>, and the node that receives the call acts as coordinator.",
       "arch": { "active": ["client", "coord", ["client", "coord"]], "dim": ["e"] },
       "vars": { "N": 3, "W": 2, "acks": 0 }
     },
     {
-      "caption": "It hashes the key and walks clockwise: the first 3 distinct servers are B, C and D.",
+      "caption": "The coordinator hashes the key and walks clockwise around the ring. The first 3 distinct servers are B, C and D.",
       "arch": { "active": ["coord"], "mark": ["b", "c", "d"], "dim": ["e"], "notes": { "coord": "owners: B, C, D" } },
       "vars": { "N": 3, "W": 2, "acks": 0 }
     },
     {
-      "caption": "It writes to all 3 in parallel but waits for 2, so the second-fastest sets latency.",
+      "caption": "It sends the write to all 3 replicas in parallel but waits for only 2.",
       "arch": { "active": [["coord", "b"], ["coord", "c"], ["coord", "d"]], "dim": ["e"] },
       "vars": { "N": 3, "W": 2, "acks": 0 }
     },
     {
-      "caption": "Each replica appends to its commit log on disk, then confirms. B and C are first.",
-      "arch": { "active": ["b", "c", ["b", "coord"], ["c", "coord"]], "dim": ["e"], "notes": { "b": "logged", "c": "logged" } },
-      "vars": { "N": 3, "W": 2, "acks": 2 }
-    },
-    {
-      "caption": "2 confirmations = W: the client hears OK. The write is on disk in two zones at <code>{B: 1}</code>, stamped by B, the first owner. D confirms a moment later.",
+      "caption": "Each replica appends the write to its commit log and confirms. B and C confirm first, which equals W, so the client receives OK. The version is <code>{B: 1}</code>, stamped by B as the first owner. D confirms a moment later.",
       "arch": { "active": [["coord", "client"]], "mark": ["client", "b", "c", "d"], "dim": ["e"], "notes": { "d": "logged" } },
       "vars": { "N": 3, "W": 2, "acks": 3 }
     },
     {
-      "caption": "A read, <code>get(\"cart:42\")</code> with R = 2. The first 2 answers, B and D, are both at <code>{B: 1}</code>, so it returns [milk].",
+      "caption": "A later <code>get(\"cart:42\")</code> with R = 2 uses the first 2 answers. B and D both hold <code>{B: 1}</code>, so the coordinator returns [milk].",
       "arch": { "active": ["b", "d", ["coord", "b"], ["coord", "d"], ["coord", "client"]], "mark": ["client"], "dim": ["e"], "notes": { "b": "{B: 1}", "d": "{B: 1}" } },
       "vars": { "N": 3, "R": 2, "answers": 2 }
     },
     {
-      "caption": "D stops answering, and a new write arrives. B and C get it; E, the next healthy node on the ring, gets D's copy tagged \"this belongs to D\": a hinted handoff.",
+      "caption": "D stops answering and a new write arrives. B and C receive it. E, the next healthy node on the ring, receives a copy tagged for D, called a hinted handoff.",
       "arch": { "fail": ["d"], "active": ["e", ["coord", "b"], ["coord", "c"], ["coord", "e"]], "notes": { "e": "hint for D" } },
       "vars": { "N": 3, "W": 2, "acks": 2 }
     },
     {
-      "caption": "B and C confirm: W = 2 from real owners. Had only one owner been up, E's copy would count toward W: a sloppy quorum, available but with weaker reads.",
+      "caption": "B and C confirm, so W = 2 is met by real owners. If only one owner had been up, E's copy would have counted toward W, which is a sloppy quorum: writes stay available but reads become less reliable.",
       "arch": { "fail": ["d"], "active": [["coord", "client"]], "mark": ["client", "b", "c", "e"] },
       "vars": { "N": 3, "W": 2, "acks": 3 }
     },
     {
-      "caption": "D returns 10 minutes later. E sees it in gossip, hands over the hinted writes and deletes them.",
+      "caption": "D comes back 10 minutes later. E sees this through gossip, sends D the hinted writes and deletes them.",
       "arch": { "active": ["d", ["e", "d"]], "mark": ["b", "c", "d"], "dim": ["client"], "notes": { "e": "hints sent", "d": "caught up" } }
     }
   ]
@@ -233,26 +228,25 @@ cluster metadata (same on every node, a few MB)
 
 <h3>Partitioning with consistent hashing</h3>
 
-<p><a href="/system-design/consistent-hashing.html">Consistent Hashing</a> covers virtual nodes. What they buy a replicated store is <strong>parallel rebuilds</strong>. A dead node's 2 TB is spread in small ranges over the other 29. If each streams its share at 100 MB/s, the rebuild takes 2 × 10<sup>12</sup> ÷ (29 × 10<sup>8</sup>) ≈ 690 s, about 11 minutes. From one peer it would take 5.6 hours.</p>
+<p>The simplest way to place keys is to compute <code>hash(key) mod number_of_nodes</code>. Adding or removing one node changes the result for almost every key, so nearly all the data has to move. <a href="/system-design/consistent-hashing.html">Consistent Hashing</a> places nodes and keys on a ring, so a node joining or leaving only affects the keys next to it.</p>
+
+<p>With one position per node the ring is unevenly loaded, so each server gets about 100 positions, called virtual nodes. For a replicated store the main benefit is <strong>parallel rebuilds</strong>: a dead node's 2 TB is split into small ranges across the other 29 servers. If each of them streams its share at 100 MB/s, the rebuild takes 2 × 10<sup>12</sup> ÷ (29 × 10<sup>8</sup>) ≈ 690 seconds, or about 11 minutes, whereas copying from a single peer would take about 5.6 hours.</p>
 
 <h3>Replication and tunable quorums</h3>
 
-<p>Each key has N = 3 replicas; a write waits for W of them, a read for R. <a href="/system-design/replication.html">Replication</a> shows why R + W &gt; N makes read and write sets overlap. Pick values per use case:</p>
+<p>Each key is stored on N = 3 replicas. A write waits for W of them to confirm and a read waits for R of them to answer. <a href="/system-design/replication.html">Replication</a> explains why R + W &gt; N means every read set overlaps every write set.</p>
 
-<table>
-<thead><tr><th>Setting (N = 3)</th><th>What you get</th><th>What it costs</th></tr></thead>
-<tbody>
-<tr><td>W = 2, R = 2</td><td>Reads normally see the latest acknowledged write; survives one replica down.</td><td>Waits for the second-fastest replica. The default.</td></tr>
-<tr><td>W = 1, R = 1</td><td>Fastest; writes succeed with two replicas down.</td><td>A read can miss a write that just succeeded. Fine for caches and sessions.</td></tr>
-<tr><td>W = 3, R = 1</td><td>Fast reads that see every acknowledged write.</td><td>Any one replica down blocks all writes to its keys.</td></tr>
-</tbody>
-</table>
+<p><strong>W = 2, R = 2</strong> is the default. A read overlaps every acknowledged write, so it normally sees the latest value, and one replica can be down. The cost is waiting for the second-fastest replica.</p>
 
-<p>R + W &gt; N guarantees overlap, not linearizability: concurrent writes both succeed, a failed write can still appear on one replica, and two reads during a write can see new then old. A <strong>sloppy quorum</strong> breaks even the overlap: if stand-ins like E met W, the real owners can miss the write until the hint arrives. See <a href="/system-design/cap-and-consistency.html">CAP and Consistency</a>.</p>
+<p><strong>W = 1, R = 1</strong> is the fastest setting, and writes succeed even when two replicas are down. The cost is that a read can miss a write that was just acknowledged, which is acceptable for caches and session data.</p>
+
+<p><strong>W = 3, R = 1</strong> gives fast reads that see every acknowledged write, but one replica being down blocks all writes to its keys, which contradicts the availability goal.</p>
+
+<p>R + W &gt; N does not give linearizability, and interviewers often push on this. Two concurrent writes can both succeed. A write that failed with <code>UNAVAILABLE</code> can still appear on one replica. A <strong>sloppy quorum</strong> removes even the overlap guarantee, because if stand-in nodes such as E supplied the W confirmations, the real owners may not have the write until the hint is delivered. See <a href="/system-design/cap-and-consistency.html">CAP and Consistency</a>.</p>
 
 <h3>Resolving conflicts</h3>
 
-<p>A store that takes writes during failures lets two clients update one key unaware of each other.</p>
+<p>A store that accepts writes during failures will sometimes receive two updates to the same key from clients that do not know about each other. The tracer shows a cart edited from two devices while two replicas cannot reach each other.</p>
 
 <x-tracer title="Two devices edit one cart">
 <script type="application/json">
@@ -272,32 +266,27 @@ cluster metadata (same on every node, a few MB)
   },
   "steps": [
     {
-      "caption": "Both replicas hold [milk] at <code>{B: 1}</code>: one write, coordinated by B.",
+      "caption": "Both replicas hold [milk] with version <code>{B: 1}</code>, which came from one write coordinated by B.",
       "arch": { "mark": ["b", "c"], "notes": { "b": "{B:1}", "c": "{B:1}" } },
       "vars": { "B holds": "milk", "C holds": "milk" }
     },
     {
-      "caption": "The B–C link fails. The phone reads [milk] at <code>{B: 1}</code> and adds eggs; B bumps its entry: <code>{B: 2}</code>.",
+      "caption": "The link between B and C fails. The phone reads [milk] with <code>{B: 1}</code> and adds eggs. B increases its own counter, so the version becomes <code>{B: 2}</code>.",
       "arch": { "active": ["phone", "b", ["phone", "b"]], "fail": [["b", "c"]], "notes": { "b": "{B:2}", "c": "{B:1}" } },
       "vars": { "B holds": "milk, eggs", "C holds": "milk" }
     },
     {
-      "caption": "The laptop also read [milk] at <code>{B: 1}</code>. It adds bread through C: <code>{B: 1, C: 1}</code>.",
+      "caption": "The laptop had also read [milk] with <code>{B: 1}</code>. It adds bread through C, and the version becomes <code>{B: 1, C: 1}</code>.",
       "arch": { "active": ["laptop", "c", ["laptop", "c"]], "fail": [["b", "c"]], "notes": { "b": "{B:2}", "c": "{B:1,C:1}" } },
       "vars": { "B holds": "milk, eggs", "C holds": "milk, bread" }
     },
     {
-      "caption": "The link heals. <code>{B: 2}</code> has the bigger B count; <code>{B: 1, C: 1}</code> the bigger C count. Neither contains the other, so the writes were concurrent: keep both as siblings.",
+      "caption": "The link heals. <code>{B: 2}</code> has the larger B counter and <code>{B: 1, C: 1}</code> has the larger C counter, so neither version contains the other. The writes were concurrent, and the store keeps both as siblings.",
       "arch": { "active": [["b", "c"]], "notes": { "b": "2 siblings", "c": "2 siblings" } },
       "vars": { "siblings": "[milk, eggs] and [milk, bread]" }
     },
     {
-      "caption": "The next read returns both carts and the merged context <code>{B: 2, C: 1}</code>. The cart code merges by union: [milk, eggs, bread].",
-      "arch": { "active": ["phone", ["b", "phone"]], "notes": { "b": "2 siblings", "phone": "merge" } },
-      "vars": { "merged": "milk, eggs, bread" }
-    },
-    {
-      "caption": "It writes the merged cart with that context. B makes it <code>{B: 3, C: 1}</code>, which covers and replaces both siblings. Nothing was lost.",
+      "caption": "The next read returns both carts, the cart code merges them by union into [milk, eggs, bread], and the client writes that back with the merged context. B makes the version <code>{B: 3, C: 1}</code>, which covers both siblings and replaces them.",
       "arch": { "active": [["phone", "b"], ["b", "c"]], "mark": ["b", "c"], "notes": { "b": "{B:3,C:1}", "c": "{B:3,C:1}" } },
       "vars": { "B holds": "milk, eggs, bread", "C holds": "milk, eggs, bread" }
     }
@@ -306,7 +295,13 @@ cluster metadata (same on every node, a few MB)
 </script>
 </x-tracer>
 
-<p>A version vector detects concurrency but does not resolve it. Someone still merges, and a plain union has a flaw: an item removed on one device returns from the other.</p>
+<p>There are three ways to handle such conflicts.</p>
+
+<p><strong>Last-write-wins</strong> keeps the value with the newest timestamp and discards the other. It silently drops one of two concurrent writes, which in the example would lose the eggs or the bread, and clock differences between nodes decide which one. It suits keys with one writer or harmless lost updates.</p>
+
+<p><strong>Version vectors with siblings</strong>, as in the tracer, detect concurrency exactly and never lose a write. The cost is that every caller must merge siblings, and the vectors grow with the number of coordinators. A plain union merge also brings back an item that was removed on one device.</p>
+
+<p><strong>Conflict-free data types (CRDTs)</strong> let the store do the merge itself, because the value is a counter, a set or a map whose merge rule is built in. This only applies to those data shapes, and removals need extra metadata.</p>
 
 <x-tradeoffs caption="Ways to resolve concurrent writes">
 <script type="application/json">
@@ -314,115 +309,103 @@ cluster metadata (same on every node, a few MB)
   "options": [
     {
       "name": "Last-write-wins",
-      "good": "Simple: one value per key, no work for callers.",
-      "bad": "Silently drops concurrent writes (here, the eggs), and clock skew picks which.",
-      "pick": "Values are written once, one writer owns each key, or a lost update is harmless (a cache)."
+      "good": "One value per key and no work for callers.",
+      "bad": "Silently drops concurrent writes, and clock skew decides which one.",
+      "pick": "Values written once, keys with a single writer, or data where a lost update is harmless."
     },
     {
-      "name": "Version vectors + siblings",
-      "good": "Never loses a write. The application merges knowing the data.",
-      "bad": "Every caller must handle siblings. Vectors grow with the number of coordinators.",
-      "pick": "Concurrent updates matter and callers can merge: carts, settings. My default here.",
+      "name": "Version vectors and siblings",
+      "good": "Never loses a write, and the application merges using what it knows about the data.",
+      "bad": "Every caller must handle siblings, and vectors grow with the number of coordinators.",
+      "pick": "Data such as carts and settings, where concurrent updates matter and callers can merge. This is my default.",
       "default": true
     },
     {
-      "name": "Merge-friendly data types (CRDTs)",
-      "good": "The store merges correctly by itself: counters, sets, maps.",
-      "bad": "Only for those data shapes; removals need extra metadata.",
-      "pick": "The value is a counter or set and you want merges without client code."
+      "name": "CRDTs",
+      "good": "The store merges correctly without client code.",
+      "bad": "Limited to counters, sets and similar types, and removals need extra metadata.",
+      "pick": "The value is a counter or a set and you want merging without client code."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-
 <h3>Detecting failures and repairing data</h3>
 
-<p>No central monitor decides who is dead. Each node gossips its heartbeat counter to a few random peers every second; if one stalls for, say, 10 seconds, peers mark that node <em>suspected</em>: slow and dead look alike.</p>
+<p>No central monitor decides which nodes are dead. Each node gossips a heartbeat counter to a few random peers every second. If a node's counter has not increased for about 10 seconds, its peers mark it as <em>suspected</em>, because from outside a slow node and a dead node look the same.</p>
 
-<p>A suspected node gets hinted handoff and no data moves: streaming 2 TB for a node that reboots in a minute does harm. Its ranges rebuild only once an operator, or automation with a long timeout, declares it gone. Three mechanisms repair data:</p>
+<p>A suspected node triggers no data movement. Streaming 2 TB to replace a node that reboots in a minute would do harm. Its ranges are rebuilt only after an operator, or automation with a long timeout, declares the node gone. Three mechanisms keep the replicas in sync:</p>
 
 <ul>
-<li><strong>Hinted handoff</strong> covers short outages. A node down 10 minutes misses 5,000 writes a second × 600 s = 3 million writes, about 30 GB, held by stand-ins.</li>
-<li><strong>Read repair</strong> fixes stale copies a read notices.</li>
-<li><strong>Anti-entropy</strong> catches the rest. Two replicas compare a Merkle tree (hashes over sub-ranges) and descend only into branches that differ. With 200 million keys per node and 2<sup>15</sup> leaves, one wrong key costs a walk down 15 levels and a sync of one leaf of about 6,000 keys, not 200 million.</li>
+<li><strong>Hinted handoff</strong> covers short outages. A node down for 10 minutes misses 5,000 writes a second × 600 s = 3 million writes, about 30 GB, which stand-ins hold until it returns.</li>
+<li><strong>Read repair</strong> fixes a stale replica that a read notices, by sending it the newer version.</li>
+<li><strong>Anti-entropy</strong> handles whatever the first two missed. Two replicas compare Merkle trees, which are trees of hashes over sub-ranges of keys, and descend only into branches whose hashes differ. With about 200 million keys per node and 2<sup>15</sup> leaves, each leaf covers about 6,000 keys. One wrong key then costs a walk down 15 levels and a sync of one leaf.</li>
 </ul>
 
-<h3>The storage engine, in outline</h3>
+<h3>The storage engine and deletes</h3>
 
-<p>Writes go to the commit log and a sorted in-memory table, later written out as immutable sorted files that compaction merges. A read checks memory, then files newest first, skipping any whose <strong>Bloom filter</strong> says "definitely not here".</p>
+<p>A write goes to the commit log and a sorted in-memory table. A full table is written out as an immutable sorted file, and compaction merges these files. A read checks memory and then the files from newest to oldest, and a <strong>Bloom filter</strong> on each file lets it skip files that definitely lack the key.</p>
 
-<p>Deletes are the trap. A delete writes a <strong>tombstone</strong>, which compaction may drop only after a grace period, typically days. If a replica missed the delete and the tombstone is purged before repair reaches it, anti-entropy copies the old value back: the deleted key returns. The grace period must outlast the longest outage you repair from.</p>
+<p>Deletes need care. A delete writes a <strong>tombstone</strong>, a marker saying the key is deleted, and compaction may remove the tombstone only after a grace period, typically several days. If a replica missed the delete and the tombstone is purged before repair reaches that replica, anti-entropy copies the old value back and the deleted key returns. The grace period must be longer than the longest outage the cluster repairs from.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x (600 TB replicated, 2 million operations a second), you need about 300 nodes. Consistent hashing handles growth, but <strong>hot keys</strong> do not spread (a popular key still lives on 3 nodes), and <strong>compaction debt</strong>, writes outrunning merging, makes reads check more files: watch files per read and throttle writes early.</p>
+<p>At 10 times the load there are 600 TB of replicated data and 2 million client operations a second, which needs about 300 nodes. Consistent hashing handles the growth, but two problems remain. <strong>Hot keys</strong> do not spread, because a popular key still lives on only 3 nodes. <strong>Compaction debt</strong> builds up when writes arrive faster than files are merged, and every read then has to check more files. Watch the number of files per read and slow writes down early.</p>
 
 <table>
 <thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>One node, briefly</td><td>Its keys have 2 of 3 replicas; W = 2 and R = 2 still succeed.</td><td>Hinted handoff.</td></tr>
-<tr><td>One node, for good</td><td>Its 2 TB is down to 2 copies.</td><td>Declare it gone; 29 peers rebuild it in about 11 minutes.</td></tr>
-<tr><td>A whole zone</td><td>Every key loses one copy.</td><td>Quorums continue on the other two zones.</td></tr>
-<tr><td>A network partition</td><td>Both sides may accept writes to the same keys.</td><td>Version vectors keep both as siblings; callers merge after.</td></tr>
-<tr><td>A disk silently corrupts data</td><td>One replica returns bad bytes.</td><td>Block checksums catch it; the replica re-fetches from the others.</td></tr>
+<tr><td>One node, briefly</td><td>Its keys have 2 of 3 replicas, so W = 2 and R = 2 still succeed.</td><td>Hinted handoff catches the node up when it returns.</td></tr>
+<tr><td>One node, permanently</td><td>Its 2 TB of data exists only as 2 copies.</td><td>Declare it gone, and the other 29 nodes rebuild it in about 11 minutes.</td></tr>
+<tr><td>A whole zone</td><td>Every key loses one of its 3 copies.</td><td>Quorums keep working on the other two zones.</td></tr>
+<tr><td>A network partition</td><td>Both sides may accept writes to the same keys.</td><td>Version vectors keep both writes as siblings, and callers merge them afterwards.</td></tr>
+<tr><td>A disk silently corrupts data</td><td>One replica returns wrong bytes.</td><td>Block checksums detect it, and the replica re-fetches the data from the others.</td></tr>
 </tbody>
 </table>
-
-<x-callout type="mistake" title="Saying a quorum makes the store strongly consistent">
-<p>R + W &gt; N only makes read and write sets overlap. Linearizable reads need a leader per range chosen by <a href="/system-design/consensus-and-leader-election.html">consensus</a>, at the cost of availability during failover.</p>
-</x-callout>
 
 <h2>What a strong answer sounds like</h2>
 
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Shards by hash, adds replicas, says "eventually consistent". Needs prompting on disagreeing replicas.</td></tr>
-<tr><td>Mid</td><td>Virtual nodes, R + W &gt; N, read repair and hinted handoff.</td></tr>
-<tr><td>Senior</td><td>Ties choices to the availability requirement, says what quorums do not guarantee, prices last-write-wins and version vectors, separates temporary from permanent failure, knows why tombstones need a grace period.</td></tr>
+<tr><td>Junior</td><td>Shards by hash, adds replicas and says "eventually consistent", and needs prompting to explain what happens when replicas disagree.</td></tr>
+<tr><td>Mid</td><td>Uses virtual nodes, explains R + W &gt; N, and describes repair.</td></tr>
+<tr><td>Senior</td><td>Ties each choice to the availability requirement, says what quorums do not guarantee, and separates temporary from permanent failure.</td></tr>
 </tbody>
 </table>
 
 <x-interview title="Being precise about guarantees" tone="strong">
-<x-interviewer>With N = 3, W = 2, R = 2, is this strongly consistent?</x-interviewer>
-<x-you>Not linearizable. Every read overlaps every acknowledged write, so normally it sees the latest. But concurrent writes both succeed as siblings, a failed write can still show up, and with a sloppy quorum a read can miss a write until the hint arrives.</x-you>
+<x-interviewer>With N = 3, W = 2 and R = 2, is this strongly consistent?</x-interviewer>
+<x-you>No, it is not linearizable. Every read overlaps every acknowledged write, so it normally sees the latest value. However, concurrent writes can both succeed and become siblings, a failed write can still show up on one replica, and with a sloppy quorum a read can miss a write until the hint is delivered.</x-you>
 <x-interviewer>So when would you not use this design?</x-interviewer>
-<x-you>For an account balance or a uniqueness check. Those need one leader per range with consensus; writes pause a few seconds during failover, the right trade for them.</x-you>
-<x-coach>A weak answer says "yes". The strong one says what overlap gives, how it falls short, and when to choose another design.</x-coach>
+<x-you>I would not use it for an account balance or a uniqueness check. Those need one leader per key range with consensus, and writes pause for a few seconds during failover, which is the right trade-off for that kind of data.</x-you>
+<x-coach>A weak answer says "yes". The strong answer says what overlap gives you, where it falls short, and when to choose a different design.</x-coach>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you run it in two regions?</h3>
-<p>Keep N replicas per region, acknowledge after a local quorum, and replicate across regions asynchronously. Version vectors catch cross-region conflicts; a region failure loses the last unreplicated writes.</p>
-
-<h3>How do you support range scans?</h3>
-<p>Hashing scatters neighbouring keys. Partition by key range instead: it keeps order, but hot or large ranges must be split. One layout cannot do both.</p>
+<p>Keep N replicas in each region, acknowledge a write after a quorum in the local region, and replicate to the other region asynchronously. Version vectors detect conflicts between regions, and a lost region takes its unreplicated writes with it.</p>
 
 <h3>How do you add expiry (TTL)?</h3>
-<p>Store an expiry time with the record; reads treat expired records as missing. The expired record must then act as a tombstone for the grace period, or an older copy without the expiry comes back through repair.</p>
+<p>Store an expiry time in the record and treat expired records as missing. An expired record must then act as a tombstone for the grace period, or repair could bring back an older copy.</p>
 
 <h3>How does a new node join without downtime?</h3>
-<p>It takes about 100 points on the ring. Current owners stream it each range it now owns while new writes also go to it. It serves reads once streaming ends; then the old owners drop their copies.</p>
+<p>The new node takes about 100 positions on the ring, and the current owners stream it the ranges it now owns while new writes for them also go to it. It serves reads once streaming finishes, and the old owners then delete their copies.</p>
 
-<h3>One key gets 100,000 reads a second. What now?</h3>
-<p>With R = 2, that is 200,000 replica reads on 3 nodes, about 67,000 each: over 4 times a node's normal 15,000. Cache it for a second in the coordinators, or read with R = 1 if slight staleness is fine.</p>
+<h3>One key gets 100,000 reads a second. What do you do?</h3>
+<p>With R = 2 that is 200,000 replica reads spread over only 3 nodes, about 67,000 each, which is more than 4 times the 15,000 a node normally handles. Cache the value for a second in the coordinators, or read with R = 1 if slightly stale data is acceptable.</p>
 
 <x-checklist title="Self-review: key-value store">
 <script type="application/json">
 {
   "groups": [
-    { "title": "Before drawing", "items": ["I asked about value sizes and operations", "I asked availability or consistency, in product terms", "I set latency and durability targets"] },
-    { "title": "Numbers and interfaces", "items": ["I derived node count from replicated storage", "I worked out per-node load with replication", "I gave put a version context and an honest failure"] },
-    { "title": "Design and depth", "items": ["I used consistent hashing with replicas across zones", "I chose N, R and W per use case and their limits", "I priced last-write-wins and version vectors", "I separated hinted handoff from rebuild", "I explained Merkle repair and the tombstone grace period"] },
-    { "title": "Failure", "items": ["I said what strains at 10x: hot keys and compaction", "I said what happens when a node, zone or network fails"] }
+    { "title": "Before drawing", "items": ["I asked about value sizes and operations", "I asked about availability versus consistency in product terms", "I set latency and durability targets"] },
+    { "title": "Numbers and interfaces", "items": ["I derived the node count from replicated storage", "I worked out per-node load including replication", "I gave put a version context and honest failure results"] },
+    { "title": "Design and depth", "items": ["I used consistent hashing with replicas in different zones", "I chose N, R and W and stated their limits", "I compared last-write-wins and version vectors", "I explained repair and the tombstone grace period"] },
+    { "title": "Failure", "items": ["I said what strains at 10 times the load, namely hot keys and compaction", "I said what happens when a node, a zone or the network fails"] }
   ]
 }
 </script>
 </x-checklist>
-
-<h2>What to practise next</h2>
-
-<p>A news feed keeps timelines in a store like this. See how fan-out decides what gets written in <a href="/system-design/design-a-news-feed.html">Design a News Feed</a>.</p>

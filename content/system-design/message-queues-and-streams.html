@@ -1,22 +1,18 @@
 <!--
 {
   "title": "Message Queues and Streams",
-  "description": "Move slow work off the request path: queues vs logs, delivery guarantees, ordering with partitions, consumer groups, dead letters and backpressure.",
+  "description": "How queues and logs move work between services, what delivery guarantees mean, how ordering and consumer groups work, and what interviewers ask about them.",
   "minutes": 14,
   "tags": ["queues", "streams", "async", "building blocks"]
 }
 -->
-<p>A signup endpoint creates the account, then calls an email provider to send a welcome message before responding. One afternoon the provider slows from 100 ms to 3 seconds. At 50 signups a second, 50 × 3 = 150 requests are stuck waiting, the worker pool fills, and signups fail though the database is fine.</p>
+<p>A message broker is a service that stores messages written by one part of a system until another part reads them. The writer is called the producer and the reader is called the consumer. Brokers move slow or unreliable work out of the request path, absorb bursts of traffic, and let several services react to the same event without the producer knowing about them. They come in two kinds, queues and logs, which behave differently once a message has been read.</p>
 
-<p>The email did not need to happen before the response. Put it on a queue, answer in milliseconds, and let a worker send it later.</p>
+<p>Without a broker, the request handler does all the work itself. If a signup endpoint calls an email provider before it responds, a slow provider makes every signup slow, and the worker threads fill up with requests that are waiting on the provider. With a broker, the endpoint writes a "send welcome email" message and responds immediately, and if the provider is down, the messages wait until it recovers.</p>
 
-<h2>The idea</h2>
+<h2>Where a broker sits</h2>
 
-<p>A <strong>producer</strong> writes a message to a durable broker and moves on. A <strong>consumer</strong> reads it later and does the work. A burst now waits in the broker instead of crushing the consumer, and a dead consumer delays work instead of failing requests.</p>
-
-<p>The costs: work happens later, there is one more system to run, and messages can arrive twice.</p>
-
-<x-arch caption="The API only writes a message. Two consumer groups each get every message; failed messages end up in a dead-letter queue.">
+<x-arch caption="The API only writes a message. Two consumer groups each receive every message, and messages that keep failing are moved to a dead-letter queue.">
 <script type="application/json">
 {
   "nodes": [
@@ -38,34 +34,43 @@
 </script>
 </x-arch>
 
-<h2>Queue or log</h2>
+<h2>Queues and logs</h2>
 
-<p>A <strong>queue</strong> (such as RabbitMQ or SQS) hands each message to one consumer and deletes it once acknowledged. A <strong>log</strong> (such as Kafka) appends messages and keeps them for days; each consumer group tracks its own position (an <em>offset</em>) and can rewind.</p>
+<h3>Message queue</h3>
 
-<x-tradeoffs caption="Queue vs log">
-<script type="application/json">
-{
-  "options": [
-    { "name": "Queue", "good": "Simple job distribution with per-message acks and retries. Added workers share the load.", "bad": "Processed messages are gone: no replay, and a second kind of consumer needs its own copy.", "pick": "Background jobs: emails, thumbnails, webhooks.", "default": true },
-    { "name": "Log (stream)", "good": "Many independent consumers read the same events. Replay after a bug. Order kept per partition.", "bad": "Parallelism is capped by the partition count. One bad message holds up its partition.", "pick": "Events several systems react to, or anything you may reprocess." }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>A queue, such as RabbitMQ or Amazon SQS, delivers each message to one consumer and deletes it once that consumer acknowledges it. Several workers on one queue share the messages, and a message that is not acknowledged is given to another worker.</p>
 
-<p>One job type, one kind of worker: a queue. A second team wants the same events, or you need replay: a log.</p>
+<p>Choose a queue when each message is a job that one worker should do once, such as sending an email or resizing an image. The limits are that a processed message is gone, so you cannot replay it after fixing a bug, and a second kind of consumer, such as analytics, needs its own queue, which the broker's fan-out feature or the producer has to fill.</p>
+
+<h3>Log</h3>
+
+<p>A log, such as Kafka or Amazon Kinesis, appends messages to an ordered file and keeps them for a fixed time or size, whether or not anyone has read them. Consumers do not remove messages. Each consumer group stores an <strong>offset</strong>, its position in the log, and reads forward from it. Moving the offset back makes the group read old messages again.</p>
+
+<p>Choose a log when several services need the same events, or when you may need to reprocess history, for example after fixing a consumer bug. The limits are that parallelism is capped by the number of partitions, and that a message which keeps failing blocks everything behind it in its partition. A log also has no per-message acknowledgement. The consumer commits an offset, which means that everything before that point is done.</p>
 
 <h2>Delivery guarantees</h2>
 
-<p>A consumer does the work and sends an acknowledgement. A crash can land between them; the order decides what it costs.</p>
+<p>A consumer has to do the work and tell the broker it is finished. A crash can happen between those two steps, and the order in which you do them decides what the crash costs.</p>
 
-<ul>
-<li><strong>At-most-once:</strong> ack, then work. A crash after the ack loses the message. Fine for droppable metrics.</li>
-<li><strong>At-least-once:</strong> work, then ack. A crash before the ack means the message comes back and the work runs again. The usual choice.</li>
-<li><strong>"Exactly-once":</strong> no broker can stop a consumer doing an external action twice. You build <em>exactly-once effect</em>: at-least-once delivery plus <a href="/system-design/idempotency-and-retries.html">idempotent</a> processing. Some brokers offer exactly-once within their own reads and writes; that does not cover your email provider.</li>
-</ul>
+<h3>At most once</h3>
 
-<x-tracer title="At-least-once: a crash, a redelivery, a poison message">
+<p>The consumer acknowledges first and then does the work. If it crashes after the acknowledgement, the broker never sends the message again, so the work is lost. Use it only for data such as debug metrics, where losing a message is acceptable.</p>
+
+<h3>At least once</h3>
+
+<p>The consumer does the work first and acknowledges afterwards. If it crashes before acknowledging, the broker sends the message again and the work runs twice. Nothing is lost, but duplicates happen, so every consumer has to cope with them. This is the right default for nearly all systems.</p>
+
+<h3>Exactly once</h3>
+
+<p>No broker can guarantee that a consumer's effect on the outside world happens exactly once, because the consumer can crash after sending an email and before acknowledging. What systems provide is <em>exactly-once effect</em>: at-least-once delivery combined with a consumer that handles duplicates safely, as described under idempotent consumers below. Some brokers offer an exactly-once mode only for consumers that read from the broker and write back to the same broker, and it does not cover an email provider or a separate database.</p>
+
+<h2>Acknowledgements, visibility timeouts, retries and dead letters</h2>
+
+<p>In a queue, the broker keeps a message after delivering it but hides it from other consumers for a period called the <strong>visibility timeout</strong>. If no acknowledgement arrives before the timeout ends, the broker assumes the consumer failed and makes the message visible again. The timeout must be longer than the slowest normal processing time, because otherwise a healthy but slow consumer has its message handed to someone else, which creates a duplicate without any crash. A log has no visibility timeout, because the consumer commits its offset after finishing a batch.</p>
+
+<p>When processing fails, the message is left unacknowledged and is retried. The delay between retries should grow with each attempt, with a random offset added, because an overloaded downstream service needs time to recover. A message that fails every time is a <strong>poison message</strong>, such as one with data the code can never process. After a fixed number of attempts it is moved to a <strong>dead-letter queue</strong>, a separate queue that holds failed messages for inspection. An alert on the size of that queue shows that something needs fixing, and after the fix the messages can be replayed. Without the limit, one bad message is retried forever, wasting workers in a queue or blocking its whole partition in a log.</p>
+
+<x-tracer title="At-least-once delivery: a crash, a redelivery and a poison message">
 <script type="application/json">
 {
   "arch": {
@@ -86,42 +91,37 @@
   },
   "steps": [
     {
-      "caption": "A user signs up. The API stores job 81 in the queue and responds in about 5 ms.",
+      "caption": "The API stores job 81 in the queue and responds without waiting for the email.",
       "arch": { "active": ["api", "queue", ["api", "queue"]], "notes": { "queue": "job 81" } },
       "vars": { "emails sent": 0 }
     },
     {
-      "caption": "Worker 1 receives job 81. The queue hides it from other workers for 30 seconds.",
+      "caption": "Worker 1 receives job 81. The queue hides it from other workers for 30 seconds, which is the visibility timeout.",
       "arch": { "active": ["w1", ["queue", "w1"]], "notes": { "queue": "81 hidden 30 s" } },
       "vars": { "emails sent": 0 }
     },
     {
-      "caption": "Worker 1 sends, passing <code>job-81</code> as an idempotency key (this provider accepts one). The email goes out.",
+      "caption": "Worker 1 sends the email and passes <code>job-81</code> as an idempotency key, which this provider accepts.",
       "arch": { "active": ["provider", ["w1", "provider"]], "mark": ["provider"] },
       "vars": { "emails sent": 1 }
     },
     {
-      "caption": "Worker 1 crashes before acking. To the queue it looks slow, so the job stays.",
+      "caption": "Worker 1 crashes before it acknowledges the job. The queue cannot tell a crash from a slow worker, so the job stays.",
       "arch": { "fail": ["w1"], "notes": { "queue": "81 not acked" } },
       "vars": { "emails sent": 1 }
     },
     {
-      "caption": "After 30 seconds job 81 is visible again and goes to Worker 2: the duplicate at-least-once promises.",
+      "caption": "After 30 seconds job 81 becomes visible again and goes to Worker 2. This is the duplicate that at-least-once delivery allows.",
       "arch": { "fail": ["w1"], "active": ["w2", ["queue", "w2"]], "notes": { "queue": "81 redelivered" } },
       "vars": { "emails sent": 1 }
     },
     {
-      "caption": "Worker 2 sends with the same key. The provider has seen <code>job-81</code> and skips it. Worker 2 acks; the job is deleted.",
+      "caption": "Worker 2 sends with the same key. The provider has already seen <code>job-81</code> and sends nothing. Worker 2 acknowledges, and the queue deletes the job.",
       "arch": { "fail": ["w1"], "active": ["provider", ["w2", "provider"], ["w2", "queue"]], "notes": { "provider": "dup job-81" } },
       "vars": { "emails sent": 1 }
     },
     {
-      "caption": "Job 97 has a malformed address and fails every attempt.",
-      "arch": { "fail": ["w1"], "active": ["w2", ["queue", "w2"]], "notes": { "w2": "job 97 fails" } },
-      "vars": { "emails sent": 1, "attempts on 97": 5 }
-    },
-    {
-      "caption": "After 5 attempts job 97 moves to a dead-letter queue and an alert fires. Someone fixes the data and replays it.",
+      "caption": "Job 97 has a malformed address and fails on every attempt. After 5 attempts it moves to the dead-letter queue and an alert fires.",
       "arch": { "fail": ["w1"], "mark": ["queue"], "notes": { "queue": "97 dead-lettered" } },
       "vars": { "emails sent": 1, "attempts on 97": 5 }
     }
@@ -130,93 +130,109 @@
 </script>
 </x-tracer>
 
-<x-callout type="mistake" title="Retrying a poison message forever">
-<p>A message that always fails blocks its partition in a log, or burns workers in a queue. Cap attempts, dead-letter it, and alert.</p>
-</x-callout>
+<h2>Partitions, ordering and consumer groups</h2>
 
-<h2>Ordering, partitions and consumer groups</h2>
+<h3>Partitions and the partition key</h3>
 
-<p>A log is split into <strong>partitions</strong>, and order holds only inside one. The producer hashes a key to pick the partition, so key by whatever must stay in order: with <code>order_id</code>, one order's "created", "paid" and "shipped" arrive in sequence.</p>
+<p>One consumer cannot read a busy log fast enough, so a log is divided into <strong>partitions</strong>, each an ordered sequence of its own. Messages are ordered only within a partition. The producer picks the partition by hashing a <strong>partition key</strong> attached to the message, so all messages with the same key go to the same partition and stay in order. If the key is the order id, the "created", "paid" and "shipped" events of one order are read in that sequence, while events of different orders may be processed in any order, which is normally fine.</p>
 
-<p>A <strong>consumer group</strong> is one logical subscriber. Inside a group, each partition has one consumer at a time, so 12 partitions allow at most 12 busy consumers. Different groups (email, analytics) each read every message. Size partitions for future parallelism: adding them later remaps keys and breaks per-key order during the change.</p>
+<p>The key must therefore be whatever has to stay in order, and it also decides how evenly the load spreads. If one customer produces half the traffic and the key is the customer id, that traffic lands on one partition and one consumer. A workaround is to add a random suffix to that customer's key, which spreads its messages over several partitions but gives up their order.</p>
 
-<p>A hot key, such as one huge customer, lands on one partition. To spread it, add a suffix and give up its ordering.</p>
+<h3>Consumer groups</h3>
 
-<h2>Backpressure</h2>
+<p>A <strong>consumer group</strong> is a set of consumers that share the reading of a topic. Within a group, each partition is read by exactly one consumer at a time, so a topic with 8 partitions keeps at most 8 consumers of one group busy, and extra consumers wait idle as standbys. Scaling further needs more partitions, so choose the partition count with growth in mind. Adding partitions later changes which partition each key hashes to, which can break per-key order during the change.</p>
 
-<p>A queue absorbs bursts; it does not fix consumers slower than producers on average. At 1,200 messages a second in and 1,000 out, the backlog grows by 200 a second, 720,000 an hour. Watch <strong>consumer lag</strong> (messages or seconds behind) and act on it:</p>
+<h3>Publish and subscribe fan-out</h3>
+
+<p>Consumer groups are independent: each receives every message and keeps its own offset. This is how publish/subscribe works on a log. The email service and the analytics service form separate groups on one topic,. A queue needs one queue per subscriber for the same effect.</p>
+
+<h2>Backpressure and consumer lag</h2>
+
+<p>A broker absorbs a short burst, but if consumers are slower than producers on average, the backlog grows without limit. <strong>Consumer lag</strong> is how many messages, or how many seconds of messages, a consumer is behind the newest one, and a steadily rising lag means the consumers cannot keep up. There are three responses, often combined.</p>
 
 <ul>
-<li>Scale consumers, up to the partition count.</li>
-<li>Bound the queue and push back: return 429 or 503 and let clients retry later.</li>
-<li>Shed or sample low-value messages (debug events) before high-value ones (payments).</li>
+<li>Add consumers. This helps only up to the partition count of a log, and does nothing if the bottleneck is a database or external service that the consumers call.</li>
+<li>Apply backpressure, which means making producers slow down. If the queue has a size limit, publishing fails or blocks when it is full, and the API can return 429 or 503 so that clients retry later.</li>
+<li>Drop or sample low-value messages, such as debug events, so that high-value ones such as payments are still processed in time.</li>
 </ul>
 
-<x-estimate title="Draining a backlog">
+<h2>Problems interviewers probe</h2>
+
+<h3>Idempotent consumers</h3>
+
+<p>Because delivery is at least once, a consumer must produce the same result whether it handles a message once or twice. One way is to use an operation that is safe to repeat, such as setting a field to a value instead of adding to it. Another is to pass the message id to the downstream service as an idempotency key, as the tracer does. A third is to keep a table of processed message ids and check it before working. The check and the work must happen in one database transaction, with a unique constraint on the message id, or a crash between them lets the duplicate through. See <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>.</p>
+
+<h3>Publishing reliably with the outbox pattern</h3>
+
+<p>A service often has to update its database and publish a message about the change. These are two systems, so a crash after the commit and before the publish leaves a change that nobody hears about, while publishing first can announce a change that then fails to commit. The <strong>outbox pattern</strong> fixes this. The service writes the change and a row describing the message to an outbox table in one transaction, so both exist or neither does. A separate relay reads new outbox rows, publishes them and marks them as sent. If the relay crashes between publishing and marking, it publishes the row again, so publishing is at least once and consumers still need to be idempotent.</p>
+
+<x-arch caption="The outbox pattern: the change and the message are saved in one transaction, and a relay publishes the message afterwards.">
 <script type="application/json">
 {
-  "question": "You scale consumers to 1,500 a second while producers keep writing 1,200. How long until the backlog is empty?",
-  "givens": ["Backlog: 720,000 messages", "Producers: 1,200 a second", "Consumers: 1,500 a second"],
-  "unit": "duration",
-  "answer": "40 minutes",
-  "accept": ["15 minutes", "2 hours"],
-  "steps": ["Net drain rate: 1,500 − 1,200 = 300 a second", "720,000 ÷ 300 = 2,400 seconds", "2,400 ÷ 60 = 40 minutes"],
-  "note": "Draining is only as fast as your spare capacity. With 10% headroom (1,320 a second) it takes 100 minutes."
+  "nodes": [
+    { "id": "svc", "label": "Service", "kind": "service", "col": 0, "row": 0 },
+    { "id": "db", "label": "Database with outbox table", "kind": "database", "col": 1, "row": 0 },
+    { "id": "relay", "label": "Relay", "kind": "worker", "col": 2, "row": 0 },
+    { "id": "broker", "label": "Broker", "kind": "queue", "col": 3, "row": 0 }
+  ],
+  "edges": [
+    { "from": "svc", "to": "db", "label": "one transaction" },
+    { "from": "db", "to": "relay", "label": "read new rows" },
+    { "from": "relay", "to": "broker", "label": "publish" }
+  ]
 }
 </script>
-</x-estimate>
-
-<h2>Numbers worth remembering</h2>
-
-<ul>
-<li>Publishing to a broker in the same data center: a few ms, including replication.</li>
-<li>One partition: thousands to tens of thousands of small messages a second. Throughput scales with partitions.</li>
-<li>Little's law: messages waiting = arrival rate × wait time. 50 a second × 3 s = 150, the hook's stuck requests.</li>
-</ul>
+</x-arch>
 
 <h2>In the interview</h2>
 
-<p>Bring in a queue when work is slow, flaky or not needed for the response, when traffic is bursty, or when several systems react to one event. Then state the guarantee and its cost: "Delivery is at-least-once, so the counter worker dedupes by event id."</p>
+<p>Bring in a broker when work is slow, is not needed for the response, arrives in bursts, or has to reach several systems. Pick a queue for jobs that one worker handles once and a log when several consumers need the same events or replay matters. Then state the delivery guarantee and what it costs, for example "delivery is at least once, so the consumer dedupes by event id".</p>
 
-<x-interview title="Sending order emails">
-<x-interviewer>After checkout we send a confirmation email and update analytics. Where does that happen?</x-interviewer>
-<x-you>Not in the checkout request. Checkout publishes <code>OrderPlaced</code> to a log keyed by order id. Email and analytics are separate consumer groups, so a slow email provider delays neither analytics nor checkout.</x-you>
-<x-interviewer>Can a customer get two emails?</x-interviewer>
-<x-you>Under at-least-once, yes, unless I prevent it. The email worker passes the event id to the provider as an idempotency key, so a redelivery sends nothing. Messages that fail five times go to a dead-letter queue with an alert.</x-you>
-<x-coach>The candidate raises the duplicate before being cornered.</x-coach>
-</x-interview>
-
-<p>Follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"The API crashes after creating the account but before publishing. Now what?"</strong> No welcome email, ever. Write the message to an outbox table in the account's transaction (see <a href="/system-design/transactions-and-isolation.html">transactions</a>).</li>
-<li><strong>"What if the provider has no idempotency key?"</strong> Record sent job ids in your own table. A crash between sending and recording can still send twice, so keep that window short.</li>
+<li><strong>"Can you guarantee exactly-once delivery?"</strong> Not across a network to an external system, because a consumer can crash after doing the work and before acknowledging. What I can build is exactly-once effect, which is at-least-once delivery plus a consumer that detects duplicates with an idempotency key or a unique constraint on the message id.</li>
+<li><strong>"How do you keep messages in order?"</strong> Order holds only within a partition, so I choose a partition key that groups the messages that must stay in order, such as the order id. Messages with different keys can be processed in any order, which is what lets consumers run in parallel.</li>
+<li><strong>"What do you do with a message that always fails?"</strong> I limit the attempts, increase the delay between them, and then move the message to a dead-letter queue and alert on its size. Someone fixes the cause and replays it.</li>
+<li><strong>"The consumers are falling behind. What do you do?"</strong> I check consumer lag to confirm the trend and then look at where consumers spend their time. If they are limited by CPU, I add consumers up to the partition count. If a downstream database is the limit, more consumers make it worse, so I slow the producers, bound the queue or drop low-value messages.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Promising exactly-once delivery">
-<p>Duplicates are normal under at-least-once. Say how the consumer makes them harmless: a dedupe table, an idempotency key, or an operation safe to repeat.</p>
-</x-callout>
+<x-interview title="Sending order emails" tone="strong">
+<x-interviewer>After checkout we send a confirmation email and update analytics. Where does that happen?</x-interviewer>
+<x-you>Not in the checkout request. Checkout publishes an OrderPlaced event to a log, keyed by order id. Email and analytics are separate consumer groups, so a slow email provider delays neither analytics nor checkout.</x-you>
+<x-interviewer>Can a customer get two emails?</x-interviewer>
+<x-you>With at-least-once delivery, yes, unless I prevent it. The email worker passes the event id to the provider as an idempotency key, so a redelivered event sends nothing. An event that fails five times goes to a dead-letter queue and raises an alert.</x-you>
+<x-interviewer>What if checkout saves the order and then crashes before publishing?</x-interviewer>
+<x-you>That would lose the event, so checkout writes the order and an outbox row in one transaction, and a relay publishes the outbox rows. The relay may publish a row twice, which the idempotent consumers already handle.</x-you>
+<x-coach>The candidate raises both the duplicate problem and the lost-message problem before being cornered, and gives each a specific mechanism.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "A consumer acks a message, then processes it, and crashes in between. What happened to that message?",
+      "question": "A consumer acknowledges a message and then processes it, and it crashes between the two steps. What happens to the message?",
       "options": [
-        { "text": "It will be redelivered", "why": "The ack told the broker it was done." },
-        { "text": "It is lost: at-most-once", "correct": true, "why": "Acking before working means a crash in between drops the work." },
-        { "text": "It was processed exactly once", "why": "It was never processed at all." }
+        { "text": "It is redelivered to another consumer", "why": "The acknowledgement told the broker the message was finished, so it will not be sent again." },
+        { "text": "It is lost, which is at-most-once behaviour", "correct": true, "why": "Acknowledging before working means a crash in between drops the work." },
+        { "text": "It is processed exactly once", "why": "It was never processed at all." }
       ]
     },
     {
-      "question": "A topic has 8 partitions. You run 12 consumers in one group. How many are busy?",
+      "question": "A topic has 8 partitions and a consumer group has 12 consumers. How many consumers are doing work?",
       "options": [
-        { "text": "12", "why": "Each partition has one consumer per group, so extras have nothing to read." },
-        { "text": "8", "correct": true, "why": "One consumer per partition; the other 4 idle as standbys." },
-        { "text": "1", "why": "Partitions are split across the group's consumers, not given to one." }
+        { "text": "12", "why": "Each partition is read by one consumer per group, so 4 consumers have nothing to read." },
+        { "text": "8", "correct": true, "why": "Each partition goes to one consumer, and the other 4 are idle until a consumer fails." },
+        { "text": "1", "why": "Partitions are shared out across the consumers in the group, not given to a single one." }
+      ]
+    },
+    {
+      "question": "A service must update its database and publish an event without ever losing the event. Which approach does that?",
+      "options": [
+        { "text": "Commit to the database, then publish", "why": "A crash between the two steps commits the change but loses the event." },
+        { "text": "Publish, then commit to the database", "why": "The event can announce a change that then fails to commit." },
+        { "text": "Write the change and an outbox row in one transaction, then publish from the outbox", "correct": true, "why": "Both are saved atomically, and the relay retries until the event is published. Consumers must handle the occasional duplicate." }
       ]
     }
   ]
@@ -226,4 +242,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Every consumer here relies on <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a>; read that next. Then see a queue carry a whole design in <a href="/system-design/design-a-notification-system.html">Design a Notification System</a>.</p>
+<p>Read <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a> to see how consumers handle duplicates, and then <a href="/system-design/design-a-notification-system.html">Design a Notification System</a>, which uses a queue throughout.</p>

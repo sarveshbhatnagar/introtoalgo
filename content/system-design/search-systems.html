@@ -1,25 +1,48 @@
 <!--
 {
   "title": "Search Systems",
-  "description": "Build full-text search on an inverted index: tokenising, matching, ranking in outline, and keeping the index in step with the database.",
-  "minutes": 15,
+  "description": "How a full-text search index works, how text is analysed and ranked, how it is sharded and synced with the database, and what interviewers ask.",
+  "minutes": 18,
   "tags": ["search", "inverted index", "building blocks", "change data capture"]
 }
 -->
-<p>A shop has 20 million products. Search runs <code>WHERE title LIKE '%red shoes%'</code>. A pattern starting with <code>%</code> cannot use an ordinary index, so every search reads every title and description: 20 × 10<sup>6</sup> × 1 KB = 20 GB per query, or 10 TB a second at 500 searches a second. It also misses "Red Shoe" and "shoes, red", and cannot rank matches. An inverted index fixes all three.</p>
+<p>A search system finds the documents that match the words in a query and puts the best matches first. It is built on an inverted index, a data structure that maps each word to the list of documents containing it, so a query looks up a few lists instead of reading every document. The index is a copy of data that lives in a database.</p>
 
-<h2>The idea</h2>
+<p>Without an inverted index, search is usually written as <code>WHERE title LIKE '%red shoes%'</code>. A pattern that starts with <code>%</code> cannot use an ordinary database index, so every query reads every row. It also misses "Red Shoe", cannot rank matches, and cannot tolerate a typo.</p>
 
-<p>An <strong>inverted index</strong> maps each word to the documents containing it, like a cookbook index mapping "garlic" to pages 12, 40 and 97. A query combines its words' lists, so the work depends on how many documents match, not how many exist.</p>
+<h2>Where search sits in a system</h2>
 
-<p>The cost: a second copy, always a little behind. The database stays the <strong>source of truth</strong>; the index can be rebuilt from it.</p>
+<x-arch caption="The database remains the source of truth, and the search index is a copy built from its changes and used only for queries.">
+<script type="application/json">
+{
+  "nodes": [
+    { "id": "client", "label": "Browser", "kind": "client", "col": 0, "row": 1 },
+    { "id": "api", "label": "Product service", "kind": "service", "col": 1, "row": 1 },
+    { "id": "db", "label": "Database", "kind": "database", "col": 2, "row": 0 },
+    { "id": "stream", "label": "Change stream", "kind": "queue", "col": 3, "row": 0 },
+    { "id": "indexer", "label": "Indexer", "kind": "worker", "col": 3, "row": 1 },
+    { "id": "search", "label": "Search index", "kind": "search", "col": 3, "row": 2 }
+  ],
+  "edges": [
+    { "from": "client", "to": "api" },
+    { "from": "api", "to": "db", "label": "writes, prices" },
+    { "from": "db", "to": "stream", "style": "async" },
+    { "from": "stream", "to": "indexer", "style": "async" },
+    { "from": "indexer", "to": "search", "label": "index" },
+    { "from": "api", "to": "search", "label": "text queries", "route": "vh" }
+  ]
+}
+</script>
+</x-arch>
 
-<h2>From text to tokens</h2>
+<p>The index answers "which documents match this text, in what order" and returns document ids. Values that must be correct, such as prices and stock, are read from the database afterwards.</p>
 
-<p>An analyser splits text into words, lowercases them, drops punctuation, and reduces each to a stem ("shoes" to "shoe", "running" to "run"). Queries must use the <strong>same</strong> analyser, or "shoes" finds nothing in a stemmed index.</p>
+<h2>The inverted index</h2>
+
+<p>An inverted index maps each token (a normalised word) to a sorted list of the ids of the documents that contain it. That list is the postings list of the token. The table shows four titles after analysis, which the next section describes.</p>
 
 <table>
-<thead><tr><th>Doc</th><th>Title</th><th>Tokens</th></tr></thead>
+<thead><tr><th>Document</th><th>Title</th><th>Tokens</th></tr></thead>
 <tbody>
 <tr><td>1</td><td>Red Running Shoes</td><td>red, run, shoe</td></tr>
 <tr><td>2</td><td>Blue running shorts</td><td>blue, run, short</td></tr>
@@ -28,28 +51,28 @@
 </tbody>
 </table>
 
-<p>Each token's <strong>postings</strong> are the sorted ids of documents containing it: <code>red → [1, 3, 4]</code>, <code>shoe → [1, 3]</code>, <code>run → [1, 2]</code>, and one-document lists for the rest.</p>
+<p>The index for these documents contains <code>red → [1, 3, 4]</code>, <code>shoe → [1, 3]</code> and <code>run → [1, 2]</code>, plus a one-document list for each remaining token. To answer a query, the engine analyses the query in the same way, fetches the postings list of each token, and combines the lists. For a query where every word must match, it intersects the lists by walking through them together.</p>
 
-<x-tracer title="Answering &quot;Red shoes&quot;">
+<x-tracer title="Answering the query &quot;Red shoes&quot;">
 <script type="application/json">
 {
   "steps": [
     {
-      "caption": "The same analyser turns \"Red shoes\" into <code>red</code> and <code>shoe</code>.",
+      "caption": "The same analysis turns the query into the tokens <code>red</code> and <code>shoe</code>.",
       "arrays": [
         { "label": "query", "values": ["Red", "shoes"] },
         { "label": "tokens", "values": ["red", "shoe"], "mark": [0, 1] }
       ]
     },
     {
-      "caption": "Look up both postings lists, sorted by id.",
+      "caption": "The engine fetches the sorted postings list of each token.",
       "arrays": [
         { "label": "red", "values": [1, 3, 4] },
         { "label": "shoe", "values": [1, 3] }
       ]
     },
     {
-      "caption": "1 and 1: document 1 has both words. Move both pointers.",
+      "caption": "Both pointers are at document 1, so document 1 contains both words. Both pointers move forward.",
       "arrays": [
         { "label": "red", "values": [1, 3, 4], "pointers": { "i": 0 }, "highlight": [0] },
         { "label": "shoe", "values": [1, 3], "pointers": { "j": 0 }, "highlight": [0] }
@@ -57,7 +80,7 @@
       "vars": { "matches": "[1]" }
     },
     {
-      "caption": "3 and 3: another match. Move both.",
+      "caption": "Both pointers are at document 3, which is another match. Both pointers move forward.",
       "arrays": [
         { "label": "red", "values": [1, 3, 4], "pointers": { "i": 1 }, "highlight": [1], "mark": [0] },
         { "label": "shoe", "values": [1, 3], "pointers": { "j": 1 }, "highlight": [1], "mark": [0] }
@@ -65,7 +88,7 @@
       "vars": { "matches": "[1, 3]" }
     },
     {
-      "caption": "The shoe list is done, so no later document has both words. Document 4 is never compared.",
+      "caption": "The shoe list has ended, so no later document can contain both words. Document 4 is never examined.",
       "arrays": [
         { "label": "red", "values": [1, 3, 4], "pointers": { "i": 2 }, "mark": [0, 1], "dim": [2] },
         { "label": "shoe", "values": [1, 3], "pointers": { "j": 2 }, "mark": [0, 1] }
@@ -77,180 +100,158 @@
 </script>
 </x-tracer>
 
-<p>That merge is the <a href="/algorithms/two-pointers.html">two-pointer</a> pattern, O(a + b) for lists of length a and b. The token dictionary is kept sorted or in a <a href="/algorithms/tries.html">trie</a>, which also answers prefix queries like "sho".</p>
+<p>This walk is the <a href="/algorithms/two-pointers.html">two-pointer</a> technique on sorted lists. Its cost depends on how many documents contain each word, not on the total number of documents. The token dictionary is kept sorted or in a <a href="/algorithms/tries.html">trie</a>, which also allows prefix queries such as "sho".</p>
 
-<h3>Ranking, in outline</h3>
+<h2>Text analysis</h2>
 
-<p>Matching finds candidates; ranking orders them. The classic text score, BM25 (a refinement of TF-IDF), rewards:</p>
+<p>Analysis is the pipeline that turns raw text into tokens. It runs once when a document is indexed and again, with the same settings, on every query. If the two differ, the query tokens do not match the indexed tokens, and a search for "shoes" finds nothing in an index that stores the stem "shoe".</p>
 
-<ul>
-<li>the word appearing often in the document, with diminishing returns;</li>
-<li>the word being <strong>rare</strong> overall ("shoe" is in 2 of 4 documents, "red" in 3 of 4, so "shoe" says more);</li>
-<li>a short document, where the match counts for more.</li>
-</ul>
+<h3>Tokenising</h3>
 
-<p>Shops add business signals: title matches beat description matches; popularity, stock and freshness lift results.</p>
+<p>Tokenising splits the text into words, usually at spaces and punctuation. The details matter: whether "e-mail" is one token or two, how a model number such as "RTX-4090" is split, and how languages without spaces are cut into words. A wrong split makes a document unfindable.</p>
 
-<h2>Keeping the index in step</h2>
+<h3>Lowercasing</h3>
 
-<x-tradeoffs caption="Feeding the search index">
+<p>Every token is converted to lower case, so "Red" and "red" are the same token. Accent folding, which treats "café" and "cafe" as equal, is often applied too.</p>
+
+<h3>Stemming</h3>
+
+<p>Stemming reduces a word to a root by stripping its ending, so "running" and "runs" become "run" and "shoes" becomes "shoe". It is rule-based, so it makes mistakes: an aggressive stemmer can reduce "university" and "universe" to the same stem.</p>
+
+<h3>Stop words</h3>
+
+<p>Stop words are very common words, such as "the" and "of", that are dropped from the index to save space. Removing them has a cost: the title "To Be or Not To Be" becomes empty, and a phrase search for "the who" cannot be answered. Modern engines usually keep them, because ranking already gives common words a low weight.</p>
+
+<h2>Ranking</h2>
+
+<p>Matching decides which documents are candidates, and ranking decides their order. The standard text score has two parts. Term frequency (TF) rewards a document in which the query word appears many times. Inverse document frequency (IDF) weights each query word by how rare it is across all documents, so a match on "waterproof" counts for more than a match on "black" when "waterproof" is in far fewer documents.</p>
+
+<p>BM25 is the formula most search engines use by default, and it refines TF-IDF in two ways. The benefit of repeated occurrences levels off, so a document that mentions a word 50 times does not score 50 times higher than one that mentions it five times. The score is also adjusted for document length, so a match in a short title counts for more than the same match in a long description. Products combine this score with signals such as title matches, popularity and recency.</p>
+
+<h2>Sharding and replicating the index</h2>
+
+<p>When the index is too large for one machine, or one machine cannot serve the query rate, it is split into shards, and each shard is copied to replicas.</p>
+
+<h3>Sharding by document</h3>
+
+<x-arch caption="With document sharding every shard holds a slice of the documents, and a query is sent to all shards and the results are merged.">
 <script type="application/json">
 {
-  "options": [
-    {
-      "name": "Dual write from the app",
-      "good": "Simple: the app writes the database, then the index.",
-      "bad": "A crash or failure between the writes leaves them disagreeing forever. Two writers can also arrive out of order.",
-      "pick": "Prototypes only."
-    },
-    {
-      "name": "Change data capture",
-      "good": "Committed changes flow from the database's log to a stream, ordered per product. The indexer can replay after a crash.",
-      "bad": "More moving parts. The index lags by seconds.",
-      "pick": "Production systems. The usual answer.",
-      "default": true
-    },
-    {
-      "name": "Periodic rebuild",
-      "good": "Simplest correct option: rebuild the index nightly and swap it in.",
-      "bad": "Changes wait for the next rebuild. Slow for huge catalogues.",
-      "pick": "Rarely changing data, and as the recovery path for the other two."
-    }
+  "nodes": [
+    { "id": "api", "label": "Search service", "kind": "service", "col": 0, "row": 1 },
+    { "id": "s1", "label": "Shard 1: docs A", "kind": "search", "col": 2, "row": 0 },
+    { "id": "s2", "label": "Shard 2: docs B", "kind": "search", "col": 2, "row": 1 },
+    { "id": "s3", "label": "Shard 3: docs C", "kind": "search", "col": 2, "row": 2 }
+  ],
+  "edges": [
+    { "from": "api", "to": "s1", "label": "query" },
+    { "from": "api", "to": "s2", "label": "query" },
+    { "from": "api", "to": "s3", "label": "query" }
   ]
 }
 </script>
-</x-tradeoffs>
+</x-arch>
 
-<x-tracer title="A product edit reaches search, and the indexer fails">
-<script type="application/json">
-{
-  "arch": {
-    "nodes": [
-      { "id": "user", "label": "Seller or shopper", "kind": "client", "col": 0, "row": 1 },
-      { "id": "api", "label": "Product service", "kind": "service", "col": 1, "row": 1 },
-      { "id": "db", "label": "Products DB", "kind": "database", "col": 2, "row": 0 },
-      { "id": "stream", "label": "Change stream", "kind": "queue", "col": 3, "row": 0 },
-      { "id": "indexer", "label": "Indexer", "kind": "worker", "col": 3, "row": 1 },
-      { "id": "search", "label": "Search index", "kind": "search", "col": 3, "row": 2 }
-    ],
-    "edges": [
-      { "from": "user", "to": "api" },
-      { "from": "api", "to": "db" },
-      { "from": "db", "to": "stream", "style": "async" },
-      { "from": "stream", "to": "indexer", "style": "async" },
-      { "from": "indexer", "to": "search" },
-      { "from": "api", "to": "search", "label": "query", "route": "vh" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "A seller renames product 881 to \"Red trail shoes\". The service writes only the database.",
-      "arch": { "active": ["user", "db", ["user", "api"], ["api", "db"]], "notes": { "db": "881 v12" } }
-    },
-    {
-      "caption": "Change data capture publishes the commit to the stream. The app never writes the index.",
-      "arch": { "active": ["stream", ["db", "stream"]], "notes": { "stream": "881 v12" } }
-    },
-    {
-      "caption": "The indexer analyses the new title and replaces document 881, searchable about a second later.",
-      "arch": { "active": ["indexer", "search", ["stream", "indexer"], ["indexer", "search"]], "mark": ["search"], "notes": { "search": "881 v12" } }
-    },
-    {
-      "caption": "A shopper searches \"trail shoes\". Each index shard's top 10 merge into one top 10.",
-      "arch": { "active": ["user", "search", ["user", "api"], ["api", "search"]], "notes": { "search": "ids 881, …" } }
-    },
-    {
-      "caption": "Price and stock come from the database or its cache. The index finds products; the database is trusted for money.",
-      "arch": { "active": ["db", ["api", "db"], ["api", "user"]], "mark": ["user"] }
-    },
-    {
-      "caption": "The indexer crashes. Edits pile up in the stream, kept for days. Search shows old titles; nothing is lost.",
-      "arch": { "fail": ["indexer"], "active": ["db", "stream", ["db", "stream"]], "notes": { "stream": "backlog 40,000" } }
-    },
-    {
-      "caption": "On restart it resumes from its saved position. Events carry the row's version; the index ignores any not newer than what it holds, so a replay cannot undo an edit.",
-      "arch": { "active": ["indexer", ["stream", "indexer"], ["indexer", "search"]], "mark": ["search"], "notes": { "indexer": "catching up" } }
-    }
-  ]
-}
-</script>
-</x-tracer>
+<p>Each shard holds a complete inverted index for its own subset of the documents, chosen by hashing the document id. A query is sent to every shard. Each shard returns its own top results, and the coordinator merges them into one ordered list. A document is written to exactly one shard, so an update is cheap, and the load is spread evenly. This is the usual design.</p>
 
-<h2>Numbers worth remembering</h2>
+<p>The weakness is that every query touches every shard, so the slowest shard decides the response time, and adding shards does not make a single query cheaper. Each shard also computes IDF from its own documents, so scores differ slightly between shards.</p>
 
-<ul>
-<li>Delay until searchable with change data capture: a second to a few seconds.</li>
-<li>Index size: postings × a few bytes each, compressed (more with word positions for phrase search).</li>
-<li>Below a few million documents with simple matching, the database's built-in full-text index is often enough.</li>
-</ul>
+<h3>Sharding by term</h3>
 
-<x-estimate title="Size of the inverted index">
-<script type="application/json">
-{
-  "question": "About how big is the postings data for the product catalogue?",
-  "givens": ["20 million products", "About 100 tokens per product", "About 4 bytes per compressed posting"],
-  "unit": "bytes",
-  "answer": "8 GB",
-  "accept": ["3 GB", "30 GB"],
-  "steps": ["20 × 10<sup>6</sup> × 100 = 2 × 10<sup>9</sup> postings", "2 × 10<sup>9</sup> × 4 B = 8 × 10<sup>9</sup> B = 8 GB"],
-  "note": "8 GB fits in memory across a few machines. Compare 20 GB scanned per query without it."
-}
-</script>
-</x-estimate>
+<p>With term sharding, each word's complete postings list lives on one shard, so a query goes only to the shards that own its words. It works poorly in practice. Indexing one document touches the shard of every word in it, a common word such as "red" has a very long list on one shard that becomes a hot spot, and a multi-word query must ship long lists across the network. Document sharding is therefore the default.</p>
+
+<h3>Replicas</h3>
+
+<p>Each shard is stored on several nodes. Replicas keep search available when a node fails and add query capacity, because any copy of a shard can answer a query. Add replicas when the query rate grows, and shards when the data grows. Replicas are updated by the indexing process, so they can be briefly behind each other. See <a href="/system-design/replication.html">replication</a> and <a href="/system-design/sharding-and-partitioning.html">sharding and partitioning</a>.</p>
+
+<h2>Keeping the index in step with the database</h2>
+
+<p>The database is the source of truth, so every change to it must reach the index. There are three ways to do this.</p>
+
+<h3>Dual write from the application</h3>
+
+<p>The application writes the database and then writes the search index in the same request. If the process crashes or the index call fails between the two writes, the two disagree, and nothing detects or repairs it. Concurrent updates can also reach the index in the opposite order to their commits, leaving the older version. This is acceptable for a prototype and not for production.</p>
+
+<h3>Change stream</h3>
+
+<p>The application writes only the database. A change data capture process reads the database's commit log and publishes each committed change to a stream, and an indexer consumes the stream and updates the index. Because the stream is ordered and retained, the indexer can resume after a crash without losing a committed change. Each event carries the row's version, and the index ignores an event that is not newer than the version it holds, so replaying events cannot undo a later edit. See <a href="/system-design/message-queues-and-streams.html">message queues and streams</a>.</p>
+
+<p>The cost is lag: a change appears in results a second or a few seconds after the commit, and longer when the indexer falls behind.</p>
+
+<h3>Periodic rebuild</h3>
+
+<p>A batch job reads the whole table, builds a new index and swaps it in, for example every night. It is simple and always correct, because each rebuild removes any drift. Changes wait for the next rebuild, and rebuilding a large table is slow. Even when a change stream is used, a rebuild is kept as the recovery path and as the way to apply a new analyser.</p>
+
+<h2>Problems that interviewers ask about</h2>
+
+<h3>Deep pagination</h3>
+
+<p>A request for page 1,000 with 10 results per page asks for results 9,991 to 10,000. No shard knows which of its documents fall in that range, so every shard must return its top 10,000 results and the coordinator merges all of them to keep ten. Engines usually refuse offsets beyond a limit such as 10,000. The fix is cursor-based pagination: the client sends the sort values and id of the last result it received, and each shard returns only the next ten after that position. It supports only "next" and not "jump to page 500", which is acceptable because real users almost never need a deep page.</p>
+
+<h3>Results that lag behind a write</h3>
+
+<p>A seller who edits a product and searches immediately may still see the old title, because the change is still moving through the stream. Accept the delay for search, show the seller's own edits from the database, and read values that must be exact from the database.</p>
+
+<h3>Changing the analyser</h3>
+
+<p>If the stemmer or tokeniser changes, the stored tokens no longer match what queries produce, and the index cannot be edited in place. Build a new index with the new analyser beside the old one, fill it from the table and then from the change stream, and switch queries to it in one step.</p>
+
+<h3>Typos</h3>
+
+<p>Typo tolerance uses fuzzy matching, which finds indexed words within an edit distance of one or two from the query word, or character n-grams, which let a misspelling share most of its fragments with the right word. Both enlarge the index, so they are limited to longer words and small distances.</p>
+
+<h3>Typeahead and location search</h3>
+
+<p>Autocomplete matches prefixes of popular queries within a few milliseconds, so it uses its own small prefix index and is covered in <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a>. Searching for places near a point uses a geospatial index such as a geohash grid or a quadtree, covered in <a href="/system-design/design-proximity-search.html">Design Proximity Search</a>.</p>
 
 <h2>In the interview</h2>
 
-<p>Add a search index for free-text search, typo tolerance, ranking, or filtering on many fields at once. Say what is indexed, how it syncs, and what is still read from the database.</p>
+<p>Propose a search index when the requirement is free-text search, ranking, typo tolerance or filtering on many fields. Below a few million rows, the full-text feature of the database is often enough. State what is indexed, how the index is fed, how stale it may be, and which values are always read from the database.</p>
 
-<x-interview title="Adding product search">
-<x-interviewer>Users need to search products by text. Can't the database do it?</x-interviewer>
-<x-you>For 20 million products with ranking and typo tolerance, I'd add a search index fed by change data capture: a second or two behind, and rebuildable. Search returns ids; price and stock come from the database, so a stale index never shows a wrong price.</x-you>
-<x-interviewer>How do you shard the index?</x-interviewer>
-<x-you>By document: each shard holds a slice of products, and a query merges every shard's top results. Sharding by term lets a query hit fewer shards, but one product update would touch many, so document sharding is usual.</x-you>
-<x-coach>It names the source of truth, the sync, the lag, and the recovery path.</x-coach>
-</x-interview>
-
-<p>Follow-ups:</p>
+<p>Questions to expect:</p>
 
 <ul>
-<li><strong>"How do you handle typos?"</strong> Fuzzy matching within a small edit distance, or character n-grams. Both grow the index and the candidate list.</li>
-<li><strong>"How do you do autocomplete?"</strong> A small separate prefix index of popular queries.</li>
-<li><strong>"How do you change the analyser?"</strong> Build a new index beside the old, replay into it, then switch reads in one step.</li>
+<li><strong>"Why not use LIKE in the database?"</strong> A pattern that starts with a wildcard cannot use an ordinary index, so each query scans every row, and there is no ranking, stemming or typo tolerance. An inverted index reads one list per word and touches only matching documents.</li>
+<li><strong>"How does the index stay in sync with the database?"</strong> The application writes only the database, and change data capture feeds an indexer through a stream. The indexer can replay after a crash, and versions on events stop old events from overwriting newer data. A nightly rebuild repairs any drift.</li>
+<li><strong>"What if the index is stale or lost?"</strong> A stale index shows slightly old results, which search can tolerate. A lost index is rebuilt from the database, and replicas keep search available meanwhile.</li>
+<li><strong>"How do you shard the index?"</strong> By document, so each shard holds a complete index of a slice of the documents. Queries go to all shards and the top results are merged. Term sharding makes writes touch many shards and creates hot lists.</li>
+<li><strong>"How do you paginate deep results?"</strong> Offset pagination makes every shard return all results up to the offset, so it slows with each page. Use a cursor made of the last result's sort values and id, which keeps the cost constant but allows only moving forward.</li>
 </ul>
 
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Dual writes from the application">
-<p>A crash between the writes leaves them different, with nothing to repair it. Feed the index from the database's committed changes. Read prices, stock and permissions from the database, never the index.</p>
-</x-callout>
+<x-interview title="Adding product search" tone="strong">
+<x-interviewer>Users need to search 20 million products by text. Can't the database do it?</x-interviewer>
+<x-you>With ranking and typo tolerance required, I'd add a search index. The product service writes only to the database, and change data capture feeds the index through a stream, so the index is a second or two behind and can be rebuilt from the database at any time.</x-you>
+<x-interviewer>A seller changes a price. Does search show the new price?</x-interviewer>
+<x-you>Search returns product ids, and the service reads price and stock from the database or its cache. A stale index can show an old title for a few seconds, but it cannot show a wrong price.</x-you>
+<x-coach>Each answer names the source of truth and the accepted staleness.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
 {
   "questions": [
     {
-      "question": "Postings: <code>trail → [2, 5, 8, 9]</code> and <code>shoe → [1, 5, 9, 12]</code>. Which documents match \"trail shoe\"?",
+      "question": "Why is change data capture preferred over the application writing to the index itself?",
       "options": [
-        { "text": "[5, 9]", "correct": true, "why": "Only 5 and 9 are in both; one pass over the sorted lists finds them." },
-        { "text": "[1, 2, 5, 8, 9, 12]", "why": "That is the union: documents with either word." },
-        { "text": "[9]", "why": "5 is in both lists too." }
+        { "text": "It makes results appear in the index instantly", "why": "It still adds a delay. Its value is correctness." },
+        { "text": "Each committed change reaches the index in order, and the indexer can replay after a crash", "correct": true, "why": "Nothing depends on the application surviving between two writes." },
+        { "text": "It removes the need for the database", "why": "The database remains the source of truth." }
       ]
     },
     {
-      "question": "Why prefer change data capture over the app writing the index directly?",
+      "question": "A search index is split into shards by document id. A user asks for page 2,000 of the results. What is the main problem?",
       "options": [
-        { "text": "It makes search results appear instantly", "why": "It still lags by seconds. Its value is correctness." },
-        { "text": "Every committed change reaches the index in order, and the indexer can replay after a crash", "correct": true, "why": "Nothing depends on the app surviving between two writes, so the index cannot silently drift." },
-
-        { "text": "It removes the need for a database", "why": "The database remains the source of truth." }
+        { "text": "Only one shard can answer the request", "why": "Every shard holds some of the documents, so every shard must be asked." },
+        { "text": "Every shard must return all of its results up to that position, so the cost grows with the page number", "correct": true, "why": "No shard knows which of its results fall in the range, so cursors or a depth limit are used." },
+        { "text": "Replicas return different results", "why": "Replicas can lag, but that does not make deep pages expensive." }
       ]
     },
     {
-      "question": "Of 1 million products, \"waterproof\" appears in 2,000 and \"black\" in 300,000. For \"black waterproof\", which word should weigh more in ranking?",
+      "question": "Of 1 million products, \"waterproof\" appears in 2,000 and \"black\" in 300,000. For the query \"black waterproof\", which word should weigh more in ranking?",
       "options": [
         { "text": "black", "why": "It is common, so matching it says little." },
-        { "text": "waterproof", "correct": true, "why": "0.2% of products against 30%. Rare words carry more information; that is the IDF part of the score." },
-        { "text": "Equal", "why": "Weighting by rarity is the core of TF-IDF and BM25." }
+        { "text": "waterproof", "correct": true, "why": "It occurs in 0.2% of products against 30%, and rare words weigh more (the IDF part of the score)." },
+        { "text": "Both equally", "why": "Weighting by rarity is the core of TF-IDF and BM25." }
       ]
     }
   ]
@@ -260,5 +261,4 @@
 
 <h2>What to practise next</h2>
 
-<p>Next: <a href="/system-design/message-queues-and-streams.html">message queues and streams</a> for the change stream, <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a> for safe replay, and <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a> for prefix search.</p>
-
+<p>Read <a href="/system-design/design-typeahead-search.html">Design Typeahead Search</a> for prefix search and <a href="/system-design/design-proximity-search.html">Design Proximity Search</a> for location search. <a href="/system-design/message-queues-and-streams.html">Message queues and streams</a> and <a href="/system-design/idempotency-and-retries.html">idempotency and retries</a> cover the change stream and safe replay.</p>

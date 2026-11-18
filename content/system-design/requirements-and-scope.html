@@ -1,73 +1,68 @@
 <!--
 {
   "title": "Requirements and Scope",
-  "description": "Turn a one-line prompt into functional and non-functional requirements, ask the questions that change the design, and rank the answers into priorities.",
-  "minutes": 13,
+  "description": "How to turn a one-line design prompt into functional and non-functional requirements, which questions to ask, and what interviewers look for in this step.",
+  "minutes": 12,
   "tags": ["interview", "requirements", "fundamentals"]
 }
 -->
-<p>A candidate designing a restaurant reservation system builds a fast, cached search for open tables, with a booking endpoint behind it. Thirty minutes in, the interviewer asks: "Two diners just booked table 7 for 19:00 on Friday. Who gets it?" The cache-first design has no answer, and no time is left to rebuild the write path.</p>
+<p>Requirements and scope is the first step of a system design interview. You ask questions to find out what the system must do, how well it must do it, and what you are allowed to leave out, and then you write the answers down. It solves the problem that a prompt such as "design a restaurant reservation system" is too vague to design from, and that two different answers to the same prompt can lead to completely different architectures.</p>
 
-<p>One early question would have saved it: "Is it ever acceptable to double-book a table?" Requirements decide which parts must be strict, which can be loose, and which to skip.</p>
+<p>Without this step, candidates design for requirements they invented. A candidate who builds a fast, cached table search may find out thirty minutes later that the interviewer cares most about never booking the same table twice, and by then there is no time left to change the write path. One question at the start, such as "is it ever acceptable to double-book a table?", would have avoided it.</p>
 
-<h2>Two kinds of requirement</h2>
+<h2>Where this step fits</h2>
 
-<ul>
-<li><strong>Functional requirements</strong> are what the system does, the user's verbs: "a diner searches open tables by restaurant, date and party size", "a diner books", "a diner cancels".</li>
-<li><strong>Non-functional requirements</strong> are how well it must do them: latency, availability, consistency, durability, scale. This is where designs differ: one system must never lose data, another must answer in 50 ms.</li>
-<li><strong>Out of scope</strong> matters as much: "I'll leave out payments and reviews" buys time for what carries signal.</li>
-</ul>
+<p>This is the first part of the framework in <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>, and it should take about five minutes of a 45-minute interview. The interviewer is not only collecting information. They are checking that you ask questions before you draw anything, that your questions are about things that change the design, and that you can turn the answers into decisions. The steps below are in the order you do them. The first three are expected every time, and the last two are worth doing only when the problem calls for them.</p>
 
-<x-callout type="key">
-<p>Set non-functional requirements per path. In one product, search can be fast and slightly stale while booking is slower and strictly correct.</p>
-</x-callout>
+<h2>Functional requirements and the core use cases</h2>
 
-<h2>The questions that change the design</h2>
+<p>Functional requirements are the things the system does, written as what a user can do: a diner searches for open tables by restaurant, date and party size, books a table, and cancels a booking. List the two to four actions that make up the product, and say them out loud. You are not trying to list every feature. Each extra feature adds design work, so a short list that the interviewer confirms is better than a long one that you cannot finish.</p>
 
-<p>Ask about features, then scale, then quality. A question earns its place only if a different answer would change what you build.</p>
+<p>Also ask who the users are, because a system with two kinds of user, such as diners and restaurant owners, has two sets of actions. You can decide that one kind is out of scope, as long as you say so.</p>
 
-<ul>
-<li><strong>Who uses it, and for what?</strong> The two or three core actions. Do restaurants manage tables in our system too?</li>
-<li><strong>What is out?</strong> Propose the cut yourself.</li>
-<li><strong>How many?</strong> Daily actions and the read/write ratio. Decides caching, replicas, partitioning.</li>
-<li><strong>How fresh must reads be?</strong> Can search lag a few seconds? Decides whether that path may use replicas and caches.</li>
-<li><strong>What must never go wrong?</strong> Double bookings, lost writes, double charges. Decides where you need strong consistency or transactions.</li>
-<li><strong>How available, and where?</strong> One country or global? Is a minute of booking downtime acceptable?</li>
-</ul>
+<h2>Scope: what you will not design</h2>
 
-<x-interview title="Scoping the reservation system" tone="weak">
-<x-interviewer>Design a restaurant reservation system.</x-interviewer>
-<x-you>Should it be scalable and highly available?</x-you>
-<x-interviewer>Sure.</x-interviewer>
-<x-you>Then I'll use microservices with a cache and a message queue.</x-you>
-<x-coach>Every system should be "scalable and available", so the answer changes nothing. Tools arrive before any number or priority.</x-coach>
-</x-interview>
+<p>After the core actions, name what you will leave out. For example: "I'll skip payments, reviews and waitlists. Does that match what you want?" Propose the cut yourself instead of asking "what should I leave out?", because it shows judgment and the interviewer only has to agree or correct you. If the interviewer pulls something back in, you have lost nothing, and if they agree, you have bought time for the parts that matter.</p>
 
-<x-interview title="Scoping the reservation system" tone="strong">
-<x-interviewer>Design a restaurant reservation system.</x-interviewer>
-<x-you>Diners search open tables, then book or cancel. Restaurants set up their tables. I'll leave out payments, reviews and waitlists. Does that match?</x-you>
-<x-interviewer>Yes. About 20 million searches and 1 million bookings a day, in one country.</x-interviewer>
-<x-you>So searches outnumber bookings 20 to 1. Can search be a few seconds stale? And a double booking is never acceptable?</x-you>
-<x-interviewer>Stale search is fine. No double bookings, ever.</x-interviewer>
-<x-you>Then booking is strictly consistent on one source of truth, and search comes from replicas and caches. Confirmation emails can be a minute late.</x-you>
-<x-coach>Every answer changed the design, and the last turn makes a decision per path.</x-coach>
-</x-interview>
+<h2>Scale: how many users and what mix of reads and writes</h2>
 
-<h2>From answers to priorities</h2>
+<p>Ask how many users or requests there are per day, and how reads compare with writes. You ask because the answers decide whether you need caching, read replicas, or partitioning at all. A system with 1,000 requests a day fits on one database, and a design full of queues and shards for it counts against you. The read to write ratio matters most: if reads outnumber writes 20 to 1, the read path is the one to optimise, and if writes dominate, you design around ingestion. Do not do detailed arithmetic here. Collect the numbers, and turn them into rates and sizes in the estimation step, which is covered in <a href="/system-design/back-of-the-envelope-estimation.html">Back-of-the-Envelope Estimation</a>.</p>
 
-<p>Write the result where the interviewer can see it:</p>
+<h2>Non-functional requirements</h2>
 
-<ul>
-<li><strong>Functional:</strong> search open tables; book; cancel; restaurants manage tables and hours.</li>
-<li><strong>Non-functional:</strong> no double bookings; a confirmed booking is never lost; search under 200 ms, may be a few seconds stale; booking 99.9% available.</li>
-<li><strong>Out of scope:</strong> payments, reviews, waitlists.</li>
-</ul>
+<p>Non-functional requirements say how well the system must work. Four of them come up in almost every interview, and each has a question that changes the design.</p>
 
-<p>Put numbers on vague words. "Highly available" means nothing; 99.9% means 0.001 × 30 × 24 × 60 ≈ 43 minutes of downtime a month.</p>
+<h3>Latency</h3>
 
-<p>Then rank, so you know what wins when two requirements conflict. Here, correct bookings beat booking latency, and search freshness goes first.</p>
+<p>Ask how fast the main operations must respond. A search that must return in under 200 ms points towards caches and replicas, while an operation that can take a few seconds, such as sending a receipt, can be done in the background through a queue.</p>
 
-<x-arch caption="Search reads replicas that may lag; every booking is decided on the primary; emails leave through a queue. One product, three sets of priorities.">
+<h3>Availability</h3>
+
+<p>Ask how much downtime is acceptable and whether it is the same everywhere. Availability is stated as a percentage, so convert it into time: 99.9% allows about 43 minutes of downtime a month, and 99.99% allows about 4 minutes. At 4 minutes no person can react in time, so failover has to be automatic, which is a bigger design than a service that may be down for 43 minutes.</p>
+
+<h3>Consistency</h3>
+
+<p>Ask what must never be wrong and what may be slightly out of date. Double bookings, lost messages and charging a customer twice are things that cannot happen, and they need a single source of truth with transactions or conditional writes. A search result that is a few seconds old usually does not matter, which allows replicas and caches. This is the question that most often separates a strong answer from a weak one. The background is in <a href="/system-design/cap-and-consistency.html">CAP and Consistency</a>.</p>
+
+<h3>Durability</h3>
+
+<p>Ask whether data may be lost. A confirmed booking must survive a server crash, so the database must acknowledge the write only after it is stored safely, perhaps on more than one machine. A "last seen" timestamp can be lost without harm and can be written much more cheaply.</p>
+
+<h3>Optional: security, privacy, cost and regions</h3>
+
+<p>Ask about these only when the problem points to them. Payments and personal data make security and privacy part of the design, a global product needs a regions question, and a prototype with a small budget changes which options are sensible. If the prompt gives no hint, mention that you assume standard authentication and move on.</p>
+
+<h2>Writing the requirements down and ranking them</h2>
+
+<p>Write the result where the interviewer can see it, in three short groups: functional requirements, non-functional requirements with numbers, and out of scope. For the reservation system that is: search open tables, book and cancel; no double bookings, a confirmed booking is never lost, search under 200 ms and allowed to be a few seconds stale, booking 99.9% available; and payments, reviews and waitlists left out.</p>
+
+<p>Then rank the requirements, so that you know which one wins when two conflict. Here a correct booking matters more than a fast booking, and fresh search results come last. The ranking is what lets you justify later choices, such as accepting a slower write to avoid double bookings.</p>
+
+<h2>Different paths can have different requirements</h2>
+
+<p>Do not set one consistency level, or one latency target, for the whole product. In the reservation system, search can be fast and slightly stale, booking must be strictly correct, and the confirmation email can arrive a minute late. Setting everything to strong consistency overloads the one database that has to stay fast, and setting everything to eventual consistency double-books tables. Each path gets the cheapest design that meets its own requirement.</p>
+
+<x-arch caption="Search reads a replica that may lag, booking is decided on the primary, and emails leave through a queue, so each path has its own requirements.">
 <script type="application/json">
 {
   "nodes": [
@@ -90,128 +85,49 @@
 </script>
 </x-arch>
 
+<h2>Problems that come up in this step</h2>
 
+<h3>Requirements without numbers</h3>
 
-<x-tracer title="A stale search, a refused booking, a late email">
-<script type="application/json">
-{
-  "arch": {
-    "nodes": [
-      { "id": "diner", "label": "Diner", "kind": "client", "col": 0, "row": 1 },
-      { "id": "api", "label": "Reservation API", "kind": "service", "col": 1, "row": 1 },
-      { "id": "replica", "label": "Read replica", "kind": "database", "col": 2, "row": 0 },
-      { "id": "primary", "label": "Primary DB", "kind": "database", "col": 2, "row": 1 },
-      { "id": "queue", "label": "Booking events", "kind": "queue", "col": 2, "row": 2 },
-      { "id": "email", "label": "Email worker", "kind": "worker", "col": 3, "row": 2 }
-    ],
-    "edges": [
-      { "from": "diner", "to": "api" },
-      { "from": "api", "to": "replica" },
-      { "from": "api", "to": "primary" },
-      { "from": "primary", "to": "replica", "style": "async" },
-      { "from": "api", "to": "queue", "style": "async" },
-      { "from": "queue", "to": "email", "style": "async" }
-    ]
-  },
-  "steps": [
-    {
-      "caption": "A diner searches restaurant 42 for 4 people on Friday. Search may be stale, so it reads a replica.",
-      "arch": { "active": ["diner", "replica", ["diner", "api"], ["api", "replica"]], "dim": ["queue", "email"] }
-    },
-    {
-      "caption": "The replica says table 7 is free at 19:00. Wrong: it was booked on the primary 0.5 s ago, and replication has not caught up (replica lag).",
-      "arch": { "active": ["replica"], "dim": ["queue", "email"], "notes": { "replica": "t7 19:00 free", "primary": "t7 19:00 taken" } }
-    },
-    {
-      "caption": "The diner books table 7 at 19:00. Bookings go to the primary as a conditional write: reserve only if still free.",
-      "arch": { "active": ["primary", ["diner", "api"], ["api", "primary"]], "dim": ["queue", "email"] }
-    },
-    {
-      "caption": "The condition fails. The API answers <code>409 Conflict</code> with other free times. Stale search cost one retry, not a double booking.",
-      "arch": { "fail": [["api", "primary"]], "active": [["api", "diner"]], "dim": ["queue", "email"], "notes": { "primary": "already taken" } },
-      "vars": { "double bookings": 0 }
-    },
-    {
-      "caption": "The diner picks 19:30. The write commits.",
-      "arch": { "active": ["primary", ["api", "primary"]], "mark": ["primary"], "dim": ["queue", "email"], "notes": { "primary": "t7 19:30 booked" } },
-      "vars": { "double bookings": 0 }
-    },
-    {
-      "caption": "The API publishes a <code>booked</code> event and replies <code>201</code> without waiting for the email. (A crash between commit and publish loses the email; data modeling shows the fix.)",
-      "arch": { "active": ["queue", ["api", "queue"], ["api", "diner"]], "mark": ["diner"] },
-      "vars": { "double bookings": 0 }
-    },
-    {
-      "caption": "The email worker is down. Bookings still succeed; events wait and emails go out late, as the priorities allow.",
-      "arch": { "fail": ["email"], "active": ["queue"], "mark": ["primary"], "notes": { "queue": "3,000 waiting" } },
-      "vars": { "double bookings": 0 }
-    }
-  ]
-}
-</script>
-</x-tracer>
+<p>"Fast, scalable and highly available" describes every system, so it does not decide anything. Replace each word with a number and a condition, such as "search under 200 ms at the 99th percentile" or "booking 99.9% available". If the interviewer does not give a number, propose one.</p>
 
-<p>The 3,000: at a peak of 50 bookings a second (5 times the average of 1 million ÷ 100,000 = 10), a one-minute outage queues 50 × 60 = 3,000 emails.</p>
+<h3>The interviewer says "you decide"</h3>
 
-<h2>When you cannot get an answer</h2>
+<p>This is a test of judgment, not a way of avoiding the question. Pick a reasonable value, say it, and give a reason: "I'll assume 20 million searches a day and a few seconds of staleness is fine for search, unless you'd like something different." A stated assumption can be corrected, and a silent one cannot.</p>
 
-<p>When the interviewer says "you decide", they are testing judgment.</p>
+<h3>Asking too many questions</h3>
 
-<x-tradeoffs caption="Handling unknown requirements">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Ask everything up front",
-      "good": "Nothing is missed.",
-      "bad": "Ten minutes of questions and no design. Looks like stalling.",
-      "pick": "Only when the prompt is truly unfamiliar."
-    },
-    {
-      "name": "Assume silently",
-      "good": "Fast.",
-      "bad": "Nobody can correct an assumption they never heard.",
-      "pick": "Never."
-    },
-    {
-      "name": "Ask the few that matter, state the rest",
-      "good": "Fast, and every assumption can be corrected.",
-      "bad": "The interviewer may change an assumption; adapt when they do.",
-      "pick": "Almost always. Ask 4 to 6 questions, then: \"I'll assume X unless you'd like otherwise.\"",
-      "default": true
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>Ten minutes of questions leaves no time for the design, and it looks like stalling. Ask the four to six questions whose answers would change what you build, then state the rest as assumptions. Skip a question if you would draw the same design whatever the answer.</p>
+
+<h3>The interviewer changes a requirement later</h3>
+
+<p>This is common, and it is usually deliberate: "now it needs to work globally." Go back to your ranked list, say which requirement changed and which parts of the design it touches, and adjust only those parts. Because you wrote the requirements down, this is a short conversation.</p>
 
 <h2>In the interview</h2>
 
-<p>Spend about 5 minutes here (see <a href="/system-design/a-framework-for-any-design.html">the framework</a>). Phrases that show judgment:</p>
+<p>Ask about features first, then scale, then the quality requirements, and give your reason when a requirement drives a decision: "Reads outnumber writes 20 to 1, so I'll optimise the read path." Finish by reading your list back and asking whether it matches.</p>
+
+<p>Questions to expect:</p>
 
 <ul>
-<li>"The core flows are X, Y and Z. I'll leave out A and B. Does that match?"</li>
-<li>"Is it ever acceptable to [double-book / lose a message / show a stale price]?"</li>
-<li>"Reads outnumber writes 20 to 1, so the read path is the one to optimize."</li>
+<li><strong>"Why did you ask about double bookings and not about the colour of the booking button?"</strong> Because the answer to the first question changes the architecture and the answer to the second does not. I only ask questions where a different answer would lead me to build something different.</li>
+<li><strong>"What if I tell you to assume whatever you like?"</strong> I would state each assumption as a number or a rule, for example the number of requests per day and whether stale reads are acceptable, and then ask whether the interviewer wants to change any of them. This keeps the design moving and keeps every assumption visible.</li>
+<li><strong>"Why not make search strongly consistent as well?"</strong> Every search would have to read the primary database, which is the machine that must stay fast for bookings. Stale search costs only an occasional failed booking attempt, which the booking check catches and reports as a conflict.</li>
+<li><strong>"What does 99.99% availability mean for your design?"</strong> It allows about 4 minutes of downtime a month, which is too short for a person to respond. Failover to a standby must be automatic, and there must be no single machine whose failure takes the service down.</li>
+<li><strong>"The primary dies just after confirming a booking. Is the booking lost?"</strong> With asynchronous replication it can be. If a confirmed booking must never be lost, the commit has to wait for at least one standby to have the data, which adds a few milliseconds to every booking. The ranking allows that cost.</li>
+<li><strong>"What do you do when two requirements conflict?"</strong> I use the ranking I wrote at the start. In the reservation example, a correct booking beats a fast booking, so I accept the slower write.</li>
+<li><strong>"How do you decide what is out of scope?"</strong> I leave out what is not part of the core actions and what would take a lot of design time for little signal, such as payments or reviews here. I say what I am leaving out and let the interviewer pull anything back in.</li>
 </ul>
 
-<p>Expected follow-ups:</p>
-
-<ul>
-<li><strong>"Why not make search strongly consistent too?"</strong> Every search would hit the primary: 1,000 reads a second at peak (20 million ÷ 100,000 = 200 average, times 5) on the machine that must stay fast for bookings. Staleness costs a rare 409.</li>
-<li><strong>"The primary dies just after confirming a booking. Is it lost?"</strong> With async replication it can be. So the commit waits for one synchronous standby before returning 201: a few milliseconds more, which the ranking allows.</li>
-<li><strong>"Now it's global."</strong> Serve search from every region. Each restaurant's bookings are still decided in one place, near the restaurant.</li>
-</ul>
-
-<h2>Common mistakes</h2>
-
-<x-callout type="mistake" title="Non-functional requirements without numbers">
-<p>"Fast, scalable, highly available" fits every system and decides nothing. Say "search under 200 ms, booking 99.9% available, no double bookings".</p>
-</x-callout>
-
-<x-callout type="mistake" title="One consistency level for the whole system">
-<p>Everything strongly consistent overloads the source of truth; everything eventually consistent double-books tables. Decide per path.</p>
-</x-callout>
+<x-interview title="Scoping the reservation system" tone="strong">
+<x-interviewer>Design a restaurant reservation system.</x-interviewer>
+<x-you>Diners search for open tables, then book or cancel, and restaurants set up their tables. I'll leave out payments, reviews and waitlists. Does that match what you want?</x-you>
+<x-interviewer>Yes. We have about 20 million searches and 1 million bookings a day, in one country.</x-interviewer>
+<x-you>So searches outnumber bookings 20 to 1. Can search results be a few seconds stale, and is a double booking never acceptable?</x-you>
+<x-interviewer>Stale search is fine. No double bookings, ever.</x-interviewer>
+<x-you>Then booking will be strictly consistent on a single source of truth, and search will read from replicas and caches. Confirmation emails can be a minute late, so I'll send them through a queue.</x-you>
+<x-coach>Every question changed a decision, and the last answer assigns a different design to each path.</x-coach>
+</x-interview>
 
 <x-quiz>
 <script type="application/json">
@@ -220,25 +136,25 @@
     {
       "question": "Which of these is a non-functional requirement?",
       "options": [
-        { "text": "A diner can cancel a booking", "why": "A user action: functional." },
-        { "text": "Search results may be up to 5 seconds stale", "correct": true, "why": "It says how well search works, not what it does, and it allows replicas." },
-        { "text": "Restaurants can add tables", "why": "Another user action: functional." }
+        { "text": "A diner can cancel a booking", "why": "This is an action a user takes, so it is functional." },
+        { "text": "Search results may be up to 5 seconds stale", "correct": true, "why": "It says how well search must work, not what it does, and it allows replicas and caches." },
+        { "text": "Restaurants can add tables", "why": "This is also an action a user takes, so it is functional." }
       ]
     },
     {
-      "question": "The interviewer wants booking 99.99% available, not 99.9%. About how much downtime a month is that?",
+      "question": "The interviewer wants booking to be 99.99% available instead of 99.9%. What does that change in the design?",
       "options": [
-        { "text": "About 43 minutes", "why": "That is 99.9%." },
-        { "text": "About 4 minutes", "correct": true, "why": "0.0001 × 43,200 minutes ≈ 4.3. Too short for a person to react, so failover to a running standby must be automatic." },
-        { "text": "About 26 seconds", "why": "That is 99.999%, one more nine." }
+        { "text": "Nothing, because both numbers mean the service is nearly always up", "why": "The difference is about 43 minutes against 4 minutes of downtime a month, which changes how failover must work." },
+        { "text": "Failover must be automatic, because 4 minutes is too short for a person to react", "correct": true, "why": "At 99.9% a person can restart or fail over by hand within the budget. At 99.99% they cannot." },
+        { "text": "Every read must go to the primary database", "why": "Availability says nothing about which copy serves reads." }
       ]
     },
     {
       "question": "A replica shows a table as free, but it was booked a moment ago. What should the booking request do?",
       "options": [
-        { "text": "Book it anyway; the search said it was free", "why": "That is the double booking the requirements forbid." },
-        { "text": "Make every search read the primary", "why": "That loads the primary 20 times more. The write check already prevents the harm." },
-        { "text": "Write to the primary only if the table is still free, and return a conflict if not", "correct": true, "why": "Correctness is enforced where the decision is made." }
+        { "text": "Book it anyway, because the search said it was free", "why": "That is the double booking the requirements forbid." },
+        { "text": "Make every search read the primary", "why": "That puts the whole search load on the primary. The write check already prevents the harm." },
+        { "text": "Write to the primary only if the table is still free, and return a conflict if not", "correct": true, "why": "Correctness is enforced where the decision is made, and stale search costs only a retry." }
       ]
     }
   ]
@@ -246,6 +162,6 @@
 </script>
 </x-quiz>
 
-<h2>What to practice next</h2>
+<h2>What to practise next</h2>
 
-<p>Turn scale answers into rates and bytes in <a href="/system-design/back-of-the-envelope-estimation.html">Back-of-the-Envelope Estimation</a>. For a case where one path's consistency decides the design, see <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>.</p>
+<p>Turn the scale answers into rates and sizes in <a href="/system-design/back-of-the-envelope-estimation.html">Back-of-the-Envelope Estimation</a>. For a case where the consistency of one path decides the whole design, see <a href="/system-design/design-ticket-booking.html">Design Ticket Booking</a>.</p>

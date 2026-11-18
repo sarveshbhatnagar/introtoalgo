@@ -1,61 +1,47 @@
 <!--
 {
   "title": "Design a Stock Trading App",
-  "description": "Design a retail brokerage app: live prices for millions of screens, orders that stay correct with an outside exchange, and the daily spike at the open.",
-  "minutes": 28,
+  "description": "How a stock trading app streams live prices to millions of screens, keeps orders correct with an outside exchange, and copes with the market open.",
+  "minutes": 27,
   "kind": "design",
   "tags": ["case study", "real-time", "pub/sub", "idempotency", "traffic spikes"]
 }
 -->
-<p>A price flickers on your phone. You tap Buy, 10 shares, limit $50.00, and seconds later the app says "Filled at $49.98". Your broker traded nothing itself: it checked your cash, wrote the order down, and sent it to an exchange it does not control, over a network that can drop the answer.</p>
+<p>A retail trading app, meaning the broker's app and not the exchange, shows live prices for the stocks a user is watching and lets the user place, cancel and track orders. The broker does not match trades itself; it records the order and sends it to an exchange it does not control.</p>
 
-<p>Two problems pull in opposite directions. Live prices are fan-out, where a second stale is fine. Orders are real money, where a lost or doubled message is a disaster. The question means the app (think Robinhood), not the exchange. The steps follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
+<p>The design is hard because the two halves have opposite requirements. Live prices are a fan-out problem in which a price that is one second old is acceptable, but millions of screens need it. Orders involve real money, so an order must never be lost or executed twice, even though the call to the exchange can fail after the exchange has already acted on it. The steps below follow <a href="/system-design/a-framework-for-any-design.html">A Framework for Any Design</a>.</p>
 
 <h2>Clarify the problem</h2>
 
 <x-interview title="The first five minutes">
 <x-interviewer>Design a stock trading app.</x-interviewer>
-<x-you>Are we the broker, sending orders to outside exchanges, or the exchange that matches them?</x-you>
-<x-interviewer>The broker. Orders go to an external exchange.</x-interviewer>
-<x-you>Live prices, placing and cancelling orders, order status? Which order types?</x-you>
-<x-interviewer>Yes. Market and limit orders, stocks only.</x-interviewer>
-<x-you>How many people at the busiest moment, and how many orders a day?</x-you>
-<x-interviewer>About 2 million have the app open right after the market opens. About 5 million orders a day; the first minute is the busiest.</x-interviewer>
-<x-you>Then two paths with different rules. Prices can be a second stale but must reach 2 million screens. Orders must never be lost or doubled, even if a server crashes mid-call. I'll design for the open.</x-you>
-<x-coach>Splitting "fast and approximate" from "slow and exact" early drives every later choice.</x-coach>
+<x-you>Are we the broker, which sends orders to outside exchanges, or the exchange that matches them?</x-you>
+<x-interviewer>You are the broker. Orders go to an external exchange.</x-interviewer>
+<x-you>I assume the app shows live prices, lets users place and cancel orders, and shows the status of each order. Which order types do we support?</x-you>
+<x-interviewer>Market and limit orders, for stocks only.</x-interviewer>
+<x-you>How many people use the app at the busiest moment, and how many orders do they place in a day?</x-you>
+<x-interviewer>About 2 million people have the app open right after the open, and there are about 5 million orders a day.</x-interviewer>
+<x-you>Then there are two paths with different rules. Prices can be a second old, but they must reach 2 million screens. Orders must never be lost or duplicated, even if a server crashes in the middle of a call to the exchange. I will design for the open.</x-you>
+<x-coach>Separating the path that can be approximate from the path that must be exact is the decision that shapes the rest of the design.</x-coach>
 </x-interview>
 
 <ul>
-<li><strong>Functional:</strong> live quotes for the symbols on screen; place market and limit orders; cancel open orders; show each order's status as it changes.</li>
-<li><strong>Non-functional:</strong> quotes within about 1 second of the exchange; an accepted order is never lost or sent twice; status always ends up matching the exchange; the order path survives the open at about 20 times the average rate.</li>
-<li><strong>Out of scope:</strong> matching, options, crypto, charts, account opening, tax reports.</li>
+<li><strong>Functional requirements:</strong> users see live quotes for the symbols on their screen, place market and limit orders, cancel open orders, and see each order's status change as it happens.</li>
+<li><strong>Non-functional requirements:</strong> quotes arrive within about 1 second of the exchange, an accepted order is never lost and never sent twice, the order status always ends up matching the exchange, and the order path survives the open, when the order rate is about 20 times the daily average.</li>
+<li><strong>Out of scope:</strong> the matching engine, options, crypto, charts, account opening and tax reports.</li>
 </ul>
 
 <h2>Estimate the scale</h2>
 
-<p>Do prices and orders separately. These are scenario givens, not a real broker's figures.</p>
+<p>The price path and the order path are estimated separately. The figures are scenario assumptions, not those of a real broker.</p>
 
 <ul>
-<li><strong>Connections:</strong> 2 million ÷ 50,000 per push server = 40 servers. Run 80, half full, to absorb a dead server's clients.</li>
-<li><strong>Market data in:</strong> up to 200,000 quote updates a second across 10,000 symbols. Nobody reads a price changing 50 times a second, so send each symbol at most once a second: 10,000 updates.</li>
-<li><strong>Updates out:</strong> 10 symbols per screen is 20 million symbol updates a second, but one frame per client per second makes it 2 million frames, 25,000 per server.</li>
-<li><strong>Orders:</strong> a trading day is 6.5 hours = 23,400 seconds, so 5,000,000 ÷ 23,400 ≈ 214 a second on average.</li>
-<li><strong>Storage:</strong> 2 KB per order with history × 5 million = 10 GB a day; × 252 trading days ≈ 2.5 TB a year; about 18 TB over 7 years.</li>
+<li><strong>Connections:</strong> if one push server holds 50,000 WebSocket connections, 2 million clients need 40 servers. Running 80 leaves each server half full, so it can absorb the clients of a dead one.</li>
+<li><strong>Market data coming in:</strong> the exchange feed delivers up to 200,000 quote updates a second across 10,000 symbols. Nobody can read a price that changes dozens of times a second, so each symbol is sent at most once a second, which is 10,000 updates.</li>
+<li><strong>Updates going out:</strong> a screen shows about 10 symbols, so 2 million screens need 20 million symbol updates a second. Sent as one frame per client per second, that is 2 million frames, or 25,000 per push server, and about 800 MB/s in total at 40 bytes per symbol.</li>
+<li><strong>Orders:</strong> a trading day is 6.5 hours, or 23,400 seconds, so 5 million orders a day is about 214 orders a second on average.</li>
+<li><strong>Storage:</strong> an order with its history takes about 2 KB, so 5 million orders add 10 GB a day, or about 2.5 TB a year over 252 trading days.</li>
 </ul>
-
-<x-estimate title="Bandwidth for the price stream">
-<script type="application/json">
-{
-  "question": "How much outgoing bandwidth does the price stream need at the open?",
-  "givens": ["2 million connected clients", "One frame per client per second", "Each frame carries 10 symbols at about 40 bytes each"],
-  "unit": "bytes/s",
-  "answer": "800 MB/s",
-  "accept": ["250 MB/s", "3 GB/s"],
-  "steps": ["One frame: 10 × 40 B = 400 B", "2,000,000 × 400 B = 800,000,000 B a second = 800 MB/s", "Spread over 80 push servers: 10 MB/s each"],
-  "note": "Easy for 80 servers. The cost is connections and frames, not bytes."
-}
-</script>
-</x-estimate>
 
 <x-estimate title="Orders in the first minute">
 <script type="application/json">
@@ -66,18 +52,18 @@
   "answer": "4.2 thousand/s",
   "accept": ["1.5 thousand/s", "12 thousand/s"],
   "choices": ["40/s", "400/s", "4 thousand/s", "40 thousand/s"],
-  "steps": ["5% of 5,000,000 = 250,000 orders", "250,000 ÷ 60 s ≈ 4,200 a second, about 20 times the 214 average"],
-  "note": "A relational database partitioned by account handles this, if you scale up before 9:30."
+  "steps": ["5% of 5,000,000 = 250,000 orders", "250,000 ÷ 60 s ≈ 4,200 a second, about 20 times the average of 214"],
+  "note": "A relational database partitioned by account can handle 4,200 writes a second, provided it is scaled up before 9:30."
 }
 </script>
 </x-estimate>
 
 <x-tryit variant="turn" minutes="2" title="Define the API">
 <x-task>
-<p>Write the calls for quotes, placing and cancelling. What returns immediately, and what arrives later?</p>
+<p>Write the calls for quotes, for placing an order and for cancelling one. Decide which calls return a final answer immediately and which answers arrive later.</p>
 </x-task>
 <x-answer>
-<p>Quotes and order updates share one connection. Placing returns "recorded", not "filled", with an app-made id so a retry cannot duplicate it. Cancel returns "requested".</p>
+<p>Quotes and order updates share one WebSocket. Placing an order returns "pending", with an app-generated id so that a retry cannot create a duplicate, and cancelling returns "cancel requested". The real results arrive later as events.</p>
 </x-answer>
 </x-tryit>
 
@@ -109,18 +95,18 @@ GET /quotes?symbols=ACME,ZETA     a snapshot for the first paint
 </pre>
 </x-code>
 
-<p>Prices are integer cents; floating-point dollars round badly.</p>
+<p>Prices are integer cents, because floating-point dollars produce rounding errors in money calculations.</p>
 
-<p>The decision worth arguing is what <code>POST</code> and <code>DELETE</code> promise. The exchange decides later, so <code>POST</code> returns 201 once the order is durably recorded, <code>DELETE</code> returns 202, and the result arrives as an event. An app that shows "Cancelled" on the 202 will one day show a cancelled order that filled.</p>
+<p>The API decision worth discussing is what <code>POST</code> and <code>DELETE</code> promise. Because the exchange decides later, <code>POST</code> returns 201 as soon as the order is durably recorded, <code>DELETE</code> returns 202 because the cancel has only been requested, and the result arrives as an event on the stream. An app that showed "Cancelled" on the 202 would eventually show a cancelled order that had already filled.</p>
 
-<p>The app creates <code>client_order_id</code> once and reuses it on every retry: it is the order's <a href="/system-design/idempotency-and-retries.html">idempotency key</a>.</p>
+<p>The app creates <code>client_order_id</code> once and reuses it on every retry. It is the order's <a href="/system-design/idempotency-and-retries.html">idempotency key</a>, which lets the server tell a retry from a new order.</p>
 
 <x-tryit variant="turn" minutes="3" title="Model the data">
 <x-task>
-<p>Sketch orders and fills. How is a retried order or repeated fill counted once?</p>
+<p>Sketch the tables for orders and fills. Decide how a retried order and a repeated fill are each counted only once.</p>
 </x-task>
 <x-answer>
-<p>A unique key on (account, client order id) catches retried orders; fills keyed by the exchange's execution id catch repeats. The order and its cash reservation commit in one transaction.</p>
+<p>A unique key on the account and the client order id rejects a retried order, and fills keyed by the exchange's execution id reject a repeated fill. The order and the cash reservation for it are committed in one transaction.</p>
 </x-answer>
 </x-tryit>
 
@@ -165,22 +151,22 @@ positions
 </pre>
 </x-code>
 
-<p>Placing, updating, listing and filling orders are each a transaction within <em>one account</em>, so use a <strong>relational database</strong> <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>account_id</code>. Quotes are not stored: the latest per symbol lives in the feed handler's memory.</p>
+<p>Placing an order, updating it, listing a user's orders and recording a fill are each a transaction that touches only one account. That access pattern fits a <strong>relational database</strong> <a href="/system-design/sharding-and-partitioning.html">partitioned</a> by <code>account_id</code>, which gives real transactions without cross-partition coordination. Quotes are not stored; the feed handler keeps the latest one per symbol in memory.</p>
 
-<p>Unique keys do the deduplication, so no code can race: a retried order hits <code>UNIQUE (account_id, client_order_id)</code>, a repeated fill hits <code>exec_id</code>.</p>
+<p>Unique keys do the deduplication, so two servers cannot race past it. A retried order violates <code>UNIQUE (account_id, client_order_id)</code>, and a repeated fill violates the primary key on <code>exec_id</code>.</p>
 
 <x-tryit variant="turn" minutes="4" title="High-level design">
 <x-task>
-<p>Sketch how a price reaches 2 million screens, and how an order reaches the exchange and its status comes back.</p>
+<p>Sketch how a price reaches 2 million screens, and how an order reaches the exchange and its status comes back to the user.</p>
 </x-task>
 <x-answer>
-<p>A feed handler publishes each symbol's latest quote once a second to pub/sub; push servers subscribe. An order service records each order before calling the exchange and publishes status events back.</p>
+<p>A feed handler publishes each symbol's latest quote once a second to pub/sub, and push servers forward it over WebSockets. An order service records each order before calling the exchange and publishes status events back through pub/sub.</p>
 </x-answer>
 </x-tryit>
 
 <h2>High-level design</h2>
 
-<x-arch caption="Prices flow from the exchange through a conflating feed handler and pub/sub. Orders are written to the database before they reach the exchange.">
+<x-arch caption="Prices flow from the exchange through a feed handler that keeps one quote per symbol, then through pub/sub to the push servers. Orders are written to the database before they are sent to the exchange.">
 <script type="application/json">
 {
   "nodes": [
@@ -208,7 +194,7 @@ positions
 </script>
 </x-arch>
 
-<x-tracer title="A quote, an order, a crash mid-send, and the fill">
+<x-tracer title="A quote, an order, a crash during sending, and the fill">
 <script type="application/json">
 {
   "arch": {
@@ -236,57 +222,52 @@ positions
   },
   "steps": [
     {
-      "caption": "Ana opens ACME. Her push server subscribes to the ACME topic if it has not already, and sends a snapshot.",
+      "caption": "Ana opens the ACME stock. Her push server subscribes to the ACME topic and sends her a snapshot of the current quote.",
       "arch": { "active": ["app", "push", "bus", ["push", "app"], ["bus", "push"]], "dim": ["api", "ord", "db"] },
       "vars": { "ACME last": "$49.97" }
     },
     {
-      "caption": "In one second the exchange sends 40 ACME updates. The feed handler just overwrites its latest quote.",
-      "arch": { "active": ["exch", "feed", ["exch", "feed"]], "dim": ["api", "ord", "db"], "notes": { "feed": "40 in, keep last" } },
-      "vars": { "ACME last": "$49.97", "ticks this second": 40 }
-    },
-    {
-      "caption": "Once a second it publishes the full quote. Each push server gets one copy and adds it to every ACME watcher's next frame.",
-      "arch": { "active": ["feed", "bus", "push", ["feed", "bus"], ["bus", "push"], ["push", "app"]], "mark": ["app"], "dim": ["api", "ord", "db"] },
+      "caption": "The exchange sends 40 ACME updates in one second. The feed handler keeps only the latest and publishes it once, and each push server adds it to the next frame of every client watching ACME.",
+      "arch": { "active": ["exch", "feed", "bus", "push", ["exch", "feed"], ["feed", "bus"], ["bus", "push"], ["push", "app"]], "mark": ["app"], "dim": ["api", "ord", "db"] },
       "vars": { "ACME last": "$49.98", "messages sent": "1, not 40" }
     },
     {
-      "caption": "Ana taps Buy, 10 at a $50.00 limit. The app creates <code>client_order_id</code> c-7f3a first, so retries carry it.",
+      "caption": "Ana taps Buy for 10 shares at a $50.00 limit. The app first creates the client order id c-7f3a, so that every retry carries the same id.",
       "arch": { "active": ["app", "api", "ord", ["app", "api"], ["api", "ord"]], "dim": ["feed", "bus", "push"] },
       "vars": { "client_order_id": "c-7f3a", "order": "none yet" }
     },
     {
-      "caption": "One transaction inserts o-551 as <code>pending</code> and reserves 10 × $50.00 = $500, committed on two machines before anything is sent.",
+      "caption": "One transaction inserts order o-551 as <code>pending</code> and reserves 10 × $50.00 = $500. It is committed on a synchronous replica too before anything is sent.",
       "arch": { "active": ["ord", "db", ["ord", "db"]], "mark": ["db"], "dim": ["feed", "bus", "push"], "notes": { "db": "o-551 pending" } },
       "vars": { "client_order_id": "c-7f3a", "order": "pending", "reserved": "$500.00" }
     },
     {
-      "caption": "The order service sends it, tagged c-7f3a, and crashes before recording <code>sent</code>. The exchange got it.",
+      "caption": "The order service sends the order to the exchange with id c-7f3a and then crashes before it records the status <code>sent</code>, so the exchange has it.",
       "arch": { "active": ["exch", ["ord", "exch"]], "fail": ["ord"], "dim": ["feed", "bus", "push"], "notes": { "ord": "crashed", "exch": "has c-7f3a" } },
       "vars": { "client_order_id": "c-7f3a", "order": "pending", "reserved": "$500.00" }
     },
     {
-      "caption": "Ana's app times out and retries with c-7f3a. Another server finds the row by the unique key and returns o-551.",
+      "caption": "Ana's app times out and retries with c-7f3a. Another order server finds the existing row through the unique key and returns o-551.",
       "arch": { "active": ["app", "api", "ord", "db", ["app", "api"], ["api", "ord"], ["ord", "db"]], "dim": ["feed", "bus", "push", "exch"], "notes": { "db": "c-7f3a exists" } },
       "vars": { "client_order_id": "c-7f3a", "order": "pending", "orders created": 1 }
     },
     {
-      "caption": "The reconciler finds o-551 <code>pending</code> for over 5 seconds. It does not resend; it asks the exchange about c-7f3a: accepted. So is the row.",
+      "caption": "A reconciler finds o-551 still <code>pending</code> after 5 seconds. It does not resend. It asks the exchange about c-7f3a, learns the order was accepted, and updates the row.",
       "arch": { "active": ["ord", "exch", "db", ["ord", "exch"], ["ord", "db"]], "dim": ["feed", "bus", "push", "app", "api"], "notes": { "exch": "c-7f3a accepted" } },
       "vars": { "client_order_id": "c-7f3a", "order": "accepted", "orders at exchange": 1 }
     },
     {
-      "caption": "A fill arrives: 10 at $49.98, execution id E-90. One transaction inserts it, marks the order filled and releases the unused $0.20.",
+      "caption": "A fill arrives for 10 shares at $49.98 with execution id E-90. One transaction inserts the fill, marks the order filled and releases the $0.20 that was reserved but not spent.",
       "arch": { "active": ["exch", "ord", "db", ["exch", "ord"], ["ord", "db"]], "mark": ["db"], "dim": ["feed", "bus", "push", "app", "api"], "notes": { "db": "fill E-90" } },
       "vars": { "order": "filled", "cost": "$499.80", "released": "$0.20" }
     },
     {
-      "caption": "After a reconnect the exchange repeats the fill. E-90 hits the primary key: Ana does not get 20 shares.",
+      "caption": "After a reconnect the exchange sends the same fill again. The insert fails on the primary key E-90, so Ana does not receive 20 shares.",
       "arch": { "active": ["exch", "ord", ["exch", "ord"], ["ord", "db"]], "fail": [["ord", "db"]], "dim": ["feed", "bus", "push", "app", "api"], "notes": { "db": "E-90 exists" } },
       "vars": { "order": "filled", "shares": 10 }
     },
     {
-      "caption": "The order service publishes to Ana's account topic; her push server forwards it: \"Filled at $49.98\".",
+      "caption": "The order service publishes the status change to Ana's account topic, and her push server forwards it to the app, which shows \"Filled at $49.98\".",
       "arch": { "active": ["ord", "bus", "push", ["ord", "bus"], ["bus", "push"], ["push", "app"]], "mark": ["app"], "dim": ["api", "feed", "db", "exch"] },
       "vars": { "order": "filled", "shares": 10 }
     }
@@ -299,51 +280,29 @@ positions
 
 <h3>Fanning out live prices</h3>
 
-<p>The naive design sends all 200,000 ticks a second to every watcher. Three ideas shrink that:</p>
+<p>Sending every tick to every watcher is far more than any system can sustain, so the design uses three techniques.</p>
 
-<ul>
-<li><strong>Conflate at the source.</strong> Publish the latest quote per symbol once a second: 10,000 messages instead of 200,000. Each is the full quote, not a change, so the next one repairs a lost one.</li>
-<li><strong>Subscribe per server, not per client.</strong> A symbol on 1 million screens costs the pub/sub 80 messages a second, one per server; each server copies it to its 12,500 watchers.</li>
-<li><strong>Batch per client.</strong> One frame a second holds all its symbols.</li>
-</ul>
+<p>The first technique is conflation at the source: the feed handler publishes only the latest quote per symbol once a second, so pub/sub carries 10,000 messages a second instead of 200,000. Each message is a full quote, so the next one repairs a lost one.</p>
 
-<x-tradeoffs caption="How the app receives prices">
-<script type="application/json">
-{
-  "options": [
-    {
-      "name": "Polling",
-      "good": "Plain HTTP, cacheable, nothing stateful on the server.",
-      "bad": "Polling every second is 2 million requests a second, each with full headers.",
-      "pick": "Updates every 30 seconds or more are good enough."
-    },
-    {
-      "name": "Server-sent events",
-      "good": "Server-to-client stream over plain HTTP; browsers reconnect on their own.",
-      "bad": "One direction: subscription changes need separate calls routed to the right server.",
-      "pick": "The client rarely changes what it listens to."
-    },
-    {
-      "name": "WebSocket",
-      "good": "Both directions on one connection: subscriptions change as the user scrolls, and order updates share it.",
-      "bad": "Stateful servers, draining on deploys, and your own reconnect logic.",
-      "pick": "Subscriptions change constantly, as here.",
-      "default": true
-    }
-  ]
-}
-</script>
-</x-tradeoffs>
+<p>The second technique is subscribing per server instead of per client. A symbol shown on 1 million screens costs the pub/sub system 80 messages a second, one for each push server, and each push server then copies the quote to its roughly 12,500 watchers.</p>
 
-<p>On reconnect, the app resubscribes, gets snapshots, and calls <code>GET /orders?status=open</code> so no order status is missed. <a href="/system-design/realtime-communication.html">Real-time communication</a> covers holding connections at this scale.</p>
+<p>The third technique is batching per client: each client receives one frame a second containing all of its symbols.</p>
 
-<x-callout type="mistake" title="Using the displayed price to fill an order">
-<p>The quote on screen is up to a second old; a market order fills at the exchange's price. Reserve cash with a margin (say 5% for market buys) and settle on the fill price.</p>
-</x-callout>
+<p>The remaining choice is how prices reach the app. Polling means each app asks over plain HTTP every second, which produces 2 million requests a second with full headers. Server-sent events keep one HTTP response open, but the stream is one-way, so every subscription change is a separate call that must reach the right server. A WebSocket is two-way, so subscriptions and order updates share one connection, at the cost of stateful servers that must be drained during deploys. This design uses WebSockets because subscriptions change constantly as the user scrolls.</p>
 
-<h3>Keeping orders right with an outside exchange</h3>
+<p>After a reconnect the app subscribes again and calls <code>GET /orders?status=open</code> so that it does not miss a status change. <a href="/system-design/realtime-communication.html">Real-time communication</a> covers holding this many connections.</p>
 
-<p>Your database and the exchange cannot share a transaction, so for a moment only one knows about the order. You choose which.</p>
+<p>A market order fills at the exchange's current price, not the price on the screen, which can be a second old. The system therefore reserves cash with a margin, for example 5% extra for a market buy, and settles on the fill price.</p>
+
+<h3>Keeping orders correct with an outside exchange</h3>
+
+<p>The broker's database and the exchange cannot take part in one transaction, so there is always a moment when only one of them knows about the order. The design must decide which one knows first. There are three orderings.</p>
+
+<p><strong>Calling the exchange first and writing afterwards</strong> looks natural, but a crash between the two steps leaves a live order at the exchange with no row in the database and no cash reserved. The customer could own shares that the broker has no record of.</p>
+
+<p><strong>Writing first and then calling the exchange</strong> reverses the order. The service commits the order as <code>pending</code>, with the cash reserved, and only then sends it. A crash now leaves a <code>pending</code> row, and some of those rows were never sent, but no order can exist at the exchange without a record at the broker. The remaining work is to find out, for each stuck row, whether the exchange received it.</p>
+
+<p><strong>Writing with an outbox</strong> commits the order and a row in an outbox table in the same transaction, and a separate sender process reads the outbox and calls the exchange. It is the right choice when sending must continue while the order service is down, at the cost of another component.</p>
 
 <x-tradeoffs caption="Ordering the database write and the exchange call">
 <script type="application/json">
@@ -351,62 +310,55 @@ positions
   "options": [
     {
       "name": "Call the exchange, then write",
-      "good": "No record of orders that never left.",
-      "bad": "Crash after the call and a live order exists with no row and no reserved cash.",
-      "pick": "Never, for money."
+      "good": "The database never holds an order that was not sent.",
+      "bad": "A crash after the call leaves a live order with no row and no reserved cash.",
+      "pick": "Never, when real money is involved."
     },
     {
       "name": "Write first, then call",
-      "good": "Every order the exchange can know has a row first. A crash leaves a <code>pending</code> row you resolve by asking.",
-      "bad": "Some <code>pending</code> rows were never sent; a reconciler must settle them.",
-      "pick": "The usual answer when the same service writes and sends.",
+      "good": "Every order the exchange can know about has a row first, and a crash leaves a <code>pending</code> row that can be resolved by asking the exchange.",
+      "bad": "Some <code>pending</code> rows were never sent, so a reconciler has to settle them.",
+      "pick": "The same service writes the row and sends the order, which is the usual answer.",
       "default": true
     },
     {
       "name": "Write with an outbox",
-      "good": "The order and an outbox row commit together; a separate sender calls the exchange.",
-      "bad": "One more moving part; the sender still checks status before any resend.",
-      "pick": "Sending is a separate service that must survive the order service being down."
+      "good": "The order and the outbox row commit together, and a separate sender handles the exchange.",
+      "bad": "It adds a component, and the sender must still check the status before any resend.",
+      "pick": "Sending is a separate service that must keep working while the order service is down."
     }
   ]
 }
 </script>
 </x-tradeoffs>
 
-<p>The rule: <strong>the row with the client order id is durable (committed on a synchronous replica too) before the exchange can hear about the order</strong>. Then:</p>
+<p>The rule is that the row holding the client order id must be durable, which means committed on a synchronous replica as well, before the exchange can hear about the order. Three practices follow.</p>
 
-<ul>
-<li><strong>Never resend blindly.</strong> A <code>pending</code> order may or may not have arrived. Protocols such as FIX carry your client order id on every message, so ask the exchange about it and send only if it has never heard of it. Ask only after the crashed server's session is closed, so its message cannot still be on the way. At-least-once sending plus this check gives the effect of once.</li>
-<li><strong>Apply reports idempotently, forward only.</strong> Fills are keyed by execution id; a late "accepted" after "filled" changes nothing.</li>
-<li><strong>Reconcile twice.</strong> Continuously, for stuck <code>pending</code> or <code>cancel_pending</code> orders; daily, against the clearing firm's trade report.</li>
-</ul>
+<p>The first is never to resend a <code>pending</code> order blindly, since it may have reached the exchange. Exchange protocols such as FIX carry the client order id on every message, so the reconciler asks the exchange whether it knows that id and sends the order only if the answer is no. It asks only after the crashed server's session is closed, so the original message cannot still be in transit. Sending at least once with a check before each resend has the effect of sending once.</p>
 
-<p>Cancels race with fills. Ana taps Cancel; the exchange fills her order 10 ms later, then answers the cancel with "too late". So the order sits in <code>cancel_pending</code> ("Cancelling…") until the exchange decides.</p>
+<p>The second is to apply exchange reports idempotently and only forward: fills are keyed by execution id, and a late "accepted" after "filled" changes nothing. The third is to reconcile continuously for stuck <code>pending</code> or <code>cancel_pending</code> orders, and daily against the clearing firm's trade report.</p>
 
-<h3>Surviving the open</h3>
+<p>Cancels race with fills. If Ana taps Cancel and the exchange fills her order 10 ms later, the exchange answers the cancel with "too late". The order therefore stays <code>cancel_pending</code>, shown as "Cancelling", until the exchange reports the final state.</p>
 
-<p>The spike comes at 9:30 every trading day. Reactive autoscaling is minutes too late. So:</p>
+<h3>Surviving the market open</h3>
 
-<ul>
-<li><strong>Scale on a schedule.</strong> Push servers, order servers and database reach the open's level by 9:15.</li>
-<li><strong>Spread the reconnect storm.</strong> Clients add jitter; snapshots come from memory, never a database.</li>
-<li><strong>Drain the overnight queue at a set rate.</strong> Exchange connections have message limits. With 10 connections at 1,000 messages a second and 100,000 queued orders, live orders use 4,200 of the 10,000, so the queue drains in 100,000 ÷ 5,800 ≈ 17 seconds. Say "at or shortly after the open", or add connections.</li>
-<li><strong>Shed the right load.</strong> Charts and news give way first, never orders; cancels go first because they reduce risk.</li>
-</ul>
+<p>The spike comes at the same time every trading day, and autoscaling that reacts to load is too slow, so the system scales the push servers, order servers and database on a schedule so that they are ready by 9:15. Clients add jitter to their reconnect delay, and snapshots are served from memory.</p>
+
+<p>Orders placed overnight are queued and sent at a controlled rate, because exchange connections have message limits. With 10 connections at 1,000 messages a second and 100,000 queued orders, live orders use about 4,200 of the 10,000 messages a second, so the queue drains at 5,800 a second in about 17 seconds. If the system is overloaded it drops charts and news first and never drops orders.</p>
 
 <h2>Bottlenecks and failures</h2>
 
-<p>At 10x, the price path grows linearly: 800 push servers, 8 GB/s; the pub/sub barely grows. Orders at 42,000 a second need more partitions and exchange connections, which take time to arrange.</p>
+<p>At 10 times the load, the price path needs about 800 push servers and 8 GB/s of outgoing bandwidth, while the pub/sub system barely grows because it carries one message per symbol per server. The order path would reach 42,000 orders a second, which needs more database partitions and more exchange connections, and those take time to arrange. The table shows what happens when each component fails.</p>
 
 <table>
-<thead><tr><th>When this dies</th><th>What happens</th><th>What you do</th></tr></thead>
+<thead><tr><th>When this fails</th><th>What happens</th><th>What you do</th></tr></thead>
 <tbody>
-<tr><td>A push server</td><td>Its 25,000 clients lose their stream.</td><td>They reconnect elsewhere with jitter; half-full servers have room.</td></tr>
-<tr><td>The feed handler</td><td>Prices freeze on every screen.</td><td>Run a standby. The app greys out quotes older than 5 seconds.</td></tr>
-<tr><td>The pub/sub</td><td>Quotes and order events stop, though apps stay connected.</td><td>Run it replicated. On recovery, push servers tell apps to refetch open orders.</td></tr>
-<tr><td>An order server mid-send</td><td>Some orders are <code>pending</code> with an unknown fate.</td><td>The reconciler asks the exchange about each.</td></tr>
-<tr><td>The orders DB primary</td><td>No new orders can be recorded.</td><td>Fail over to the synchronous replica; return 503 meanwhile.</td></tr>
-<tr><td>The exchange connection</td><td>Orders in flight have unknown results.</td><td>Stop sending, reconnect, ask for the status of every open order, then resume.</td></tr>
+<tr><td>A push server</td><td>Its 25,000 clients lose their stream.</td><td>Clients reconnect to other servers with jitter.</td></tr>
+<tr><td>The feed handler</td><td>Prices stop updating on every screen.</td><td>A standby takes over, and the app greys out quotes older than 5 seconds.</td></tr>
+<tr><td>The pub/sub system</td><td>Quotes and order events stop, although the apps stay connected.</td><td>Run it replicated; after recovery apps refetch open orders.</td></tr>
+<tr><td>An order server during a send</td><td>Some orders are left <code>pending</code> with an unknown outcome.</td><td>The reconciler asks the exchange about each.</td></tr>
+<tr><td>The orders database primary</td><td>No new orders can be recorded.</td><td>Fail over to the synchronous replica, returning 503 meanwhile.</td></tr>
+<tr><td>The exchange connection</td><td>Orders in flight have an unknown result.</td><td>Stop sending, reconnect, query every open order, then resume.</td></tr>
 </tbody>
 </table>
 
@@ -415,39 +367,27 @@ positions
 <table>
 <thead><tr><th>Level</th><th>What the answer does</th></tr></thead>
 <tbody>
-<tr><td>Junior</td><td>Polls for prices and calls the exchange straight from the order endpoint.</td></tr>
-<tr><td>Mid</td><td>Uses pub/sub topics per symbol and WebSockets, idempotent orders with a client order id, and integer cents.</td></tr>
-<tr><td>Senior</td><td>Splits price and order paths, conflates ticks, writes before calling the exchange and resolves crashes by asking, and scales for 9:30 before 9:30.</td></tr>
+<tr><td>Junior</td><td>Polls for prices and calls the exchange directly from the order endpoint.</td></tr>
+<tr><td>Mid</td><td>Uses a pub/sub topic per symbol with WebSockets, and makes orders idempotent with a client order id.</td></tr>
+<tr><td>Senior</td><td>Separates the price path from the order path, conflates ticks, writes the order before calling the exchange and resolves crashes by asking the exchange, and scales for the open before it happens.</td></tr>
 </tbody>
 </table>
 
-<x-interview title="The crash in the middle" tone="weak">
-<x-interviewer>Your order server crashes right after sending an order to the exchange. What happens?</x-interviewer>
-<x-you>The app retries, so the order goes through on another server.</x-you>
-<x-coach>The order already went through. A blind retry buys twice.</x-coach>
-</x-interview>
-
 <x-interview title="The crash in the middle" tone="strong">
 <x-interviewer>Your order server crashes right after sending an order to the exchange. What happens?</x-interviewer>
-<x-you>I committed the order as <code>pending</code> with the client order id before sending, so the row survives and the app's retry gets it back. A reconciler asks the exchange about that id and records the answer, sending only if the exchange has never heard of it.</x-you>
+<x-you>The order was committed as <code>pending</code> with its client order id before it was sent, so the row survives the crash and the app's retry gets the same order back. A reconciler then asks the exchange about that id and records the answer, and it resends the order only if the exchange has never heard of it.</x-you>
 </x-interview>
 
 <h2>Follow-up questions</h2>
 
 <h3>How would you add stop orders?</h3>
-<p>A trigger service sends a market order when the stop price is crossed. It reads the full feed, not the conflated stream, or it can miss a brief cross; a conditional status update makes it fire once.</p>
+<p>A trigger service sends a market order when the stop price is crossed. It reads the full feed rather than the conflated stream, because a brief cross within one second could be missed, and a conditional status update from "waiting" to "triggered" makes the order fire only once.</p>
 
-<h3>How do you show the portfolio's value live?</h3>
-<p>The app multiplies shares by the quotes it already gets. The server sends positions on connect and after fills, instead of revaluing 2 million portfolios a second.</p>
+<h3>How do you stop a user from spending the same cash twice?</h3>
+<p>The reservation is a conditional update in the same transaction as the order insert: <code>SET reserved_cents = reserved_cents + 50000 WHERE account_id = :a AND cash_cents - reserved_cents &gt;= 50000</code>. If two orders compete for the last $500, only one update matches the condition, because the database processes updates to the same account row one transaction at a time. The other order is rejected with "insufficient buying power".</p>
 
-<h3>How do you stop a user spending the same cash twice?</h3>
-<p>The reservation is a conditional update in the same transaction as the order insert: <code>SET reserved_cents = reserved_cents + 50000 WHERE account_id = :a AND cash_cents - reserved_cents &gt;= 50000</code>. Two orders racing for the last $500 cannot both pass: the account row is updated one transaction at a time.</p>
-
-<h3>An order fills 4 of 10 shares, then the user cancels. What happens?</h3>
-<p>The exchange cancels the other 6; the order ends <code>cancelled</code> with <code>filled_qty</code> 4 and the cash for 6 released. The cancel and a late fill can arrive in either order, so never let a report lower <code>filled_qty</code>.</p>
-
-<h3>How would you add a second exchange?</h3>
-<p>The order service writes the chosen venue on the row before sending, with one connection pool per venue, so the reconciler knows which exchange to ask.</p>
+<h3>An order fills 4 of 10 shares and then the user cancels. What happens?</h3>
+<p>The exchange cancels the remaining 6 shares, so the order ends as <code>cancelled</code> with <code>filled_qty</code> of 4, and the cash reserved for the 6 unfilled shares is released. A late fill and the cancel confirmation can arrive in either order, so the service must never let a report lower <code>filled_qty</code>.</p>
 
 <x-checklist title="Self-review: stock trading app">
 <script type="application/json">
